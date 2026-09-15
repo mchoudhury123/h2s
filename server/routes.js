@@ -1071,9 +1071,12 @@ route('GET', '/api/children/:id/timetable', async ctx => {
       in_force: !!inForce && inForce.id === v.id,
       days: [1, 2, 3, 4, 5, 6, 0].map(weekday => {
         const d = v.days.find(x => x.weekday === weekday);
+        // A day with no row of its own is resolved the same way the journey
+        // engine resolves it, so the editor shows what would really happen.
+        const resolved = sched.childDay(child, contract || {}, v.effective_from, weekday, [v]);
         return {
           weekday, name: sched.WEEKDAY_NAMES[weekday],
-          attends: d ? !!d.attends : true,
+          attends: !!resolved.attends,
           start_time: d ? d.start_time : null,
           finish_time: d ? d.finish_time : null,
         };
