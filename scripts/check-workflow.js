@@ -66,9 +66,9 @@ async function go(page, hash, heading) {
   page.on('console', m => { if (m.type() === 'error' && !/401 \(Unauthorized\)/.test(m.text()) && !(expect404 && /404/.test(m.text()))) errors.push('CONSOLE: ' + m.text()); });
 
   await page.goto(BASE, { waitUntil: 'networkidle2' });
-  await page.waitForSelector('input[name=username]');
-  await page.type('input[name=username]', 'admin');
-  await page.type('input[name=password]', 'admin123');
+  await page.waitForSelector('input[name=email]', { timeout: 25000 });
+  await page.type('input[name=email]', 'demo@northgate-transport.example');
+  await page.type('input[name=password]', 'demo1234');
   await Promise.all([page.click('button[type=submit]'), page.waitForSelector('#app')]);
   await page.waitForSelector('.stats', { timeout: 25000 });
 

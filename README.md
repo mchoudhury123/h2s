@@ -1,8 +1,12 @@
 # Home-to-School Transport CRM
 
-A complete operations and management system for a home-to-school transport company: council contracts, children, schools, drivers, passenger assistants, compliance, daily journeys, cover staff, wages and profitability.
+A complete operations and management system for home-to-school transport companies: council contracts, children, schools, drivers, passenger assistants, compliance, daily journeys, cover staff, wages and profitability.
 
-The system is built around **exception management**. It already knows what is supposed to happen every day, so staff only record what was *different*.
+Two ideas shape it.
+
+**Exception management.** The system already knows what is supposed to happen every day, so staff only record what was *different*.
+
+**One system, many firms.** Each operating company registers its own account and sees only its own records. No firm can see another firm's children, staff or finances.
 
 ---
 
@@ -12,15 +16,36 @@ You need Node.js 22.5 or newer. There is one dependency, the Postgres driver, an
 
 ```
 npm install
-npm run seed      # demo data
 npm start         # http://localhost:4000
 ```
 
-Sign in with `admin` / `admin123`. Change that password under Settings once you are in.
+Open that address and choose **Create an account**. You give a business name, your email address and a password, and your firm is set up and ready to use.
 
-The demo data also includes `manager`, `ops`, `finance` and `viewer` accounts, each with the password shown on the sign-in screen, so you can see how each role differs.
+To load a demo business with realistic data to look around:
 
-To start from an empty system instead, skip `npm run seed`. The tables and an administrator account are created on first launch.
+```
+npm run seed
+```
+
+That creates "Northgate Home-to-School Transport" with twelve children, seven contracts and thirteen staff. Sign in as `demo@northgate-transport.example` with the password `demo1234`. It never touches any real business that has registered.
+
+### Businesses and accounts
+
+Every operating firm is separate. Registering creates the firm and its first account in one step.
+
+There are **no roles**. Everyone who can sign in administers their own firm and sees everything belonging to it: children, staff, compliance, wages, profitability, reports and the audit log. To let a colleague in, go to **Settings then Who can sign in** and add them with their email address and a password. They get the same access, to the same firm, and nothing else.
+
+An email address belongs to one account in one firm. Signing in finds the account, and the account fixes which firm's records you see for the whole session.
+
+### How the separation is enforced
+
+Every table of firm data carries an `organisation_id`, and every query filters on it. That is the kind of thing that is easy to get almost right, so three things make a mistake fail loudly instead of quietly leaking:
+
+- The firm is taken from the session and never from anything the browser sends, so it cannot be changed by editing a request.
+- Writing a row of firm data without an organisation is refused by the data layer, and updating or deleting one is scoped to the owning firm in the SQL itself.
+- With `H2S_STRICT_TENANCY=1`, which the test suites set, any statement that touches a table of firm data without mentioning `organisation_id` throws. The few deliberately system-wide statements, such as looking up an email address at sign-in, say so in a comment and are exempt.
+
+`npm run test:isolation` then proves it end to end. It registers two businesses, fills both with records, and attacks every endpoint from one using the other's record ids. Seventy-seven checks cover lists, reads by id, writes, deletes, forged links between firms, search, the calendar, the dashboard, wages, profitability, the staff pool, compliance, the audit log, every report, team accounts and settings.
 
 ### Which database it uses
 
@@ -31,7 +56,7 @@ The CRM runs on either SQLite or Postgres, and the application code is the same 
 | SQLite | No `DATABASE_URL` set | A single office, local development, no setup |
 | Postgres | `DATABASE_URL` set in `.env` | Supabase, several people, access from more than one machine |
 
-To point it at Supabase, copy `.env.example` to `.env` and fill in the connection string from Supabase under **Project Settings > Database > Connection string**:
+One database holds every firm's records, kept apart by `organisation_id`. To point it at Supabase, copy `.env.example` to `.env` and fill in the connection string from Supabase under **Project Settings > Database > Connection string**:
 
 ```
 DATABASE_URL=postgresql://postgres:YOUR-PASSWORD@db.YOUR-PROJECT.supabase.co:5432/postgres
@@ -54,17 +79,18 @@ Two things worth knowing about Supabase connections. The direct host, `db.<proje
 ### Tests
 
 ```
-npm test              # 63 business-rule tests
-npm run test:browser  # every page in a real browser, fails on any console error
-npm run test:roles    # role restrictions and both themes
-npm run test:workflow # create records through the forms, through to payroll
+npm test                # 63 business-rule tests
+npm run test:isolation  # 77 checks that one firm cannot reach another's data
+npm run test:auth       # registration, sign-in and separation, in a browser
+npm run test:browser    # every page in a real browser, fails on any console error
+npm run test:workflow   # create records through the forms, through to payroll
 ```
 
 The browser suites expect Chrome at the default Windows location and the server already running.
 
 `npm test` never touches live data. On SQLite it builds a temporary file; on Postgres it creates a temporary schema and drops it afterwards, and refuses to run at all if that isolation fails.
 
-`npm run test:workflow` is the exception: it drives the real interface, so it creates records in whatever database the server is pointed at and deletes them again at the end. The other two browser suites only read.
+`npm run test:isolation` and `npm run test:auth` register temporary businesses, then delete them and everything belonging to them. `npm run test:workflow` drives the real interface, so it creates records in the demo business and deletes them again. None of them can affect a firm they did not create.
 
 ---
 
@@ -199,17 +225,13 @@ Driver wages, PA wages, full payroll, full wage breakdown, contract profitabilit
 
 View on screen, export to CSV for Excel, or print to PDF through the browser.
 
-### Roles
+### Accounts
 
-| Role | Access |
-|---|---|
-| Administrator | Everything, including users and settings |
-| Manager | Operations, contracts, staff, calendar, finance and reports |
-| Operations staff | Children, contracts, drivers, PAs and calendar, with no financial figures |
-| Finance | Wages, contract income and financial reporting |
-| Read only | View permitted information, change nothing |
+Everyone who can sign in administers their own firm. There are no roles and no restricted areas: if you can sign in, you can see and change everything belonging to your business, and nothing belonging to any other.
 
-Financial figures are removed on the server, not hidden in the browser, so an operations user cannot reach them by any route. Every important change is written to an audit log recording what changed, the previous value, the new value, when, and who did it.
+Add colleagues under **Settings then Who can sign in**. An account can be disabled without being deleted, and a business always keeps at least one active account.
+
+Every important change is written to an audit log recording what changed, the previous value, the new value, when, and who did it. The log is per firm, like everything else.
 
 ---
 
@@ -217,8 +239,10 @@ Financial figures are removed on the server, not hidden in the browser, so an op
 
 ```
 server/
-  db.js                 one async interface over whichever database is in use
+  db.js                 one async interface over whichever database is in use,
+                        plus the guards that keep firms apart
   schema.js             the table definitions, rendered per database
+  migrations.js         brings an older installation up to date in place
   env.js                loads .env
   drivers/
     sqlite.js           local file, via Node's built-in driver
@@ -234,7 +258,7 @@ server/
     compliance.js       traffic lights
     dashboard.js        dashboard figures and alerts
     search.js           universal search
-    auth.js             sessions, roles, permissions
+    auth.js             registration, sessions and accounts
     audit.js            change history
 public/
   index.html
@@ -242,8 +266,9 @@ public/
   js/                   core, ui, and the three view modules
 scripts/
   test-rules.js         business-rule tests
+  test-isolation.js     proves one firm cannot reach another's data
+  check-auth.js         registration, sign-in and separation in a browser
   smoke.js              browser walkthrough
-  check-roles.js        permission and theme checks
   check-workflow.js     end-to-end workflow through the forms
   db-check.js           connection and row counts
   db-push.js            copies SQLite into Postgres
@@ -260,6 +285,8 @@ The database is normalised and every calculation reads from it rather than from 
 - A new kind of exception is a value in the `exceptions.type` check constraint plus a branch in `evaluateContractDay`. Wages and profitability pick it up without further changes.
 - A new report is one entry in the `BUILDERS` map in `reports.js`; it gets CSV export and on-screen viewing for free.
 - A new column goes in `schema.js` once and renders correctly for both databases.
+- A new table of firm data needs `organisation_id` and a place in `TENANT_TABLES`; the guards then insist every query filters on it.
+- An upgrade to an existing installation goes in `migrations.js`, which runs at startup and is safe to run twice.
 
 Queries are written once with `?` placeholders and a few portable spellings (`string_agg`, `CAST(x AS TEXT)`). The Postgres driver rewrites placeholders to `$1, $2`; the SQLite driver rewrites `string_agg` to `group_concat`. Dates and timestamps are stored as text in both, so comparisons and JSON output are identical and no timezone conversion happens anywhere.
 
@@ -267,4 +294,6 @@ Queries are written once with `?` placeholders and a few portable spellings (`st
 
 This runs as-is for a single office. Before putting it on the open internet you would want HTTPS in front of it, a stronger session store than the in-memory one, and rate limiting on sign-in.
 
-On Supabase, the database is backed up by Supabase itself, but `uploads/` is still a local folder on whichever machine runs the server, so that needs its own backup. Row Level Security is not used: the CRM connects as the database owner and enforces permissions in the application, which is why the connection string must stay private.
+On Supabase, the database is backed up by Supabase itself, but `uploads/` is still a local folder on whichever machine runs the server, so that needs its own backup.
+
+Two things to know before several firms rely on it. Postgres Row Level Security is not used: the application enforces the separation between firms, which is why the connection string must stay private and why the isolation suite matters. And nothing verifies an email address at registration or offers a password reset, so a forgotten password currently needs someone with database access to set a new one.

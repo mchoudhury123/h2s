@@ -15,9 +15,9 @@ const DOC_TYPES = {
   school: ['Term Dates', 'Contact Sheet', 'Other'],
 };
 
-async function amberDays() { return Number(await getSetting('amber_days', 30)) || 30; }
-async function requiredDocs(type) {
-  const v = await getSetting('required_docs_' + type);
+async function amberDays(orgId) { return Number(await getSetting(orgId, 'amber_days', 30)) || 30; }
+async function requiredDocs(orgId, type) {
+  const v = await getSetting(orgId, 'required_docs_' + type);
   if (v) { try { const arr = JSON.parse(v); if (Array.isArray(arr) && arr.length) return arr; } catch (_) {} }
   return DEFAULT_REQUIRED[type] || [];
 }
@@ -62,15 +62,17 @@ function evaluate(docs, required, amber, ref) {
 }
 
 /** Full compliance picture for one staff member (drivers include their vehicles' documents). */
-async function staffCompliance(staffId, type) {
-  const amber = await amberDays();
+async function staffCompliance(orgId, staffId, type) {
+  const amber = await amberDays(orgId);
   const ref = today();
   const docs = await all(
     `SELECT * FROM documents
-     WHERE (entity_type = 'staff' AND entity_id = ?)
-        OR (entity_type = 'vehicle' AND entity_id IN (SELECT id FROM vehicles WHERE driver_id = ? AND active = 1))
-     ORDER BY expiry_date DESC, id DESC`, [staffId, staffId]);
-  return evaluate(docs, await requiredDocs(type), amber, ref);
+     WHERE organisation_id = ?
+       AND ((entity_type = 'staff' AND entity_id = ?)
+         OR (entity_type = 'vehicle' AND entity_id IN
+             (SELECT id FROM vehicles WHERE organisation_id = ? AND driver_id = ? AND active = 1)))
+     ORDER BY expiry_date DESC, id DESC`, [orgId, staffId, orgId, staffId]);
+  return evaluate(docs, await requiredDocs(orgId, type), amber, ref);
 }
 
 /**
@@ -78,20 +80,23 @@ async function staffCompliance(staffId, type) {
  * Used by the dashboard, the staff lists and the compliance centre, where the
  * per-person version would otherwise mean dozens of round trips.
  */
-async function complianceForMany(staffRows) {
+async function complianceForMany(orgId, staffRows) {
   const out = new Map();
   if (!staffRows.length) return out;
-  const amber = await amberDays();
+  const amber = await amberDays(orgId);
   const ref = today();
-  const required = { driver: await requiredDocs('driver'), pa: await requiredDocs('pa') };
+  const required = { driver: await requiredDocs(orgId, 'driver'), pa: await requiredDocs(orgId, 'pa') };
   const ids = staffRows.map(s => s.id);
   const list = inClause(ids);
 
-  const staffDocs = await all(`SELECT * FROM documents WHERE entity_type = 'staff' AND entity_id IN (${list})`, ids);
+  const staffDocs = await all(
+    `SELECT * FROM documents WHERE organisation_id = ? AND entity_type = 'staff' AND entity_id IN (${list})`,
+    [orgId, ...ids]);
   const vehicleDocs = await all(
     `SELECT d.*, v.driver_id FROM documents d
      JOIN vehicles v ON v.id = d.entity_id
-     WHERE d.entity_type = 'vehicle' AND v.active = 1 AND v.driver_id IN (${list})`, ids);
+     WHERE d.organisation_id = ? AND d.entity_type = 'vehicle' AND v.active = 1 AND v.driver_id IN (${list})`,
+    [orgId, ...ids]);
 
   const byStaff = new Map(ids.map(id => [id, []]));
   for (const d of staffDocs) byStaff.get(d.entity_id)?.push(d);
@@ -104,24 +109,24 @@ async function complianceForMany(staffRows) {
 }
 
 /** All documents expiring within N days, or already expired, across every record type. */
-async function expiringDocuments(days, includeExpired = true) {
-  const window = days === undefined ? await amberDays() : days;
+async function expiringDocuments(orgId, days, includeExpired = true) {
+  const window = days === undefined ? await amberDays(orgId) : days;
   const ref = today();
   const limit = addDays(ref, window);
   const rows = await all(`SELECT d.*,
       CASE d.entity_type
-        WHEN 'staff' THEN (SELECT first_name || ' ' || last_name FROM staff WHERE id = d.entity_id)
+        WHEN 'staff' THEN (SELECT first_name || ' ' || last_name FROM staff WHERE id = d.entity_id AND organisation_id = d.organisation_id)
         WHEN 'vehicle' THEN (SELECT v.registration || ' (' || COALESCE((SELECT first_name || ' ' || last_name FROM staff WHERE id = v.driver_id), 'no driver') || ')' FROM vehicles v WHERE v.id = d.entity_id)
-        WHEN 'child' THEN (SELECT first_name || ' ' || last_name FROM children WHERE id = d.entity_id)
-        WHEN 'contract' THEN (SELECT code FROM contracts WHERE id = d.entity_id)
-        WHEN 'school' THEN (SELECT name FROM schools WHERE id = d.entity_id)
+        WHEN 'child' THEN (SELECT first_name || ' ' || last_name FROM children WHERE id = d.entity_id AND organisation_id = d.organisation_id)
+        WHEN 'contract' THEN (SELECT code FROM contracts WHERE id = d.entity_id AND organisation_id = d.organisation_id)
+        WHEN 'school' THEN (SELECT name FROM schools WHERE id = d.entity_id AND organisation_id = d.organisation_id)
       END AS entity_label,
       CASE d.entity_type WHEN 'vehicle' THEN (SELECT driver_id FROM vehicles WHERE id = d.entity_id) END AS vehicle_driver_id,
       CASE d.entity_type WHEN 'staff' THEN (SELECT type FROM staff WHERE id = d.entity_id) END AS staff_type
     FROM documents d
-    WHERE d.status = 'valid' AND d.expiry_date IS NOT NULL AND d.expiry_date <= ?
+    WHERE d.organisation_id = ? AND d.status = 'valid' AND d.expiry_date IS NOT NULL AND d.expiry_date <= ?
       ${includeExpired ? '' : 'AND d.expiry_date >= ?'}
-    ORDER BY d.expiry_date`, includeExpired ? [limit] : [limit, ref]);
+    ORDER BY d.expiry_date`, includeExpired ? [orgId, limit] : [orgId, limit, ref]);
   return rows.map(r => ({ ...r, days_left: daysBetween(ref, r.expiry_date), status: r.expiry_date < ref ? 'red' : 'amber' }));
 }
 

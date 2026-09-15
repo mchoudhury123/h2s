@@ -1,7 +1,7 @@
 /* core: api client, state, router, formatting helpers */
 'use strict';
 const App = window.App = {
-  state: { user: null, permissions: [], roles: {}, settings: {}, lookups: null, docTypes: {}, alertCount: 0 },
+  state: { user: null, organisation: null, settings: {}, lookups: null, docTypes: {}, alertCount: 0 },
   views: {},
 };
 
@@ -97,11 +97,11 @@ const D = window.D = {
   isWeekend(s) { const w = D.dow(s); return w === 0 || w === 6; },
 };
 
-/* ---------- permissions ---------- */
-App.can = function (perm) {
-  const p = App.state.permissions || [];
-  return p.includes('*') || p.includes(perm);
-};
+/* ---------- permissions ----------
+   There are no roles. Everyone who can sign in administers their own firm and
+   sees everything belonging to it. This is kept as a function so the views read
+   the same, and so a future restriction has one place to live. */
+App.can = function () { return true; };
 
 /* ---------- router ---------- */
 const Router = window.Router = {

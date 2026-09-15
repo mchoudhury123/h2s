@@ -95,11 +95,14 @@ function create({ connectionString, schema: schemaName } = {}) {
     }
   }
 
+  async function ensureSchema() {
+    if (!targetSchema) return;
+    await base.exec(`CREATE SCHEMA IF NOT EXISTS ${targetSchema}`);
+    await base.exec(`SET search_path TO ${targetSchema}`);
+  }
+
   async function migrate() {
-    if (targetSchema) {
-      await base.exec(`CREATE SCHEMA IF NOT EXISTS ${targetSchema}`);
-      await base.exec(`SET search_path TO ${targetSchema}`);
-    }
+    await ensureSchema();
     for (const stmt of schema.statements('postgres')) await base.exec(stmt);
   }
 
@@ -119,11 +122,26 @@ function create({ connectionString, schema: schemaName } = {}) {
     }
   }
 
+  async function tableExists(name) {
+    const r = await base.get(
+      `SELECT 1 AS ok FROM information_schema.tables
+       WHERE table_name = ? AND table_schema = COALESCE(?, current_schema())`,
+      [name, targetSchema]);
+    return !!r;
+  }
+  async function columns(name) {
+    const rows = await base.all(
+      `SELECT column_name FROM information_schema.columns
+       WHERE table_name = ? AND table_schema = COALESCE(?, current_schema())`,
+      [name, targetSchema]);
+    return rows.map(r => r.column_name);
+  }
+
   async function close() { await pool.end(); }
 
   return {
     dialect: 'postgres', describe: `Postgres (${safeUrl})`, schema: targetSchema,
-    ...base, transaction, migrate, resetSequences, dropSchema, close, pool,
+    ...base, transaction, migrate, ensureSchema, resetSequences, dropSchema, close, pool, tableExists, columns,
   };
 }
 

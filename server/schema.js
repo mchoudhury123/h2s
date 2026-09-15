@@ -11,29 +11,49 @@
 // Dates and timestamps are stored as TEXT in both dialects. That keeps
 // 'YYYY-MM-DD' comparisons, sorting and JSON output identical everywhere and
 // avoids any timezone conversion between the database and the application.
+//
+// MULTI-TENANCY. Every operating firm is an "organisation". Every table below
+// except organisations itself carries organisation_id, and every query filters
+// on it. One firm can never see another firm's children, staff or finances.
+
+const ORG = '{{INT}} NOT NULL REFERENCES organisations(id) ON DELETE CASCADE';
 
 const TABLES = [
+  `CREATE TABLE IF NOT EXISTS organisations (
+    id {{PK}},
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT {{NOW}},
+    active {{INT}} NOT NULL DEFAULT 1
+  )`,
   `CREATE TABLE IF NOT EXISTS users (
     id {{PK}},
-    username TEXT UNIQUE NOT NULL,
+    organisation_id ${ORG},
+    email TEXT NOT NULL,
     password_hash TEXT NOT NULL,
     name TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'readonly',
     active {{INT}} NOT NULL DEFAULT 1,
+    last_login TEXT,
     created_at TEXT NOT NULL DEFAULT {{NOW}}
   )`,
+  // An email address identifies one person in one firm, so it is unique across
+  // the whole system rather than within an organisation.
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(LOWER(email))`,
   `CREATE TABLE IF NOT EXISTS settings (
-    key TEXT PRIMARY KEY,
-    value TEXT
+    organisation_id ${ORG},
+    key TEXT NOT NULL,
+    value TEXT,
+    PRIMARY KEY (organisation_id, key)
   )`,
   `CREATE TABLE IF NOT EXISTS councils (
     id {{PK}},
+    organisation_id ${ORG},
     name TEXT NOT NULL,
     contact_name TEXT, phone TEXT, email TEXT, address TEXT, notes TEXT,
     active {{INT}} NOT NULL DEFAULT 1
   )`,
   `CREATE TABLE IF NOT EXISTS schools (
     id {{PK}},
+    organisation_id ${ORG},
     name TEXT NOT NULL,
     address TEXT, postcode TEXT, phone TEXT, contact_name TEXT, email TEXT,
     open_time TEXT, close_time TEXT, notes TEXT,
@@ -41,6 +61,7 @@ const TABLES = [
   )`,
   `CREATE TABLE IF NOT EXISTS staff (
     id {{PK}},
+    organisation_id ${ORG},
     type TEXT NOT NULL CHECK (type IN ('driver','pa')),
     first_name TEXT NOT NULL, last_name TEXT NOT NULL,
     address TEXT, postcode TEXT, phone TEXT, email TEXT,
@@ -54,6 +75,7 @@ const TABLES = [
   )`,
   `CREATE TABLE IF NOT EXISTS vehicles (
     id {{PK}},
+    organisation_id ${ORG},
     driver_id {{INT}} REFERENCES staff(id) ON DELETE SET NULL,
     registration TEXT NOT NULL, make TEXT, model TEXT,
     seats {{INT}}, wheelchair_accessible {{INT}} NOT NULL DEFAULT 0,
@@ -61,7 +83,8 @@ const TABLES = [
   )`,
   `CREATE TABLE IF NOT EXISTS contracts (
     id {{PK}},
-    code TEXT UNIQUE NOT NULL,
+    organisation_id ${ORG},
+    code TEXT NOT NULL,
     name TEXT,
     council_id {{INT}} REFERENCES councils(id) ON DELETE SET NULL,
     council_ref TEXT,
@@ -84,8 +107,11 @@ const TABLES = [
     notes TEXT,
     created_at TEXT NOT NULL DEFAULT {{NOW}}
   )`,
+  // A contract code only has to be unique inside the firm that uses it.
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_contracts_code ON contracts(organisation_id, code)`,
   `CREATE TABLE IF NOT EXISTS children (
     id {{PK}},
+    organisation_id ${ORG},
     first_name TEXT NOT NULL, last_name TEXT NOT NULL,
     dob TEXT, photo TEXT,
     address TEXT, postcode TEXT,
@@ -104,6 +130,7 @@ const TABLES = [
   )`,
   `CREATE TABLE IF NOT EXISTS documents (
     id {{PK}},
+    organisation_id ${ORG},
     entity_type TEXT NOT NULL CHECK (entity_type IN ('child','staff','contract','vehicle','school')),
     entity_id {{INT}} NOT NULL,
     doc_type TEXT NOT NULL,
@@ -118,6 +145,7 @@ const TABLES = [
   )`,
   `CREATE TABLE IF NOT EXISTS exceptions (
     id {{PK}},
+    organisation_id ${ORG},
     date TEXT NOT NULL,
     type TEXT NOT NULL CHECK (type IN ('child_absence','staff_absence','school_closed','contract_cancelled','journey_cancelled','pay_override','note')),
     leg TEXT NOT NULL DEFAULT 'DAY' CHECK (leg IN ('AM','PM','DAY')),
@@ -136,6 +164,7 @@ const TABLES = [
   )`,
   `CREATE TABLE IF NOT EXISTS payments (
     id {{PK}},
+    organisation_id ${ORG},
     staff_id {{INT}} NOT NULL REFERENCES staff(id) ON DELETE CASCADE,
     work_date TEXT NOT NULL,
     paid_date TEXT NOT NULL DEFAULT {{TODAY}},
@@ -149,6 +178,7 @@ const TABLES = [
   )`,
   `CREATE TABLE IF NOT EXISTS payroll_runs (
     id {{PK}},
+    organisation_id ${ORG},
     from_date TEXT NOT NULL, to_date TEXT NOT NULL,
     description TEXT,
     total {{REAL}} NOT NULL DEFAULT 0,
@@ -158,6 +188,7 @@ const TABLES = [
   )`,
   `CREATE TABLE IF NOT EXISTS payroll_run_lines (
     id {{PK}},
+    organisation_id ${ORG},
     payroll_run_id {{INT}} NOT NULL REFERENCES payroll_runs(id) ON DELETE CASCADE,
     staff_id {{INT}} NOT NULL REFERENCES staff(id) ON DELETE CASCADE,
     amount {{REAL}} NOT NULL,
@@ -165,6 +196,7 @@ const TABLES = [
   )`,
   `CREATE TABLE IF NOT EXISTS expenses (
     id {{PK}},
+    organisation_id ${ORG},
     date TEXT NOT NULL,
     contract_id {{INT}} REFERENCES contracts(id) ON DELETE SET NULL,
     category TEXT NOT NULL,
@@ -175,6 +207,7 @@ const TABLES = [
   )`,
   `CREATE TABLE IF NOT EXISTS audit_log (
     id {{PK}},
+    organisation_id ${ORG},
     user_name TEXT,
     entity_type TEXT NOT NULL,
     entity_id {{INT}},
@@ -187,13 +220,16 @@ const TABLES = [
 ];
 
 const INDEXES = [
-  `CREATE INDEX IF NOT EXISTS idx_documents_entity ON documents(entity_type, entity_id)`,
-  `CREATE INDEX IF NOT EXISTS idx_exceptions_date ON exceptions(date)`,
+  `CREATE INDEX IF NOT EXISTS idx_documents_entity ON documents(organisation_id, entity_type, entity_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_exceptions_date ON exceptions(organisation_id, date)`,
   `CREATE INDEX IF NOT EXISTS idx_exceptions_contract ON exceptions(contract_id, date)`,
   `CREATE INDEX IF NOT EXISTS idx_payments_staff ON payments(staff_id, work_date)`,
-  `CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(entity_type, entity_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(organisation_id, entity_type, entity_id)`,
   `CREATE INDEX IF NOT EXISTS idx_children_contract ON children(contract_id)`,
-  `CREATE INDEX IF NOT EXISTS idx_children_school ON children(school_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_children_org ON children(organisation_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_contracts_org ON contracts(organisation_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_staff_org ON staff(organisation_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_schools_org ON schools(organisation_id)`,
   `CREATE INDEX IF NOT EXISTS idx_contracts_school ON contracts(school_id)`,
   `CREATE INDEX IF NOT EXISTS idx_contracts_driver ON contracts(driver_id)`,
   `CREATE INDEX IF NOT EXISTS idx_contracts_pa ON contracts(pa_id)`,
@@ -225,10 +261,14 @@ function statements(dialect) {
 }
 
 // Order matters for deletes and for copying rows between databases.
-const TABLE_ORDER = ['settings', 'users', 'councils', 'schools', 'staff', 'vehicles', 'contracts',
-  'children', 'documents', 'exceptions', 'payroll_runs', 'payments', 'payroll_run_lines', 'expenses', 'audit_log'];
+const TABLE_ORDER = ['organisations', 'settings', 'users', 'councils', 'schools', 'staff', 'vehicles',
+  'contracts', 'children', 'documents', 'exceptions', 'payroll_runs', 'payments', 'payroll_run_lines',
+  'expenses', 'audit_log'];
+
+// Every table holding one firm's data. Each must be filtered by organisation_id.
+const TENANT_TABLES = TABLE_ORDER.filter(t => t !== 'organisations');
 
 // Tables whose id comes from a sequence that must be resynchronised after a bulk copy.
 const SEQUENCE_TABLES = TABLE_ORDER.filter(t => t !== 'settings');
 
-module.exports = { statements, TABLE_ORDER, SEQUENCE_TABLES, DIALECTS };
+module.exports = { statements, TABLE_ORDER, TENANT_TABLES, SEQUENCE_TABLES, DIALECTS };

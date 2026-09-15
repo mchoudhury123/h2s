@@ -1,46 +1,106 @@
 /* app shell: sign-in, layout, navigation, universal search, routing table */
 'use strict';
 
-/* ---------- sign in ---------- */
-App.renderLogin = function (message) {
+/* ---------- sign in and registration ---------- */
+App.renderAuth = function (mode, message, prefill) {
   const root = document.getElementById('root');
-  const err = h('div', { class: 'login-err', hidden: !message }, message || '');
-  const user = h('input', { type: 'text', name: 'username', required: true, autocomplete: 'username', autofocus: true });
-  const pass = h('input', { type: 'password', name: 'password', required: true, autocomplete: 'current-password' });
-  const btn = h('button', { class: 'btn primary', type: 'submit' }, 'Sign in');
-  const form = h('form', { onsubmit: async e => {
-    e.preventDefault();
-    btn.disabled = true; btn.textContent = 'Signing in…';
-    try {
-      const r = await api.post('/api/login', { username: user.value, password: pass.value });
-      App.state.user = r.user; App.state.roles = r.roles;
-      await App.loadMe();
-      App.renderShell();
-      if (!location.hash || location.hash === '#/login') location.hash = '#/';
-      Router.handle();
-    } catch (ex) {
-      err.textContent = ex.message; err.hidden = false;
-      btn.disabled = false; btn.textContent = 'Sign in'; pass.value = ''; pass.focus();
-    }
-  } },
-    err,
-    h('div', { class: 'field' }, h('label', 'Username'), user),
-    h('div', { class: 'field' }, h('label', 'Password'), pass),
-    btn);
+  let tab = mode || 'signin';
 
-  root.innerHTML = '';
-  root.appendChild(h('div', { class: 'login-page' },
-    h('div', { class: 'login-card' },
-      h('h1', '🚐 Transport CRM'),
-      h('div', { class: 'sub' }, 'Home-to-school transport management'),
-      form,
-      h('div', { class: 'login-hint' },
-        h('strong', 'Demo accounts'), h('br'),
-        'admin / admin123 — full access', h('br'),
-        'manager / manager123 — operations and finance', h('br'),
-        'ops / ops123 — operations, no financial data', h('br'),
-        'finance / finance123 — wages and profitability', h('br'),
-        'viewer / viewer123 — read only'))));
+  const render = () => {
+    const err = h('div', { class: 'login-err', hidden: true });
+    const showError = msg => { err.textContent = msg; err.hidden = false; };
+
+    const card = h('div', { class: 'login-card' },
+      h('div', { class: 'login-brand' }, h('span', { class: 'login-logo' }, '🚐'),
+        h('div', null,
+          h('h1', 'Transport CRM'),
+          h('div', { class: 'sub' }, 'Home-to-school transport management'))),
+      h('div', { class: 'auth-tabs' },
+        h('button', { class: tab === 'signin' ? 'on' : '', onclick: () => { tab = 'signin'; render(); } }, 'Sign in'),
+        h('button', { class: tab === 'register' ? 'on' : '', onclick: () => { tab = 'register'; render(); } }, 'Create an account')),
+      err,
+      tab === 'signin' ? signInForm(showError) : registerForm(showError));
+
+    root.innerHTML = '';
+    root.appendChild(h('div', { class: 'login-page' }, card));
+    if (message) { showError(message); message = null; }
+    const first = card.querySelector('input');
+    if (first) setTimeout(() => first.focus(), 40);
+  };
+
+  function signInForm(showError) {
+    const email = h('input', { type: 'email', name: 'email', required: true, autocomplete: 'username',
+      value: (prefill && prefill.email) || '', placeholder: 'you@yourbusiness.co.uk' });
+    const pass = h('input', { type: 'password', name: 'password', required: true, autocomplete: 'current-password' });
+    const btn = h('button', { class: 'btn primary', type: 'submit' }, 'Sign in');
+    return h('form', {
+      onsubmit: async e => {
+        e.preventDefault();
+        btn.disabled = true; btn.textContent = 'Signing in…';
+        try {
+          await api.post('/api/login', { email: email.value, password: pass.value });
+          await App.enter();
+        } catch (ex) {
+          showError(ex.message);
+          btn.disabled = false; btn.textContent = 'Sign in';
+          pass.value = ''; pass.focus();
+        }
+      },
+    },
+      h('div', { class: 'field' }, h('label', 'Email address'), email),
+      h('div', { class: 'field' }, h('label', 'Password'), pass),
+      btn,
+      h('p', { class: 'auth-switch' }, 'New here? ',
+        h('a', { href: '#', onclick: e => { e.preventDefault(); tab = 'register'; render(); } }, 'Create an account for your business')));
+  }
+
+  function registerForm(showError) {
+    const business = h('input', { type: 'text', name: 'business_name', required: true, placeholder: 'e.g. Northgate Transport Ltd' });
+    const name = h('input', { type: 'text', name: 'name', placeholder: 'Your name' });
+    const email = h('input', { type: 'email', name: 'email', required: true, autocomplete: 'username', placeholder: 'you@yourbusiness.co.uk' });
+    const pass = h('input', { type: 'password', name: 'password', required: true, autocomplete: 'new-password' });
+    const confirm = h('input', { type: 'password', name: 'confirm', required: true, autocomplete: 'new-password' });
+    const btn = h('button', { class: 'btn primary', type: 'submit' }, 'Create account');
+    return h('form', {
+      onsubmit: async e => {
+        e.preventDefault();
+        if (pass.value !== confirm.value) { showError('The two passwords do not match'); confirm.focus(); return; }
+        btn.disabled = true; btn.textContent = 'Creating…';
+        try {
+          await api.post('/api/register', {
+            business_name: business.value, name: name.value, email: email.value, password: pass.value,
+          });
+          await App.enter();
+          toast('Welcome. Your business is set up and ready to use.', 'ok');
+        } catch (ex) {
+          showError(ex.message);
+          btn.disabled = false; btn.textContent = 'Create account';
+        }
+      },
+    },
+      h('div', { class: 'field' }, h('label', 'Business name'), business,
+        h('div', { class: 'help' }, 'The operating firm this account belongs to.')),
+      h('div', { class: 'field' }, h('label', 'Your name'), name),
+      h('div', { class: 'field' }, h('label', 'Email address'), email),
+      h('div', { class: 'field' }, h('label', 'Password'), pass,
+        h('div', { class: 'help' }, 'At least 8 characters, including a letter and a number.')),
+      h('div', { class: 'field' }, h('label', 'Confirm password'), confirm),
+      btn,
+      h('p', { class: 'auth-note' },
+        'Your records are private to your business. No other firm using this system can see your children, staff or finances.'));
+  }
+
+  render();
+};
+
+App.renderLogin = function (message) { App.renderAuth('signin', message); };
+
+/** Loads the signed-in context and shows the application. */
+App.enter = async function () {
+  await App.loadMe();
+  App.renderShell();
+  if (!location.hash || location.hash === '#/login') location.hash = '#/';
+  Router.handle();
 };
 
 App.signedOut = function () {
@@ -51,8 +111,7 @@ App.signedOut = function () {
 App.loadMe = async function () {
   const me = await api.get('/api/me');
   App.state.user = me.user;
-  App.state.permissions = me.permissions;
-  App.state.roles = me.roles;
+  App.state.organisation = me.organisation;
   App.state.settings = me.settings;
   App.state.docTypes = me.doc_types;
   return me;
@@ -62,32 +121,32 @@ App.loadMe = async function () {
 const NAV = [
   { group: 'Operations', items: [
     { path: '/', label: 'Dashboard', icon: '▦' },
-    { path: '/calendar', label: 'Calendar', icon: '▤', perm: 'view' },
-    { path: '/day/today', label: 'Today', icon: '◉', perm: 'view' },
+    { path: '/calendar', label: 'Calendar', icon: '▤' },
+    { path: '/day/today', label: 'Today', icon: '◉' },
   ] },
   { group: 'Records', items: [
-    { path: '/contracts', label: 'Contracts', icon: '📋', perm: 'view' },
-    { path: '/children', label: 'Children', icon: '🧒', perm: 'view' },
-    { path: '/staff/list/driver', label: 'Drivers', icon: '🚐', perm: 'view' },
-    { path: '/staff/list/pa', label: 'Passenger assistants', icon: '🧑‍🤝‍🧑', perm: 'view' },
-    { path: '/schools', label: 'Schools', icon: '🏫', perm: 'view' },
-    { path: '/councils', label: 'Councils', icon: '🏛', perm: 'view' },
-    { path: '/vehicles', label: 'Vehicles', icon: '🚙', perm: 'view' },
+    { path: '/contracts', label: 'Contracts', icon: '📋' },
+    { path: '/children', label: 'Children', icon: '🧒' },
+    { path: '/staff/list/driver', label: 'Drivers', icon: '🚐' },
+    { path: '/staff/list/pa', label: 'Passenger assistants', icon: '🧑‍🤝‍🧑' },
+    { path: '/schools', label: 'Schools', icon: '🏫' },
+    { path: '/councils', label: 'Councils', icon: '🏛' },
+    { path: '/vehicles', label: 'Vehicles', icon: '🚙' },
   ] },
   { group: 'Staffing', items: [
-    { path: '/pool', label: 'Staff pool', icon: '🔍', perm: 'view' },
-    { path: '/compliance', label: 'Compliance', icon: '🚦', perm: 'view', countKey: 'compliance' },
+    { path: '/pool', label: 'Staff pool', icon: '🔍' },
+    { path: '/compliance', label: 'Compliance', icon: '🚦', countKey: 'compliance' },
   ] },
   { group: 'Money', items: [
-    { path: '/wages', label: 'Wages', icon: '💷', perm: 'wages' },
-    { path: '/payroll', label: 'Payroll history', icon: '🧾', perm: 'wages' },
-    { path: '/finance', label: 'Profitability', icon: '📈', perm: 'finance' },
-    { path: '/expenses', label: 'Expenses', icon: '🧮', perm: 'finance' },
+    { path: '/wages', label: 'Wages', icon: '💷' },
+    { path: '/payroll', label: 'Payroll history', icon: '🧾' },
+    { path: '/finance', label: 'Profitability', icon: '📈' },
+    { path: '/expenses', label: 'Expenses', icon: '🧮' },
   ] },
   { group: 'Admin', items: [
-    { path: '/reports', label: 'Reports', icon: '📑', perm: 'reports' },
-    { path: '/audit', label: 'Audit log', icon: '🕓', perm: 'audit' },
-    { path: '/settings', label: 'Settings', icon: '⚙', perm: 'view' },
+    { path: '/reports', label: 'Reports', icon: '📑' },
+    { path: '/audit', label: 'Audit log', icon: '🕓' },
+    { path: '/settings', label: 'Settings', icon: '⚙' },
   ] },
 ];
 
@@ -101,7 +160,7 @@ App.renderShell = function () {
     h('nav', { class: 'nav', id: 'nav' }),
     h('div', { class: 'userbox' },
       h('div', { class: 'who' }, u.name),
-      h('div', { class: 'role' }, (App.state.roles[u.role] || {}).label || u.role),
+      h('div', { class: 'role' }, App.state.settings.company_name || u.organisation_name),
       h('div', { class: 'acts' },
         h('a', { href: '#', onclick: e => { e.preventDefault(); App.toggleTheme(); } }, 'Theme'),
         h('a', { href: '#', onclick: async e => { e.preventDefault(); await api.post('/api/logout'); App.state.user = null; App.renderLogin('You have been signed out.'); } }, 'Sign out'))));
@@ -113,7 +172,7 @@ App.renderShell = function () {
     h('div', { class: 'searchwrap' },
       h('span', { class: 'sicon' }, '🔍'), searchInput, h('kbd', '/'), resultsBox),
     h('a', { class: 'btn', href: '#/calendar' }, 'Calendar'),
-    App.can('calendar') ? h('button', { class: 'btn primary', onclick: () => App.quickException() }, '+ Exception') : null);
+    h('button', { class: 'btn primary', onclick: () => App.quickException() }, '+ Exception'));
 
   root.innerHTML = '';
   root.appendChild(h('div', { id: 'app' }, sidebar,
@@ -128,8 +187,7 @@ App.buildNav = function (counts) {
   if (!nav) return;
   nav.innerHTML = '';
   for (const g of NAV) {
-    const items = g.items.filter(i => !i.perm || App.can(i.perm));
-    if (!items.length) continue;
+    const items = g.items;
     const grp = h('div', { class: 'nav-group' }, h('div', { class: 'nav-title' }, g.group));
     for (const i of items) {
       const href = i.path === '/day/today' ? '#/day/' + D.today() : '#' + i.path;
@@ -258,12 +316,6 @@ Router.on('/settings', App.views.settings);
 /* ---------- boot ---------- */
 (async function boot() {
   try { const t = localStorage.getItem('h2s-theme'); if (t) document.documentElement.setAttribute('data-theme', t); } catch (e) {}
-  try {
-    await App.loadMe();
-    App.renderShell();
-    if (!location.hash) location.hash = '#/';
-    Router.handle();
-  } catch (e) {
-    App.renderLogin();
-  }
+  try { await App.enter(); }
+  catch (e) { App.renderAuth('signin'); }
 })();

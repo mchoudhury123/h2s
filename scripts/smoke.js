@@ -29,8 +29,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await page.waitForSelector('.login-card', { timeout: 25000 });
   await shot('01-login');
 
-  await page.type('input[name=username]', process.env.USER_NAME || 'admin');
-  await page.type('input[name=password]', process.env.USER_PASS || 'admin123');
+  await page.type('input[name=email]', process.env.USER_EMAIL || 'demo@northgate-transport.example');
+  await page.type('input[name=password]', process.env.USER_PASS || 'demo1234');
   await Promise.all([page.click('button[type=submit]'), page.waitForSelector('#app', { timeout: 25000 })]);
   await page.waitForSelector('.stats', { timeout: 25000 });
   await sleep(500);
@@ -65,8 +65,23 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     await check(route);
   }
 
-  // detail pages
-  await page.goto(BASE + '/#/contracts/1', { waitUntil: 'networkidle2' });
+  // Detail pages: ids are discovered from the real lists rather than assumed,
+  // because they differ between installations.
+  const ids = await page.evaluate(async () => {
+    const one = async (path, pick) => {
+      const rows = await (await fetch(path)).json();
+      return Array.isArray(rows) && rows.length ? (pick ? pick(rows) : rows[0]).id : null;
+    };
+    return {
+      contract: await one('/api/contracts', r => r.find(x => x.child_count > 0) || r[0]),
+      child: await one('/api/children'),
+      driver: await one('/api/staff?type=driver'),
+      school: await one('/api/schools'),
+    };
+  });
+  for (const [k, v] of Object.entries(ids)) if (!v) errors.push(`no ${k} found to open`);
+
+  await page.goto(BASE + '/#/contracts/' + ids.contract, { waitUntil: 'networkidle2' });
   await page.waitForSelector('.tabs', { timeout: 20000 }); await sleep(300); await shot('20-contract-detail'); await check('contract detail');
   for (const t of ['Children', 'Financials', 'Recent exceptions', 'Documents', 'History']) {
     const clicked = await page.evaluate(label => { const b = [...document.querySelectorAll('.tabs button')].find(x => x.textContent.startsWith(label)); if (b) { b.click(); return true; } return false; }, t);
@@ -74,7 +89,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   }
   await shot('21-contract-children');
 
-  await page.goto(BASE + '/#/children/1', { waitUntil: 'networkidle2' });
+  await page.goto(BASE + '/#/children/' + ids.child, { waitUntil: 'networkidle2' });
   await page.waitForSelector('.tabs', { timeout: 20000 }); await sleep(300); await shot('22-child-detail'); await check('child detail');
   for (const t of ['Needs', 'Absence', 'Documents', 'History']) {
     await page.evaluate(label => { const b = [...document.querySelectorAll('.tabs button')].find(x => x.textContent.startsWith(label)); if (b) b.click(); }, t);
@@ -82,7 +97,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   }
   await shot('23-child-needs');
 
-  await page.goto(BASE + '/#/staff/1', { waitUntil: 'networkidle2' });
+  await page.goto(BASE + '/#/staff/' + ids.driver, { waitUntil: 'networkidle2' });
   await page.waitForSelector('.tabs', { timeout: 20000 }); await sleep(300); await shot('24-driver-detail'); await check('driver detail');
   for (const t of ['Compliance', 'Profile', 'Documents', 'Absence']) {
     await page.evaluate(label => { const b = [...document.querySelectorAll('.tabs button')].find(x => x.textContent.startsWith(label)); if (b) b.click(); }, t);
@@ -90,14 +105,27 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   }
   await shot('25-driver-compliance');
 
-  await page.goto(BASE + '/#/schools/1', { waitUntil: 'networkidle2' });
+  await page.goto(BASE + '/#/schools/' + ids.school, { waitUntil: 'networkidle2' });
   await page.waitForSelector('.tabs', { timeout: 20000 }); await sleep(300); await shot('26-school-detail'); await check('school detail');
 
   // universal search
   await page.goto(BASE + '/#/', { waitUntil: 'networkidle2' });
+  // Let the dashboard finish before typing, then allow one retry: the search box
+  // debounces, and a remote database makes the first request slower.
+  await page.waitForSelector('.stats', { timeout: 25000 });
   await page.waitForSelector('#usearch');
+  await sleep(400);
   await page.type('#usearch', 'thornhill');
-  await page.waitForSelector('#sresults .item', { timeout: 20000 });
+  try {
+    await page.waitForSelector('#sresults .item', { timeout: 15000 });
+  } catch (e) {
+    await page.evaluate(() => {
+      const el = document.getElementById('usearch');
+      el.value = 'thornhill';
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await page.waitForSelector('#sresults .item', { timeout: 20000 });
+  }
   await sleep(200); await shot('27-search');
   const groups = await page.$$eval('#sresults .glabel', els => els.map(e => e.textContent));
   if (!groups.length) errors.push('SEARCH returned no groups');
@@ -130,7 +158,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await page.waitForSelector('.stats'); await sleep(400); await shot('30-mobile-dashboard');
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 2);
   if (overflow) errors.push('MOBILE: dashboard scrolls horizontally');
-  await page.goto(BASE + '/#/children/1', { waitUntil: 'networkidle2' });
+  await page.goto(BASE + '/#/children/' + ids.child, { waitUntil: 'networkidle2' });
   await page.waitForSelector('.tabs'); await sleep(400); await shot('31-mobile-child');
 
   await browser.close();

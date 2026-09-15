@@ -48,11 +48,21 @@ function create({ file } = {}) {
   }
 
   async function resetSequences() { /* AUTOINCREMENT needs no resynchronisation */ }
+
+  async function tableExists(name) {
+    const r = await get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", [name]);
+    return !!r;
+  }
+  async function columns(name) {
+    const rows = await all(`PRAGMA table_info(${name})`);
+    return rows.map(r => r.name);
+  }
   async function close() { db.close(); }
 
   return {
     dialect: 'sqlite', describe: `SQLite (${dbPath})`, path: dbPath,
     all, get, run, exec, insertReturningId, transaction, migrate, resetSequences, close,
+    tableExists, columns,
   };
 }
 

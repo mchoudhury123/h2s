@@ -531,26 +531,24 @@ App.views.settings = async function () {
 
   const userTable = UI.table([
     { key: 'name', label: 'Name', value: u => h('strong', u.name) },
-    { key: 'username', label: 'Username' },
-    { key: 'role', label: 'Role', value: u => h('span', { class: 'badge blue' }, (App.state.roles[u.role] || {}).label || u.role) },
+    { key: 'email', label: 'Email address' },
     { key: 'active', label: 'Status', value: u => u.active ? h('span', { class: 'badge green' }, 'Active') : h('span', { class: 'badge' }, 'Disabled') },
-    { key: 'created_at', label: 'Created', value: u => fmt.datetime(u.created_at) },
+    { key: 'last_login', label: 'Last signed in', value: u => u.last_login ? fmt.datetime(u.last_login) : 'Never' },
+    { key: 'created_at', label: 'Added', value: u => fmt.datetime(u.created_at) },
     { label: '', sortable: false, value: u => h('div', { class: 'pill-row' },
       h('button', { class: 'btn xs', onclick: () => Fin.userEditor(u) }, 'Edit'),
-      u.id !== App.state.user.id ? h('button', { class: 'btn xs danger', onclick: () => UI.confirm(`Delete the user ${u.username}?`, async () => { await api.del('/api/users/' + u.id); toast('User deleted', 'ok'); Router.handle(); }) }, 'Delete') : null) },
-  ], users, { empty: 'No users' });
-
-  const roleCards = h('div', { class: 'grid cols-3' }, ...Object.entries(App.state.roles).map(([key, r]) =>
-    h('div', { class: 'card' }, h('div', { class: 'card-body' },
-      h('h3', r.label),
-      h('div', { class: 'pill-row', style: 'margin-top:8px' },
-        ...(r.perms.includes('*') ? [h('span', { class: 'badge green' }, 'Full access to everything')]
-          : r.perms.map(p => h('span', { class: 'badge' }, PERM_LABEL[p] || p))))))));
+      u.id !== App.state.user.id
+        ? h('button', { class: 'btn xs danger', onclick: () => UI.confirm(
+            `Remove ${u.email} from ${App.state.settings.company_name || 'your business'}? They will no longer be able to sign in.`,
+            async () => { await api.del('/api/users/' + u.id); toast('Account removed', 'ok'); Router.handle(); })
+          }, 'Remove')
+        : h('span', { class: 'badge blue' }, 'You')) },
+  ], users, { empty: 'No accounts' });
 
   return h('div', null,
-    UI.pageHead('Settings', 'System configuration, compliance rules and user access'),
+    UI.pageHead('Settings', 'Your business, compliance rules and the people who can sign in'),
     UI.tabs([
-      { id: 'general', label: 'General', render: () => UI.card('System settings', h('div', null, form, h('div', { style: 'margin-top:14px' }, saveBtn))) },
+      { id: 'general', label: 'Business', render: () => UI.card('Your business', h('div', null, form, h('div', { style: 'margin-top:14px' }, saveBtn))) },
       { id: 'compliance', label: 'Required documents', render: () => h('div', { class: 'grid cols-2' },
         UI.card('Required for drivers', h('div', null,
           h('p', { style: 'color:var(--text-dim);font-size:13px;margin:0 0 10px' }, 'A driver is green only when every selected document is present and in date.'),
@@ -558,31 +556,33 @@ App.views.settings = async function () {
         UI.card('Required for PAs', h('div', null,
           h('p', { style: 'color:var(--text-dim);font-size:13px;margin:0 0 10px' }, 'Click to add or remove a required document.'),
           docPicker('required_docs_pa', s.all_doc_types.staff, s.required_docs_pa)))) },
-      ...(App.can('*') ? [
-        { id: 'users', label: 'Users', count: users.length, render: () => UI.cardTight('User accounts', userTable,
-          h('button', { class: 'btn sm primary', onclick: () => Fin.userEditor(null) }, '+ New user')) },
-        { id: 'roles', label: 'Roles & permissions', render: () => h('div', null,
-          h('p', { style: 'color:var(--text-dim)' }, 'Roles are fixed. Assign a role to each user on the Users tab.'), roleCards) },
-      ] : []),
+      { id: 'users', label: 'Who can sign in', count: users.length, render: () => h('div', null,
+        UI.cardTight('Accounts for ' + (App.state.settings.company_name || 'your business'), userTable,
+          h('button', { class: 'btn sm primary', onclick: () => Fin.userEditor(null) }, '+ Add someone')),
+        h('p', { style: 'color:var(--text-dim);font-size:13px;margin-top:12px' },
+          'Everyone here has full access to this business and nothing outside it. ',
+          'No other firm using this system can see your records.')) },
     ]));
 };
-const PERM_LABEL = { view: 'View records', edit: 'Create and edit records', calendar: 'Record journey exceptions', finance: 'Financial data and profitability', wages: 'Wage calculation and payroll', reports: 'Run reports', documents: 'Upload documents', audit: 'View audit log' };
 
 Fin.userEditor = function (u) {
   UI.editor({
-    title: u ? 'Edit ' + u.name : 'New user', width: '',
+    title: u ? 'Edit ' + u.name : 'Add someone to your team', width: '',
     fields: [
       { name: 'name', label: 'Full name', required: true, span: 'full' },
-      ...(u ? [] : [{ name: 'username', label: 'Username', required: true }]),
-      { name: 'password', label: u ? 'New password (leave blank to keep)' : 'Password', type: 'password', required: !u, help: 'Minimum 6 characters.' },
-      { name: 'role', label: 'Role', type: 'select', required: true, placeholder: false, options: Object.entries(App.state.roles).map(([v, r]) => ({ value: v, label: r.label })) },
-      ...(u ? [{ name: 'active', label: 'Account active', type: 'checkbox', span: 'full' }] : []),
+      ...(u ? [] : [{ name: 'email', label: 'Email address', type: 'email', required: true, span: 'full',
+        help: 'They sign in with this address.' }]),
+      { name: 'password', label: u ? 'New password (leave blank to keep the current one)' : 'Password',
+        type: 'password', required: !u, span: 'full',
+        help: 'At least 8 characters, including a letter and a number.' },
+      ...(u ? [{ name: 'active', label: 'This account can sign in', type: 'checkbox', span: 'full' }] : []),
     ],
-    values: u || { role: 'operations' },
+    values: u || {},
     onSave: async v => {
       if (u) { if (!v.password) delete v.password; await api.put('/api/users/' + u.id, v); }
       else await api.post('/api/users', v);
-      toast('User saved', 'ok'); Router.handle();
+      toast(u ? 'Account updated' : 'Account created', 'ok');
+      Router.handle();
     },
   });
 };

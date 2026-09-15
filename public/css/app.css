@@ -310,8 +310,21 @@ table.cal td.off { background: repeating-linear-gradient(45deg, transparent, tra
 
 .login-page { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
 .login-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow-lg); padding: 28px; width: 100%; max-width: 390px; }
-.login-card h1 { margin-bottom: 4px; }
-.login-card .sub { color: var(--text-dim); font-size: 13px; margin-bottom: 20px; }
+.login-card h1 { margin-bottom: 2px; font-size: 19px; }
+.login-card .sub { color: var(--text-dim); font-size: 13px; }
+.login-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+.login-logo { font-size: 30px; line-height: 1; }
+.auth-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 18px; }
+.auth-tabs button {
+  flex: 1; background: none; border: 0; border-bottom: 2px solid transparent; padding: 9px 6px;
+  font-weight: 600; font-size: 13.5px; color: var(--text-dim); cursor: pointer;
+}
+.auth-tabs button.on { color: var(--brand); border-bottom-color: var(--brand); }
+.auth-switch { font-size: 12.5px; color: var(--text-dim); margin: 14px 0 0; text-align: center; }
+.auth-note {
+  font-size: 12px; color: var(--text-dim); margin: 14px 0 0; padding-top: 12px;
+  border-top: 1px solid var(--border); line-height: 1.5;
+}
 .login-card .field { margin-bottom: 13px; }
 .login-card .btn { width: 100%; justify-content: center; padding: 10px; }
 .login-err { background: var(--red-bg); color: var(--red); padding: 8px 11px; border-radius: 6px; font-size: 13px; margin-bottom: 13px; }

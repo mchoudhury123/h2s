@@ -9,9 +9,10 @@
     "db:check": "node --experimental-sqlite --no-warnings scripts/db-check.js",
     "db:push": "node --experimental-sqlite --no-warnings scripts/db-push.js",
     "test": "node --experimental-sqlite --no-warnings scripts/test-rules.js",
-    "test:browser": "node --no-warnings scripts/smoke.js",
-    "test:roles": "node --no-warnings scripts/check-roles.js",
-    "test:workflow": "node --no-warnings scripts/check-workflow.js"
+    "test:isolation": "node --experimental-sqlite --no-warnings scripts/test-isolation.js",
+    "test:auth": "node --experimental-sqlite --no-warnings scripts/check-auth.js",
+    "test:browser": "node --experimental-sqlite --no-warnings scripts/smoke.js",
+    "test:workflow": "node --experimental-sqlite --no-warnings scripts/check-workflow.js"
   },
   "engines": {
     "node": ">=22.5"

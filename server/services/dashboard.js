@@ -1,26 +1,29 @@
 'use strict';
-// Dashboard figures and operational alerts. Every figure carries a drill-down link.
+// Dashboard figures and operational alerts for one operating firm.
+// Every figure carries a drill-down link.
 const { all, get } = require('../db');
 const cal = require('./calendar');
 const compliance = require('./compliance');
 const finance = require('./finance');
 
-async function dashboard(date) {
+async function dashboard(orgId, date) {
+  if (!orgId) throw new Error('An organisation id is required');
   const today = date || cal.today();
 
   // One query for all the headline counts, rather than eight round trips.
   const counts = await get(`SELECT
-      (SELECT COUNT(*) FROM contracts WHERE status = 'active') AS contracts,
-      (SELECT COUNT(*) FROM children WHERE status = 'active') AS children,
-      (SELECT COUNT(*) FROM staff WHERE type = 'driver' AND status = 'active') AS drivers,
-      (SELECT COUNT(*) FROM staff WHERE type = 'pa' AND status = 'active') AS pas,
-      (SELECT COUNT(*) FROM staff WHERE type = 'driver' AND status = 'pool') AS pool_drivers,
-      (SELECT COUNT(*) FROM staff WHERE type = 'pa' AND status = 'pool') AS pool_pas,
-      (SELECT COUNT(DISTINCT school_id) FROM contracts WHERE status = 'active' AND school_id IS NOT NULL) AS schools,
-      (SELECT COUNT(DISTINCT council_id) FROM contracts WHERE status = 'active' AND council_id IS NOT NULL) AS councils`);
+      (SELECT COUNT(*) FROM contracts WHERE organisation_id = ? AND status = 'active') AS contracts,
+      (SELECT COUNT(*) FROM children  WHERE organisation_id = ? AND status = 'active') AS children,
+      (SELECT COUNT(*) FROM staff     WHERE organisation_id = ? AND type = 'driver' AND status = 'active') AS drivers,
+      (SELECT COUNT(*) FROM staff     WHERE organisation_id = ? AND type = 'pa' AND status = 'active') AS pas,
+      (SELECT COUNT(*) FROM staff     WHERE organisation_id = ? AND type = 'driver' AND status = 'pool') AS pool_drivers,
+      (SELECT COUNT(*) FROM staff     WHERE organisation_id = ? AND type = 'pa' AND status = 'pool') AS pool_pas,
+      (SELECT COUNT(DISTINCT school_id)  FROM contracts WHERE organisation_id = ? AND status = 'active' AND school_id IS NOT NULL) AS schools,
+      (SELECT COUNT(DISTINCT council_id) FROM contracts WHERE organisation_id = ? AND status = 'active' AND council_id IS NOT NULL) AS councils`,
+    Array(8).fill(orgId));
   for (const k of Object.keys(counts)) counts[k] = Number(counts[k]);
 
-  const day = await cal.dayOverview(today);
+  const day = await cal.dayOverview(orgId, today);
   const operatingToday = day.items.length;
   const absencesToday = [];
   const coversToday = [];
@@ -37,16 +40,20 @@ async function dashboard(date) {
   // Staffing gaps. Pending contracts count too: they need staffing before their start date.
   const noDriver = await all(`SELECT c.id, c.code, c.name, c.status, c.start_date, s.name AS school_name
     FROM contracts c LEFT JOIN schools s ON s.id = c.school_id
-    WHERE c.status IN ('active','pending') AND c.driver_id IS NULL ORDER BY c.status, c.code`);
+    WHERE c.organisation_id = ? AND c.status IN ('active','pending') AND c.driver_id IS NULL
+    ORDER BY c.status, c.code`, [orgId]);
   const noPa = await all(`SELECT c.id, c.code, c.name, c.status, c.start_date, s.name AS school_name
     FROM contracts c LEFT JOIN schools s ON s.id = c.school_id
-    WHERE c.status IN ('active','pending') AND c.requires_pa = 1 AND c.pa_id IS NULL ORDER BY c.status, c.code`);
+    WHERE c.organisation_id = ? AND c.status IN ('active','pending') AND c.requires_pa = 1 AND c.pa_id IS NULL
+    ORDER BY c.status, c.code`, [orgId]);
   const noVehicle = await all(`SELECT c.id, c.code, c.status FROM contracts c
-    WHERE c.status = 'active' AND c.vehicle_id IS NULL ORDER BY c.code`);
+    WHERE c.organisation_id = ? AND c.status = 'active' AND c.vehicle_id IS NULL ORDER BY c.code`, [orgId]);
 
   // Compliance, batched into two queries for the whole workforce.
-  const activeStaff = await all("SELECT id, type, first_name, last_name, status FROM staff WHERE status IN ('active','pool')");
-  const complianceMap = await compliance.complianceForMany(activeStaff);
+  const activeStaff = await all(
+    "SELECT id, type, first_name, last_name, status FROM staff WHERE organisation_id = ? AND status IN ('active','pool')",
+    [orgId]);
+  const complianceMap = await compliance.complianceForMany(orgId, activeStaff);
   const statuses = { green: [], amber: [], red: [] };
   for (const s of activeStaff) {
     const c = complianceMap.get(s.id);
@@ -55,20 +62,21 @@ async function dashboard(date) {
       problems: c.items.filter(i => i.status !== 'green').map(i => `${i.doc_type}: ${i.reason}`),
     });
   }
-  const expiring = await compliance.expiringDocuments(undefined, true);
+  const expiring = await compliance.expiringDocuments(orgId, undefined, true);
 
   const soon = cal.addDays(today, 60);
   const endingSoon = await all(`SELECT id, code, name, end_date FROM contracts
-    WHERE status = 'active' AND end_date IS NOT NULL AND end_date <= ? AND end_date >= ? ORDER BY end_date`, [soon, today]);
+    WHERE organisation_id = ? AND status = 'active' AND end_date IS NOT NULL AND end_date <= ? AND end_date >= ?
+    ORDER BY end_date`, [orgId, soon, today]);
 
   // Finances for today, this week and this month.
   const weekStart = cal.addDays(today, -((cal.dow(today) + 6) % 7));
   const weekEnd = cal.addDays(weekStart, 6);
   const monthStart = today.slice(0, 8) + '01';
   const monthEnd = cal.addDays(nextMonth(monthStart), -1);
-  const daily = await finance.expectedDaily(today);
-  const week = (await finance.profitability({ from: weekStart, to: weekEnd })).totals;
-  const month = (await finance.profitability({ from: monthStart, to: monthEnd })).totals;
+  const daily = await finance.expectedDaily(orgId, today);
+  const week = (await finance.profitability(orgId, { from: weekStart, to: weekEnd })).totals;
+  const month = (await finance.profitability(orgId, { from: monthStart, to: monthEnd })).totals;
 
   const alerts = [];
   for (const c of noDriver) alerts.push({ level: c.status === 'active' ? 'red' : 'amber', category: 'Staffing', text: `${c.code} has no driver assigned${c.status === 'pending' ? ` (starts ${c.start_date ? compliance.ukDate(c.start_date) : 'soon'})` : ''}`, href: `#/contracts/${c.id}` });

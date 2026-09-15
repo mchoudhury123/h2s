@@ -24,34 +24,40 @@ function contractOperatesOn(c, date) {
   return days.includes(dow(date));
 }
 
-async function loadContracts(where = '', params = []) {
+async function loadContracts(orgId, where = '', params = []) {
+  requireOrg(orgId);
   return all(`SELECT c.*, s.name AS school_name, s.postcode AS school_postcode, cl.name AS council_name,
       d.first_name || ' ' || d.last_name AS driver_name, p.first_name || ' ' || p.last_name AS pa_name
     FROM contracts c
     LEFT JOIN schools s ON s.id = c.school_id
     LEFT JOIN councils cl ON cl.id = c.council_id
     LEFT JOIN staff d ON d.id = c.driver_id
-    LEFT JOIN staff p ON p.id = c.pa_id ${where} ORDER BY c.code`, params);
+    LEFT JOIN staff p ON p.id = c.pa_id
+    WHERE c.organisation_id = ? ${where} ORDER BY c.code`, [orgId, ...params]);
 }
 
-async function loadChildrenByContract(contractIds) {
+async function loadChildrenByContract(orgId, contractIds) {
+  requireOrg(orgId);
   const list = inClause(contractIds);
   if (!list) return {};
-  const rows = await all(`SELECT id, first_name, last_name, contract_id, wheelchair, status FROM children WHERE status='active' AND contract_id IN (${list}) ORDER BY last_name, first_name`, contractIds);
+  const rows = await all(`SELECT id, first_name, last_name, contract_id, wheelchair, status
+    FROM children WHERE organisation_id = ? AND status = 'active' AND contract_id IN (${list})
+    ORDER BY last_name, first_name`, [orgId, ...contractIds]);
   const map = {};
   for (const r of rows) { (map[r.contract_id] ||= []).push({ ...r, name: `${r.first_name} ${r.last_name}` }); }
   return map;
 }
 
-async function loadExceptions(from, to, contractIds = null) {
+async function loadExceptions(orgId, from, to, contractIds = null) {
+  requireOrg(orgId);
   let sql = `SELECT e.*, cs.first_name || ' ' || cs.last_name AS cover_name, ch.first_name || ' ' || ch.last_name AS child_name,
       st.first_name || ' ' || st.last_name AS staff_name
     FROM exceptions e
     LEFT JOIN staff cs ON cs.id = e.cover_staff_id
     LEFT JOIN staff st ON st.id = e.staff_id
     LEFT JOIN children ch ON ch.id = e.child_id
-    WHERE e.date >= ? AND e.date <= ?`;
-  const params = [from, to];
+    WHERE e.organisation_id = ? AND e.date >= ? AND e.date <= ?`;
+  const params = [orgId, from, to];
   const list = inClause(contractIds);
   if (list) {
     sql += ` AND (e.contract_id IN (${list}) OR e.contract_id IS NULL)`;
@@ -62,6 +68,7 @@ async function loadExceptions(from, to, contractIds = null) {
 }
 
 function legCovered(exLeg, leg) { return exLeg === 'DAY' || exLeg === leg; }
+function requireOrg(orgId) { if (!orgId) throw new Error('An organisation id is required'); }
 
 /**
  * Evaluate one contract on one date. Returns the expected-vs-actual picture for both legs
@@ -166,15 +173,16 @@ function summarise(r) {
 function round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
 
 /** Build the calendar grid for a date range. */
-async function buildCalendar(from, to, filter = {}) {
-  let where = " WHERE c.status IN ('active','suspended')";
+async function buildCalendar(orgId, from, to, filter = {}) {
+  requireOrg(orgId);
+  let where = " AND c.status IN ('active','suspended')";
   const params = [];
   if (filter.contract_id) { where += ' AND c.id = ?'; params.push(filter.contract_id); }
   if (filter.school_id) { where += ' AND c.school_id = ?'; params.push(filter.school_id); }
   if (filter.staff_id) { where += ' AND (c.driver_id = ? OR c.pa_id = ?)'; params.push(filter.staff_id, filter.staff_id); }
-  const contracts = await loadContracts(where, params);
-  const childMap = await loadChildrenByContract(contracts.map(c => c.id));
-  const exceptions = await loadExceptions(from, to);
+  const contracts = await loadContracts(orgId, where, params);
+  const childMap = await loadChildrenByContract(orgId, contracts.map(c => c.id));
+  const exceptions = await loadExceptions(orgId, from, to);
   const dates = dateRange(from, to);
   const rows = [];
   for (const c of contracts) {
@@ -199,9 +207,9 @@ async function buildCalendar(from, to, filter = {}) {
     const coverContractIds = [...new Set(exceptions.filter(e => e.cover_staff_id === filter.staff_id && e.contract_id).map(e => e.contract_id))];
     for (const cid of coverContractIds) {
       if (rows.some(r => r.contract.id === cid)) continue;
-      const c = (await loadContracts(' WHERE c.id = ?', [cid]))[0];
+      const c = (await loadContracts(orgId, ' AND c.id = ?', [cid]))[0];
       if (!c) continue;
-      const extra = childMap[c.id] || (await loadChildrenByContract([c.id]))[c.id] || [];
+      const extra = childMap[c.id] || (await loadChildrenByContract(orgId, [c.id]))[c.id] || [];
       const days = {};
       for (const d of dates) days[d] = contractOperatesOn(c, d) ? evaluateContractDay(c, d, extra, exceptions) : null;
       rows.push({ contract: c, children: childMap[c.id] || [], days, cover_only: true });
@@ -211,8 +219,8 @@ async function buildCalendar(from, to, filter = {}) {
 }
 
 /** Everything happening on one date (used by dashboard + day view). */
-async function dayOverview(date) {
-  const cal = await buildCalendar(date, date);
+async function dayOverview(orgId, date) {
+  const cal = await buildCalendar(orgId, date, date);
   const items = cal.rows.map(r => r.days[date]).filter(Boolean);
   return { date, items, contracts: cal.rows.map(r => r.contract) };
 }

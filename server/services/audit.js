@@ -9,13 +9,13 @@ const LABELS = {
 };
 
 function logChange(user, entityType, entityId, entityLabel, field, oldValue, newValue, summary) {
-  return run(`INSERT INTO audit_log (user_name, entity_type, entity_id, entity_label, action, field, old_value, new_value, summary)
-       VALUES (?,?,?,?,?,?,?,?,?)`,
-    [user ? user.name : 'system', entityType, entityId, entityLabel || null, 'update', field, str(oldValue), str(newValue), summary || null]);
+  return run(`INSERT INTO audit_log (organisation_id, user_name, entity_type, entity_id, entity_label, action, field, old_value, new_value, summary)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`,
+    [orgOf(user), user ? user.name : 'system', entityType, entityId, entityLabel || null, 'update', field, str(oldValue), str(newValue), summary || null]);
 }
 function logAction(user, entityType, entityId, entityLabel, action, summary) {
-  return run(`INSERT INTO audit_log (user_name, entity_type, entity_id, entity_label, action, summary) VALUES (?,?,?,?,?,?)`,
-    [user ? user.name : 'system', entityType, entityId, entityLabel || null, action, summary || null]);
+  return run(`INSERT INTO audit_log (organisation_id, user_name, entity_type, entity_id, entity_label, action, summary) VALUES (?,?,?,?,?,?,?)`,
+    [orgOf(user), user ? user.name : 'system', entityType, entityId, entityLabel || null, action, summary || null]);
 }
 /** Diff an existing row against an incoming patch and log each changed field. */
 async function logDiff(user, entityType, entityId, entityLabel, before, patch, columns, resolve) {
@@ -31,13 +31,19 @@ async function logDiff(user, entityType, entityId, entityLabel, before, patch, c
   }
 }
 function str(v) { return v === null || v === undefined ? null : String(v); }
-
-function history(entityType, entityId, limit = 100) {
-  return all('SELECT * FROM audit_log WHERE entity_type = ? AND entity_id = ? ORDER BY id DESC LIMIT ?', [entityType, entityId, limit]);
+function orgOf(user) {
+  if (!user || !user.organisation_id) throw new Error('Cannot write an audit entry without an organisation');
+  return user.organisation_id;
 }
-function recent(filters = {}, limit = 200) {
-  let sql = 'SELECT * FROM audit_log WHERE 1=1';
-  const p = [];
+
+function history(orgId, entityType, entityId, limit = 100) {
+  return all('SELECT * FROM audit_log WHERE organisation_id = ? AND entity_type = ? AND entity_id = ? ORDER BY id DESC LIMIT ?',
+    [orgId, entityType, entityId, limit]);
+}
+function recent(orgId, filters = {}, limit = 200) {
+  if (!orgId) throw new Error('An organisation id is required');
+  let sql = 'SELECT * FROM audit_log WHERE organisation_id = ?';
+  const p = [orgId];
   if (filters.entity_type) { sql += ' AND entity_type = ?'; p.push(filters.entity_type); }
   if (filters.user) { sql += ' AND LOWER(user_name) LIKE ?'; p.push('%' + String(filters.user).toLowerCase() + '%'); }
   if (filters.from) { sql += ' AND created_at >= ?'; p.push(filters.from); }

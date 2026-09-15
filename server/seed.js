@@ -1,5 +1,10 @@
 'use strict';
-// Demo data. Run: npm run seed  (add --reset to wipe first)
+// Demo data for one example operating firm.
+//   npm run seed              adds the demo business if it is not already there
+//   npm run seed -- --reset   removes the demo business first, leaving other firms alone
+//
+// This only ever touches the demo organisation. Real businesses that have
+// registered through the sign-up screen are never modified.
 const database = require('./db');
 const { run, get, all, insert, setSetting } = database;
 const auth = require('./services/auth');
@@ -10,36 +15,38 @@ const TODAY = cal.today();
 
 function d(offset) { return cal.addDays(TODAY, offset); }
 
-async function main() {
-  await database.migrate();
+const DEMO_NAME = 'Northgate Home-to-School Transport';
+const DEMO_EMAIL = 'demo@northgate-transport.example';
 
-  if (RESET) {
-    // Reverse dependency order so foreign keys stay satisfied.
-    const order = ['payroll_run_lines', 'payroll_runs', 'payments', 'exceptions', 'expenses',
-      'documents', 'audit_log', 'children', 'contracts', 'vehicles', 'staff', 'schools', 'councils', 'users', 'settings'];
-    for (const t of order) {
-      try { await run(`DELETE FROM ${t}`); } catch (e) { console.warn('skip', t, e.message); }
-    }
-    if (database.dialect === 'sqlite') { try { await run('DELETE FROM sqlite_sequence'); } catch (_) {} }
-    await database.resetSequences();
-    console.log('Cleared existing data.');
+async function main() {
+  await database.migrate(m => console.log(m));
+
+  const existing = await get('SELECT id FROM organisations WHERE name = ?', [DEMO_NAME]);
+  if (existing && !RESET) {
+    console.log(`The demo business "${DEMO_NAME}" already exists (id ${existing.id}).`);
+    console.log('Run with --reset to rebuild it. Other businesses are never touched.');
+    return;
+  }
+  if (existing) {
+    // Deleting the organisation cascades to every record that belongs to it.
+    await run('DELETE FROM organisations WHERE id = ?', [existing.id]);
+    console.log(`Removed the previous demo business (id ${existing.id}).`);
   }
 
-  await setSetting('amber_days', '30');
-  await setSetting('company_name', 'Northgate Home-to-School Transport');
+  const orgId = await database.driver.insertReturningId('INSERT INTO organisations (name) VALUES (?)', [DEMO_NAME]);
+  console.log(`Created demo business "${DEMO_NAME}" (id ${orgId}).`);
 
-  // ---- users ----
-  const users = [
-    ['admin', 'admin123', 'System Administrator', 'admin'],
-    ['manager', 'manager123', 'Dawn Whitfield', 'manager'],
-    ['ops', 'ops123', 'Rachel Okafor', 'operations'],
-    ['finance', 'finance123', 'Paul Bianchi', 'finance'],
-    ['viewer', 'viewer123', 'Sam Reade', 'readonly'],
-  ];
-  for (const [u, p, n, r] of users) {
-    if (!(await get('SELECT id FROM users WHERE username = ?', [u]))) {
-      await run('INSERT INTO users (username, password_hash, name, role) VALUES (?,?,?,?)', [u, auth.hash(p), n, r]);
-    }
+  await setSetting(orgId, 'amber_days', '30');
+  await setSetting(orgId, 'company_name', DEMO_NAME);
+
+  // ---- sign-in accounts for the demo business ----
+  // Everyone who can sign in administers their own firm, so these are equals.
+  for (const [email, password, name] of [
+    [DEMO_EMAIL, 'demo1234', 'Dawn Whitfield'],
+    ['rachel@northgate-transport.example', 'demo1234', 'Rachel Okafor'],
+  ]) {
+    await insert('users', { email, password_hash: auth.hash(password), name },
+      ['email', 'password_hash', 'name'], null, orgId);
   }
 
   // ---- councils ----
@@ -48,7 +55,7 @@ async function main() {
     { name: 'Sunderland City Council', contact_name: 'Helen Marsh', phone: '0191 520 5555', email: 'transport@sunderland.gov.uk', address: 'Civic Centre, Burdon Road, Sunderland' },
     { name: 'Durham County Council', contact_name: 'Ian Pallister', phone: '03000 260 000', email: 'sentransport@durham.gov.uk', address: 'County Hall, Durham' },
     { name: 'Newcastle City Council', contact_name: 'Bev Turnbull', phone: '0191 278 7878', email: 'schooltransport@newcastle.gov.uk', address: 'Civic Centre, Barras Bridge, Newcastle' },
-  ]) councils[c.name] = await insert('councils', c, ['name', 'contact_name', 'phone', 'email', 'address']);
+  ]) councils[c.name] = await insert('councils', c, ['name', 'contact_name', 'phone', 'email', 'address'], null, orgId);
 
   // ---- schools ----
   const schools = {};
@@ -58,7 +65,7 @@ async function main() {
     { name: 'Portland Academy', address: 'Weymouth Road, Sunderland', postcode: 'SR3 4AF', phone: '0191 553 6000', contact_name: 'Lisa Moran', email: 'office@portlandacademy.org', open_time: '09:00', close_time: '15:10', notes: 'Wheelchair access via rear gate only.' },
     { name: 'Elemore Hall School', address: 'Pittington, Durham', postcode: 'DH6 1QD', phone: '0191 372 0275', contact_name: 'Tom Ridley', email: 'elemorehall@durhamlearning.net', open_time: '09:15', close_time: '15:20' },
     { name: 'Hadrian School', address: 'Bertram Crescent, Newcastle', postcode: 'NE15 6PY', phone: '0191 273 4440', contact_name: 'Angela Frost', email: 'admin@hadrian.newcastle.sch.uk', open_time: '09:00', close_time: '15:00' },
-  ]) schools[s.name] = await insert('schools', s, ['name', 'address', 'postcode', 'phone', 'contact_name', 'email', 'open_time', 'close_time', 'notes']);
+  ]) schools[s.name] = await insert('schools', s, ['name', 'address', 'postcode', 'phone', 'contact_name', 'email', 'open_time', 'close_time', 'notes'], null, orgId);
 
   // ---- staff ----
   const staff = {};
@@ -79,8 +86,8 @@ async function main() {
     { first_name: 'Tracy', last_name: 'Hoban', postcode: 'SR5 2LL', address: '30 Southwick Road, Sunderland', phone: '07700 900850', email: 't.hoban@example.com', default_day_rate: 35, status: 'pool', availability: 'Available for cover at short notice', preferred_areas: 'Sunderland north' },
     { first_name: 'Michael', last_name: 'Arturo', postcode: 'SR2 7BB', address: '15 Mowbray Road, Sunderland', phone: '07700 900860', email: 'm.arturo@example.com', default_day_rate: 37, status: 'pool', availability: 'PM journeys only', preferred_areas: 'Sunderland central' },
   ];
-  for (const s of drivers) staff[`${s.first_name} ${s.last_name}`] = await insert('staff', { ...s, type: 'driver' }, ['type', 'first_name', 'last_name', 'address', 'postcode', 'phone', 'email', 'emergency_contact_name', 'emergency_contact_phone', 'status', 'licensing_authority', 'badge_number', 'dbs_number', 'default_day_rate', 'availability', 'preferred_areas', 'start_date', 'notes']);
-  for (const s of pas) staff[`${s.first_name} ${s.last_name}`] = await insert('staff', { ...s, type: 'pa' }, ['type', 'first_name', 'last_name', 'address', 'postcode', 'phone', 'email', 'emergency_contact_name', 'emergency_contact_phone', 'status', 'licensing_authority', 'badge_number', 'dbs_number', 'default_day_rate', 'availability', 'preferred_areas', 'start_date', 'notes']);
+  for (const s of drivers) staff[`${s.first_name} ${s.last_name}`] = await insert('staff', { ...s, type: 'driver' }, ['type', 'first_name', 'last_name', 'address', 'postcode', 'phone', 'email', 'emergency_contact_name', 'emergency_contact_phone', 'status', 'licensing_authority', 'badge_number', 'dbs_number', 'default_day_rate', 'availability', 'preferred_areas', 'start_date', 'notes'], null, orgId);
+  for (const s of pas) staff[`${s.first_name} ${s.last_name}`] = await insert('staff', { ...s, type: 'pa' }, ['type', 'first_name', 'last_name', 'address', 'postcode', 'phone', 'email', 'emergency_contact_name', 'emergency_contact_phone', 'status', 'licensing_authority', 'badge_number', 'dbs_number', 'default_day_rate', 'availability', 'preferred_areas', 'start_date', 'notes'], null, orgId);
 
   // ---- vehicles ----
   const vehicles = {};
@@ -92,7 +99,7 @@ async function main() {
     { driver: 'Susan Blakey', registration: 'NE23 TYU', make: 'Volkswagen', model: 'Caravelle', seats: 7, wheelchair_accessible: 0, colour: 'Black' },
     { driver: 'Ray Chesterton', registration: 'SR68 MNB', make: 'Renault', model: 'Trafic', seats: 8, wheelchair_accessible: 0, colour: 'White' },
     { driver: 'Priya Raman', registration: 'NL23 QWE', make: 'Ford', model: 'Tourneo Connect', seats: 5, wheelchair_accessible: 1, colour: 'Red' },
-  ]) vehicles[v.registration] = await insert('vehicles', { ...v, driver_id: staff[v.driver] }, ['driver_id', 'registration', 'make', 'model', 'seats', 'wheelchair_accessible', 'colour']);
+  ]) vehicles[v.registration] = await insert('vehicles', { ...v, driver_id: staff[v.driver] }, ['driver_id', 'registration', 'make', 'model', 'seats', 'wheelchair_accessible', 'colour'], null, orgId);
 
   // ---- contracts ----
   const contracts = {};
@@ -115,7 +122,7 @@ async function main() {
       route_info: c.route_info, income_per_day: c.income_per_day, income_basis: 'per_journey',
       driver_pay_per_day: c.driver_pay_per_day, pa_pay_per_day: c.pa_pay_per_day, pay_basis: 'per_journey',
       other_costs_per_day: c.other_costs_per_day, notes: c.notes,
-    }, ['code', 'name', 'council_id', 'council_ref', 'school_id', 'driver_id', 'pa_id', 'vehicle_id', 'requires_pa', 'status', 'start_date', 'end_date', 'days_of_week', 'am_pickup_time', 'am_arrival_time', 'pm_finish_time', 'pm_dropoff_time', 'route_info', 'income_per_day', 'income_basis', 'driver_pay_per_day', 'pa_pay_per_day', 'pay_basis', 'other_costs_per_day', 'notes']);
+    }, ['code', 'name', 'council_id', 'council_ref', 'school_id', 'driver_id', 'pa_id', 'vehicle_id', 'requires_pa', 'status', 'start_date', 'end_date', 'days_of_week', 'am_pickup_time', 'am_arrival_time', 'pm_finish_time', 'pm_dropoff_time', 'route_info', 'income_per_day', 'income_basis', 'driver_pay_per_day', 'pa_pay_per_day', 'pay_basis', 'other_costs_per_day', 'notes'], null, orgId);
   }
 
   // ---- children ----
@@ -135,9 +142,9 @@ async function main() {
   ];
   for (const c of childDefs) {
     const contractId = contracts[c.contract];
-    const schoolId = await get('SELECT school_id FROM contracts WHERE id = ?', [contractId]).school_id;
+    const schoolId = (await get('SELECT school_id FROM contracts WHERE organisation_id = ? AND id = ?', [orgId, contractId])).school_id;
     await insert('children', { ...c, contract_id: contractId, school_id: schoolId, status: 'active' },
-      ['first_name', 'last_name', 'dob', 'address', 'postcode', 'parent_name', 'parent_phone', 'emergency_contact_name', 'emergency_contact_phone', 'school_id', 'contract_id', 'council_ref', 'pickup_time', 'arrival_time', 'finish_time', 'dropoff_time', 'medical_info', 'sen_needs', 'conditions', 'mobility', 'wheelchair', 'behaviour', 'communication', 'allergies', 'safeguarding_info', 'risk_info', 'notes', 'status']);
+      ['first_name', 'last_name', 'dob', 'address', 'postcode', 'parent_name', 'parent_phone', 'emergency_contact_name', 'emergency_contact_phone', 'school_id', 'contract_id', 'council_ref', 'pickup_time', 'arrival_time', 'finish_time', 'dropoff_time', 'medical_info', 'sen_needs', 'conditions', 'mobility', 'wheelchair', 'behaviour', 'communication', 'allergies', 'safeguarding_info', 'risk_info', 'notes', 'status'], null, orgId);
   }
 
   // ---- documents (drives the traffic lights: some green, some amber, some red) ----
@@ -184,7 +191,7 @@ async function main() {
       entity_type: entityType, entity_id: entityId, doc_type: docType,
       issue_date: cal.addDays(expiry, -365), expiry_date: expiry, status: 'valid', uploaded_by: 'Seed data',
       notes: 'Demo record - no file attached',
-    }, ['entity_type', 'entity_id', 'doc_type', 'issue_date', 'expiry_date', 'status', 'uploaded_by', 'notes']);
+    }, ['entity_type', 'entity_id', 'doc_type', 'issue_date', 'expiry_date', 'status', 'uploaded_by', 'notes'], null, orgId);
   }
   // Aisha Bello is missing PA Training entirely -> amber/red via "missing"
 
@@ -208,27 +215,28 @@ async function main() {
   ex.push({ date: TODAY, type: 'staff_absence', leg: 'DAY', contract_id: contracts['HADRIAN 1'], role: 'pa', staff_id: staff['Aisha Bello'], cover_staff_id: null, note: 'Aisha off sick - cover still required' });
 
   for (const e of ex) {
-    const id = await insert('exceptions', { ...e, created_by: 'Seed data' }, ['date', 'type', 'leg', 'contract_id', 'school_id', 'child_id', 'role', 'staff_id', 'cover_staff_id', 'cover_pay', 'paid_immediately', 'amount', 'note', 'created_by']);
+    const id = await insert('exceptions', { ...e, created_by: 'Seed data' }, ['date', 'type', 'leg', 'contract_id', 'school_id', 'child_id', 'role', 'staff_id', 'cover_staff_id', 'cover_pay', 'paid_immediately', 'amount', 'note', 'created_by'], null, orgId);
     if (e.paid_immediately && e.cover_staff_id) {
       await insert('payments', { staff_id: e.cover_staff_id, work_date: e.date, paid_date: e.date, amount: e.cover_pay, source: 'cover_immediate', exception_id: id, note: 'Cover paid immediately', created_by: 'Seed data' },
-        ['staff_id', 'work_date', 'paid_date', 'amount', 'source', 'exception_id', 'note', 'created_by']);
+        ['staff_id', 'work_date', 'paid_date', 'amount', 'source', 'exception_id', 'note', 'created_by'], null, orgId);
     }
   }
 
   // ---- a couple of ad-hoc expenses ----
-  await insert('expenses', { date: lastWeekday(4), contract_id: contracts['ELEMORE 1'], category: 'Fuel', amount: 48.5, description: 'Additional fuel - diversion via Hetton', created_by: 'Seed data' }, ['date', 'contract_id', 'category', 'amount', 'description', 'created_by']);
-  await insert('expenses', { date: lastWeekday(9), contract_id: contracts['PORTLAND 1'], category: 'Vehicle repair', amount: 165, description: 'Wheelchair ramp hinge replacement', created_by: 'Seed data' }, ['date', 'contract_id', 'category', 'amount', 'description', 'created_by']);
+  await insert('expenses', { date: lastWeekday(4), contract_id: contracts['ELEMORE 1'], category: 'Fuel', amount: 48.5, description: 'Additional fuel - diversion via Hetton', created_by: 'Seed data' }, ['date', 'contract_id', 'category', 'amount', 'description', 'created_by'], null, orgId);
+  await insert('expenses', { date: lastWeekday(9), contract_id: contracts['PORTLAND 1'], category: 'Vehicle repair', amount: 165, description: 'Wheelchair ramp hinge replacement', created_by: 'Seed data' }, ['date', 'contract_id', 'category', 'amount', 'description', 'created_by'], null, orgId);
 
   const summary = await get(`SELECT
-      (SELECT COUNT(*) FROM councils) AS councils,
-      (SELECT COUNT(*) FROM schools) AS schools,
-      (SELECT COUNT(*) FROM staff) AS staff,
-      (SELECT COUNT(*) FROM contracts) AS contracts,
-      (SELECT COUNT(*) FROM children) AS children,
-      (SELECT COUNT(*) FROM documents) AS documents,
-      (SELECT COUNT(*) FROM exceptions) AS exceptions`);
+      (SELECT COUNT(*) FROM councils  WHERE organisation_id = ?) AS councils,
+      (SELECT COUNT(*) FROM schools   WHERE organisation_id = ?) AS schools,
+      (SELECT COUNT(*) FROM staff     WHERE organisation_id = ?) AS staff,
+      (SELECT COUNT(*) FROM contracts WHERE organisation_id = ?) AS contracts,
+      (SELECT COUNT(*) FROM children  WHERE organisation_id = ?) AS children,
+      (SELECT COUNT(*) FROM documents WHERE organisation_id = ?) AS documents,
+      (SELECT COUNT(*) FROM exceptions WHERE organisation_id = ?) AS exceptions`, Array(7).fill(orgId));
 
-  console.log('Seed complete on ' + database.describe);
+  console.log('');
+  console.log('Demo business seeded on ' + database.describe);
   console.log('  Councils  :', Number(summary.councils));
   console.log('  Schools   :', Number(summary.schools));
   console.log('  Staff     :', Number(summary.staff));
@@ -236,7 +244,12 @@ async function main() {
   console.log('  Children  :', Number(summary.children));
   console.log('  Documents :', Number(summary.documents));
   console.log('  Exceptions:', Number(summary.exceptions));
-  console.log('\nSign in with: admin / admin123   (also manager/manager123, ops/ops123, finance/finance123, viewer/viewer123)');
+  const total = Number((await get('SELECT COUNT(*) AS n FROM organisations')).n);
+  console.log('');
+  console.log('Sign in at http://localhost:4000 with:');
+  console.log('  ' + DEMO_EMAIL + '  /  demo1234');
+  console.log('');
+  console.log(total + (total === 1 ? ' business' : ' businesses') + ' registered in total. Each sees only its own records.');
 }
 
 main()

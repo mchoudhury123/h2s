@@ -4,7 +4,6 @@ const path = require('path');
 const H = require('./http');
 const auth = require('./services/auth');
 const routes = require('./routes');
-const { getSetting } = require('./db');
 
 const db = require('./db');
 
@@ -50,7 +49,7 @@ function parseCookies(header) {
 
 async function start() {
   try {
-    await db.migrate();
+    await db.migrate(msg => console.log('  ' + msg));
   } catch (e) {
     console.error(`\n  Could not prepare the database.`);
     console.error(`  ${db.describe}`);
@@ -61,14 +60,13 @@ async function start() {
     }
     process.exit(1);
   }
-  if (await auth.ensureSeedAdmin()) {
-    console.log('Created default administrator account: admin / admin123  (change this on first sign-in)');
-  }
-  const name = await getSetting('company_name', 'Home-to-School Transport');
+  const orgs = Number((await db.get('SELECT COUNT(*) AS n FROM organisations')).n);
   server.listen(PORT, () => {
-    console.log(`\n  ${name} CRM`);
+    console.log(`\n  Home-to-School Transport CRM`);
     console.log(`  Database: ${db.describe}`);
+    console.log(`  ${orgs} ${orgs === 1 ? 'business' : 'businesses'} registered`);
     console.log(`  Running at http://localhost:${PORT}\n`);
+    if (!orgs) console.log('  No businesses yet. Open that address and choose "Create an account".\n');
   });
 }
 
