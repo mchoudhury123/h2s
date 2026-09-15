@@ -29,6 +29,20 @@ npm run seed
 
 That creates "Northgate Home-to-School Transport" with twelve children, seven contracts and thirteen staff. Sign in as `demo@northgate-transport.example` with the password `demo1234`. It never touches any real business that has registered.
 
+### Filling your own business with demo data
+
+To show the system to colleagues using your own account rather than the sample one:
+
+```
+npm run demo -- --list                        see the businesses on this system
+npm run demo -- "Your Business Name"          fill that one with demo data
+npm run demo -- "Your Business Name" --replace   clear its records first
+```
+
+It builds a Tyne and Wear operation: four councils, nine special schools, twelve routes, twenty-seven children, seventeen drivers and passenger assistants, a fortnight of absences and cover, and documents set up so the compliance lights show green, amber and red together.
+
+It only ever touches the business you name. Without `--replace` it keeps what you have already entered and works around it, so a driver you added yourself is given a vehicle and a route. With `--replace` it clears that business's records first, so use it only on a business you are happy to empty. Sign-in accounts are never removed either way.
+
 ### Businesses and accounts
 
 Every operating firm is separate. Registering creates the firm and its first account in one step.

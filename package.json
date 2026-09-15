@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node --experimental-sqlite --no-warnings server/server.js",
     "seed": "node --experimental-sqlite --no-warnings server/seed.js --reset",
+    "demo": "node --experimental-sqlite --no-warnings scripts/demo-data.js",
     "db:check": "node --experimental-sqlite --no-warnings scripts/db-check.js",
     "db:push": "node --experimental-sqlite --no-warnings scripts/db-push.js",
     "test": "node --experimental-sqlite --no-warnings scripts/test-rules.js",

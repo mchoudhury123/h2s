@@ -206,7 +206,7 @@ Ops.cell = function (day, contract, date, onChange) {
     cell.appendChild(h('div', { class: cls }, h('span', { class: 'lt' }, leg), h('span', { class: 'lx' }, text)));
   }
   const notes = day.exceptions.filter(e => e.type === 'note');
-  if (notes.length) cell.appendChild(h('div', { class: 'cellnote' }, '📝 ' + notes[0].note));
+  if (notes.length) cell.appendChild(h('div', { class: 'cellnote', title: notes.map(n => n.note).join('\n') }, '📝 ' + notes[0].note));
   cell.onclick = () => Ops.dayDialog(contract.id, date, onChange);
   return cell;
 };

@@ -250,9 +250,10 @@ table.cal th.contract-col { z-index: 6; }
 table.cal th.wknd { background: var(--bg); color: var(--text-faint); }
 table.cal th .dn { font-weight: 700; font-size: 12px; } table.cal th .dd { color: var(--text-faint); font-size: 10px; }
 table.cal th.today { background: var(--brand-soft); color: var(--brand); }
-table.cal td { border-bottom: 1px solid var(--border); border-right: 1px solid var(--border); padding: 3px; vertical-align: top; min-width: 96px; }
+/* A long note must not stretch its column, so cell contents are width-capped. */
+table.cal td { border-bottom: 1px solid var(--border); border-right: 1px solid var(--border); padding: 3px; vertical-align: top; min-width: 96px; max-width: 150px; }
 table.cal td.off { background: repeating-linear-gradient(45deg, transparent, transparent 5px, var(--surface-2) 5px, var(--surface-2) 10px); }
-.cell { display: flex; flex-direction: column; gap: 2px; cursor: pointer; border-radius: 5px; padding: 3px; min-height: 42px; }
+.cell { display: flex; flex-direction: column; gap: 2px; cursor: pointer; border-radius: 5px; padding: 3px; min-height: 42px; max-width: 144px; overflow: hidden; }
 .cell:hover { background: var(--brand-soft); outline: 1px solid var(--brand); }
 .leg { display: flex; align-items: center; gap: 4px; font-size: 11px; border-radius: 4px; padding: 1px 4px; background: var(--green-bg); color: var(--green); font-weight: 650; }
 .leg.bad { background: var(--red-bg); color: var(--red); }
@@ -260,7 +261,7 @@ table.cal td.off { background: repeating-linear-gradient(45deg, transparent, tra
 .leg.partial { background: var(--amber-bg); color: var(--amber); }
 .leg .lt { font-weight: 800; font-size: 9.5px; letter-spacing: .04em; opacity: .85; }
 .leg .lx { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cellnote { font-size: 10px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cellnote { font-size: 10px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 138px; }
 .contract-col .cc { font-weight: 650; }
 .contract-col .cs { font-size: 11px; color: var(--text-dim); }
 .contract-col .cm { font-size: 10.5px; color: var(--text-faint); }
