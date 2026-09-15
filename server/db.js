@@ -24,6 +24,7 @@ const transaction = fn => driver.transaction(fn);
 const migrate = () => driver.migrate();
 const resetSequences = () => driver.resetSequences();
 const close = () => driver.close();
+const dropSchema = () => (driver.dropSchema ? driver.dropSchema() : Promise.resolve());
 
 // ---------- settings ----------
 async function getSetting(key, fallback = null) {
@@ -68,6 +69,6 @@ function inClause(values) {
 
 module.exports = {
   dialect, describe: driver.describe, driver,
-  all, get, run, exec, transaction, migrate, resetSequences, close,
+  all, get, run, exec, transaction, migrate, resetSequences, dropSchema, close,
   getSetting, setSetting, insert, update, norm, inClause,
 };

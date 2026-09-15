@@ -39,7 +39,7 @@ function recent(filters = {}, limit = 200) {
   let sql = 'SELECT * FROM audit_log WHERE 1=1';
   const p = [];
   if (filters.entity_type) { sql += ' AND entity_type = ?'; p.push(filters.entity_type); }
-  if (filters.user) { sql += ' AND user_name LIKE ?'; p.push('%' + filters.user + '%'); }
+  if (filters.user) { sql += ' AND LOWER(user_name) LIKE ?'; p.push('%' + String(filters.user).toLowerCase() + '%'); }
   if (filters.from) { sql += ' AND created_at >= ?'; p.push(filters.from); }
   if (filters.to) { sql += ' AND created_at <= ?'; p.push(filters.to + ' 23:59:59'); }
   sql += ' ORDER BY id DESC LIMIT ?'; p.push(limit);

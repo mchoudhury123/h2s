@@ -60,7 +60,11 @@ npm run test:roles    # role restrictions and both themes
 npm run test:workflow # create records through the forms, through to payroll
 ```
 
-The browser suites expect Chrome at the default Windows location and the server already running. `npm test` builds its own throwaway database, so it can be run against either backend.
+The browser suites expect Chrome at the default Windows location and the server already running.
+
+`npm test` never touches live data. On SQLite it builds a temporary file; on Postgres it creates a temporary schema and drops it afterwards, and refuses to run at all if that isolation fails.
+
+`npm run test:workflow` is the exception: it drives the real interface, so it creates records in whatever database the server is pointed at and deletes them again at the end. The other two browser suites only read.
 
 ---
 

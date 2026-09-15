@@ -143,6 +143,7 @@ function crud(name, table, opts = {}) {
     try {
       await transaction(async (tx) => {
         if (docEntity) await deleteDocumentsFor(docEntity, id, tx);
+        if (opts.cascade) await opts.cascade(id, tx);
         await tx.run(`DELETE FROM ${table} WHERE id = ?`, [id]);
       });
     }
@@ -191,7 +192,6 @@ crud('councils', 'councils', {
     row.history = await audit.history('councils', id, 30);
     return row;
   },
-  guard: async row => await get('SELECT COUNT(*) n FROM contracts WHERE council_id = ?', [row.id]).n ? null : null,
 });
 
 // ---------- schools ----------
@@ -265,8 +265,12 @@ crud('staff', 'staff', {
     return row;
   },
   guard: async row => {
-    const n = await get('SELECT COUNT(*) n FROM contracts WHERE (driver_id = ? OR pa_id = ?) AND status = \'active\'', [row.id, row.id]).n;
-    return n ? `Cannot delete: still assigned to ${n} active contract(s). Unassign first or set status to inactive.` : null;
+    const n = Number((await get("SELECT COUNT(*) AS n FROM contracts WHERE (driver_id = ? OR pa_id = ?) AND status = 'active'", [row.id, row.id])).n);
+    return n ? `Cannot delete: still assigned to ${n} active ${n === 1 ? 'contract' : 'contracts'}. Unassign first, or set their status to inactive.` : null;
+  },
+  // Cover already worked stays on record; only the link to the deleted person is cleared.
+  cascade: async (id, tx) => {
+    await tx.run('UPDATE exceptions SET cover_staff_id = NULL WHERE cover_staff_id = ?', [id]);
   },
   resolve: (col, v) => v,
 });
@@ -368,8 +372,13 @@ crud('contracts', 'contracts', {
     return v;
   },
   guard: async row => {
-    const n = await get('SELECT COUNT(*) n FROM children WHERE contract_id = ?', [row.id]).n;
-    return n ? `Cannot delete: ${n} child(ren) are assigned to this contract. Move them first.` : null;
+    const n = Number((await get('SELECT COUNT(*) AS n FROM children WHERE contract_id = ?', [row.id])).n);
+    return n ? `Cannot delete: ${n} ${n === 1 ? 'child is' : 'children are'} assigned to this contract. Move them first.` : null;
+  },
+  // Exceptions cascade with the contract, so payments recorded against them must go
+  // too. Left behind they would keep reducing someone's wages with nothing to explain it.
+  cascade: async (id, tx) => {
+    await tx.run('DELETE FROM payments WHERE exception_id IN (SELECT id FROM exceptions WHERE contract_id = ?)', [id]);
   },
 });
 

@@ -31,9 +31,15 @@ function toPositional(sql) {
   return out;
 }
 
-function create({ connectionString } = {}) {
+function create({ connectionString, schema: schemaName } = {}) {
   const url = connectionString || process.env.DATABASE_URL;
   if (!url) throw new Error('DATABASE_URL is not set. Add it to your .env file.');
+
+  // An alternative schema keeps a test run away from the live tables.
+  const targetSchema = schemaName || process.env.H2S_PG_SCHEMA || null;
+  if (targetSchema && !/^[a-z_][a-z0-9_]*$/.test(targetSchema)) {
+    throw new Error(`Invalid schema name: ${targetSchema}`);
+  }
 
   const pool = new Pool({
     connectionString: url,
@@ -43,10 +49,12 @@ function create({ connectionString } = {}) {
     max: Number(process.env.PGPOOL_MAX || 8),
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 15000,
+    options: targetSchema ? `-c search_path=${targetSchema}` : undefined,
   });
   pool.on('error', err => console.error('Postgres pool error:', err.message));
 
-  const safeUrl = url.replace(/:\/\/([^:]+):[^@]*@/, '://$1:****@');
+  const safeUrl = url.replace(/:\/\/([^:]+):[^@]*@/, '://$1:****@')
+    + (targetSchema ? ` [schema ${targetSchema}]` : '');
 
   const exec_ = async (client, sql, params = []) => {
     try { return await (client || pool).query(toPositional(sql), params); }
@@ -88,7 +96,17 @@ function create({ connectionString } = {}) {
   }
 
   async function migrate() {
+    if (targetSchema) {
+      await base.exec(`CREATE SCHEMA IF NOT EXISTS ${targetSchema}`);
+      await base.exec(`SET search_path TO ${targetSchema}`);
+    }
     for (const stmt of schema.statements('postgres')) await base.exec(stmt);
+  }
+
+  /** Removes an alternative schema entirely. Refuses to touch the default one. */
+  async function dropSchema() {
+    if (!targetSchema || targetSchema === 'public') throw new Error('Refusing to drop the public schema');
+    await base.exec(`DROP SCHEMA IF EXISTS ${targetSchema} CASCADE`);
   }
 
   /** After copying rows with explicit ids, move each identity sequence past the highest id. */
@@ -104,8 +122,8 @@ function create({ connectionString } = {}) {
   async function close() { await pool.end(); }
 
   return {
-    dialect: 'postgres', describe: `Postgres (${safeUrl})`,
-    ...base, transaction, migrate, resetSequences, close, pool,
+    dialect: 'postgres', describe: `Postgres (${safeUrl})`, schema: targetSchema,
+    ...base, transaction, migrate, resetSequences, dropSchema, close, pool,
   };
 }
 

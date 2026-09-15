@@ -1,5 +1,15 @@
-/* Business-rule tests against a throwaway database. Run: npm test */
+/* Business-rule tests against a throwaway database. Run: npm test
+   On SQLite this is a temporary file. On Postgres it is a temporary schema, so a
+   test run can never touch the live tables. Both are removed afterwards. */
+
+// .env must be read before deciding where the test data goes, otherwise
+// DATABASE_URL is still unset here and the isolation below is skipped.
+require('../server/env').load();
+
 process.env.H2S_DB = require('path').join(require('os').tmpdir(), 'h2s-test-' + Date.now() + '.db');
+if (process.env.DATABASE_URL && !process.env.H2S_PG_SCHEMA) {
+  process.env.H2S_PG_SCHEMA = 'h2s_test_' + Date.now();
+}
 
 const database = require('../server/db');
 const { run, get, insert, setSetting } = database;
@@ -9,6 +19,11 @@ const finance = require('../server/services/finance');
 const compliance = require('../server/services/compliance');
 
 async function main() {
+  // Refuse to run if isolation did not take effect, rather than writing
+  // test fixtures into real tables.
+  if (database.dialect === 'postgres' && !database.driver.schema) {
+    throw new Error('Refusing to run: Postgres tests need an isolated schema. Set H2S_PG_SCHEMA.');
+  }
   await database.migrate();
   let pass = 0, fail = 0;
   function is(actual, expected, label) {
@@ -200,6 +215,7 @@ async function main() {
 
 main()
   .then(async fail => {
+    try { await database.dropSchema(); } catch (_) {}
     try { await database.close(); } catch (_) {}
     if (database.dialect === 'sqlite') { try { require('fs').unlinkSync(process.env.H2S_DB); } catch (_) {} }
     process.exit(fail ? 1 : 0);

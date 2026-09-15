@@ -26,13 +26,13 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   };
 
   await page.goto(BASE, { waitUntil: 'networkidle2' });
-  await page.waitForSelector('.login-card', { timeout: 10000 });
+  await page.waitForSelector('.login-card', { timeout: 25000 });
   await shot('01-login');
 
   await page.type('input[name=username]', process.env.USER_NAME || 'admin');
   await page.type('input[name=password]', process.env.USER_PASS || 'admin123');
-  await Promise.all([page.click('button[type=submit]'), page.waitForSelector('#app', { timeout: 10000 })]);
-  await page.waitForSelector('.stats', { timeout: 10000 });
+  await Promise.all([page.click('button[type=submit]'), page.waitForSelector('#app', { timeout: 25000 })]);
+  await page.waitForSelector('.stats', { timeout: 25000 });
   await sleep(500);
   await shot('02-dashboard');
   await check('dashboard');
@@ -58,7 +58,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   ];
   for (const [route, sel, name] of pages) {
     await page.goto(BASE + '/#' + route, { waitUntil: 'networkidle2' });
-    try { await page.waitForSelector(sel, { timeout: 8000 }); }
+    try { await page.waitForSelector(sel, { timeout: 20000 }); }
     catch (e) { errors.push(`TIMEOUT waiting for ${sel} on ${route}`); }
     await sleep(250);
     await shot(name);
@@ -67,7 +67,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
   // detail pages
   await page.goto(BASE + '/#/contracts/1', { waitUntil: 'networkidle2' });
-  await page.waitForSelector('.tabs', { timeout: 8000 }); await sleep(300); await shot('20-contract-detail'); await check('contract detail');
+  await page.waitForSelector('.tabs', { timeout: 20000 }); await sleep(300); await shot('20-contract-detail'); await check('contract detail');
   for (const t of ['Children', 'Financials', 'Recent exceptions', 'Documents', 'History']) {
     const clicked = await page.evaluate(label => { const b = [...document.querySelectorAll('.tabs button')].find(x => x.textContent.startsWith(label)); if (b) { b.click(); return true; } return false; }, t);
     if (clicked) { await sleep(350); await check('contract tab ' + t); }
@@ -75,7 +75,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await shot('21-contract-children');
 
   await page.goto(BASE + '/#/children/1', { waitUntil: 'networkidle2' });
-  await page.waitForSelector('.tabs', { timeout: 8000 }); await sleep(300); await shot('22-child-detail'); await check('child detail');
+  await page.waitForSelector('.tabs', { timeout: 20000 }); await sleep(300); await shot('22-child-detail'); await check('child detail');
   for (const t of ['Needs', 'Absence', 'Documents', 'History']) {
     await page.evaluate(label => { const b = [...document.querySelectorAll('.tabs button')].find(x => x.textContent.startsWith(label)); if (b) b.click(); }, t);
     await sleep(300); await check('child tab ' + t);
@@ -83,7 +83,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await shot('23-child-needs');
 
   await page.goto(BASE + '/#/staff/1', { waitUntil: 'networkidle2' });
-  await page.waitForSelector('.tabs', { timeout: 8000 }); await sleep(300); await shot('24-driver-detail'); await check('driver detail');
+  await page.waitForSelector('.tabs', { timeout: 20000 }); await sleep(300); await shot('24-driver-detail'); await check('driver detail');
   for (const t of ['Compliance', 'Profile', 'Documents', 'Absence']) {
     await page.evaluate(label => { const b = [...document.querySelectorAll('.tabs button')].find(x => x.textContent.startsWith(label)); if (b) b.click(); }, t);
     await sleep(300); await check('driver tab ' + t);
@@ -91,36 +91,36 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await shot('25-driver-compliance');
 
   await page.goto(BASE + '/#/schools/1', { waitUntil: 'networkidle2' });
-  await page.waitForSelector('.tabs', { timeout: 8000 }); await sleep(300); await shot('26-school-detail'); await check('school detail');
+  await page.waitForSelector('.tabs', { timeout: 20000 }); await sleep(300); await shot('26-school-detail'); await check('school detail');
 
   // universal search
   await page.goto(BASE + '/#/', { waitUntil: 'networkidle2' });
   await page.waitForSelector('#usearch');
   await page.type('#usearch', 'thornhill');
-  await page.waitForSelector('#sresults .item', { timeout: 6000 });
+  await page.waitForSelector('#sresults .item', { timeout: 20000 });
   await sleep(200); await shot('27-search');
   const groups = await page.$$eval('#sresults .glabel', els => els.map(e => e.textContent));
   if (!groups.length) errors.push('SEARCH returned no groups');
 
   // exception dialog
   await page.goto(BASE + '/#/calendar', { waitUntil: 'networkidle2' });
-  await page.waitForSelector('.cell', { timeout: 8000 });
-  await sleep(700);
+  await page.waitForSelector('.cell', { timeout: 20000 });
+  await page.waitForFunction(() => document.querySelectorAll('.cell').length > 3, { timeout: 20000 });
+  await sleep(300);
   await page.evaluate(() => document.querySelector('.cell').click());
-  await page.waitForSelector('.modal-bg fieldset', { timeout: 10000 });
+  await page.waitForSelector('.modal-bg fieldset', { timeout: 25000 });
   await sleep(400); await shot('28-exception-dialog');
   const dialogText = await page.$eval('.modal', e => e.textContent);
   if (!/Children/.test(dialogText)) errors.push('EXCEPTION DIALOG missing children section');
 
   // wage breakdown
   await page.goto(BASE + '/#/wages', { waitUntil: 'networkidle2' });
-  await page.waitForSelector('table.tbl tbody tr', { timeout: 8000 });
-  await sleep(300);
-  await sleep(500);
+  await page.waitForSelector('table.tbl tbody tr', { timeout: 25000 });
+  await sleep(600);
   const hasBreakdownBtn = await page.$('table.tbl .btn.primary');
   if (hasBreakdownBtn) {
     await page.evaluate(() => document.querySelector('table.tbl .btn.primary').click());
-    await page.waitForSelector('.breakdown', { timeout: 6000 });
+    await page.waitForSelector('.breakdown', { timeout: 20000 });
     await sleep(300); await shot('29-wage-breakdown');
   } else errors.push('WAGES: no breakdown button found');
 

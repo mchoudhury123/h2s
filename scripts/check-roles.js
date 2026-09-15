@@ -20,11 +20,11 @@ const errors = [];
     page.on('pageerror', e => errors.push(`${label}: PAGEERROR ${e.message}`));
     page.on('console', m => { if (m.type() === 'error' && !/401|403/.test(m.text())) errors.push(`${label}: CONSOLE ${m.text()}`); });
     await page.goto('http://localhost:4000', { waitUntil: 'networkidle2' });
-    await page.waitForSelector('input[name=username]', { timeout: 10000 });
+    await page.waitForSelector('input[name=username]', { timeout: 25000 });
     await page.type('input[name=username]', user);
     await page.type('input[name=password]', pass);
     await Promise.all([page.click('button[type=submit]'), page.waitForSelector('#app')]);
-    await page.waitForSelector('.stats'); await sleep(600);
+    await page.waitForSelector('.stats', { timeout: 25000 }); await sleep(600);
     await page.screenshot({ path: path.join(SHOTS, `role-${label}.png`) });
 
     const nav = await page.$$eval('#nav a', els => els.map(e => e.textContent.trim()));
@@ -34,7 +34,7 @@ const errors = [];
     // money must not leak into the contracts list for operations staff
     if (label === 'operations') {
       await page.goto('http://localhost:4000/#/contracts', { waitUntil: 'networkidle2' });
-      await page.waitForSelector('table.tbl'); await sleep(400);
+      await page.waitForSelector('table.tbl', { timeout: 25000 }); await sleep(400);
       const heads = await page.$$eval('table.tbl th', els => els.map(e => e.textContent));
       if (heads.some(h => /Income|Profit|Margin/i.test(h))) errors.push(`operations: contract list exposes money columns: ${heads.join(', ')}`);
       const body = await page.$eval('table.tbl', e => e.textContent);
@@ -60,17 +60,17 @@ const errors = [];
       const quickException = await page.evaluate(() => [...document.querySelectorAll('.topbar button')].some(b => /Exception/.test(b.textContent)));
       if (quickException) errors.push('readonly: topbar offers the quick-exception button');
       await page.goto('http://localhost:4000/#/children', { waitUntil: 'networkidle2' });
-      await page.waitForSelector('table.tbl'); await sleep(300);
+      await page.waitForSelector('table.tbl', { timeout: 25000 }); await sleep(300);
       const newBtn = await page.evaluate(() => [...document.querySelectorAll('.actions button, .actions a')].some(b => /New|Add/.test(b.textContent)));
       if (newBtn) errors.push('readonly: children list offers a create button');
       await page.goto('http://localhost:4000/#/contracts/1', { waitUntil: 'networkidle2' });
-      await page.waitForSelector('.tabs'); await sleep(300);
+      await page.waitForSelector('.tabs', { timeout: 25000 }); await sleep(300);
       const editBtn = await page.evaluate(() => [...document.querySelectorAll('.actions button')].some(b => /Edit|Record/.test(b.textContent)));
       if (editBtn) errors.push('readonly: contract page offers edit controls');
     }
     if (label === 'finance') {
       await page.goto('http://localhost:4000/#/wages', { waitUntil: 'networkidle2' });
-      await page.waitForSelector('.stats'); await sleep(500);
+      await page.waitForSelector('.stats', { timeout: 25000 }); await sleep(500);
       await page.screenshot({ path: path.join(SHOTS, 'role-finance-wages.png') });
       const txt = await page.$eval('#view', e => e.textContent);
       if (!/Total to pay/.test(txt)) errors.push('finance: wages page missing totals');

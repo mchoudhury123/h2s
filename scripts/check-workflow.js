@@ -1,5 +1,10 @@
 /* End-to-end workflow through the real UI: create records, record an exception,
-   upload a document, check the wage effect, export a report. */
+   upload a document, check the wage effect, export a report.
+
+   This one runs against whatever database the server is using, including a live
+   Supabase one, because it drives the real interface. It creates records with a
+   timestamped name and deletes them again at the end, but it does write. The
+   other suites only read. */
 const puppeteer = require('puppeteer-core');
 const path = require('path');
 const fs = require('fs');
@@ -49,7 +54,7 @@ async function go(page, hash, heading) {
   await page.waitForFunction(t => {
     const hEl = document.querySelector('#view h1');
     return hEl && hEl.textContent.includes(t);
-  }, { timeout: 12000 }, heading);
+  }, { timeout: 25000 }, heading);
   await sleep(350);
 }
 
@@ -65,7 +70,7 @@ async function go(page, hash, heading) {
   await page.type('input[name=username]', 'admin');
   await page.type('input[name=password]', 'admin123');
   await Promise.all([page.click('button[type=submit]'), page.waitForSelector('#app')]);
-  await page.waitForSelector('.stats');
+  await page.waitForSelector('.stats', { timeout: 25000 });
 
   const stamp = Date.now().toString().slice(-6);
   const CODE = 'WF TEST ' + stamp;
@@ -73,14 +78,14 @@ async function go(page, hash, heading) {
   console.log('\n1. Create a school through the UI');
   await go(page, '/schools', 'Schools');
   await clickButton(page, '+ New school', '.actions');
-  await page.waitForSelector('.modal');
+  await page.waitForSelector('.modal', { timeout: 25000 });
   await setField(page, 'School name', 'Workflow Test School ' + stamp);
   await setField(page, 'Postcode', 'SR9 9ZZ');
   await setField(page, 'Opening time', '09:00');
   await setField(page, 'Closing time', '15:00');
   await clickButton(page, 'Save');
-  await page.waitForFunction(() => /^#\/schools\/\d+$/.test(location.hash), { timeout: 10000 });
-  await page.waitForSelector('.tabs'); await sleep(400);
+  await page.waitForFunction(() => /^#\/schools\/\d+$/.test(location.hash), { timeout: 25000 });
+  await page.waitForSelector('.tabs', { timeout: 25000 }); await sleep(400);
   const schoolId = Number(page.url().split('/').pop());
   ok(schoolId > 0, 'school created and opened at its own page');
   await page.screenshot({ path: path.join(SHOTS, 'wf-01-school.png') });
@@ -88,7 +93,7 @@ async function go(page, hash, heading) {
   console.log('\n2. Create a contract for that school');
   await go(page, '/contracts', 'Contracts');
   await clickButton(page, '+ New contract', '.actions');
-  await page.waitForSelector('.modal');
+  await page.waitForSelector('.modal', { timeout: 25000 });
   await setField(page, 'Contract / job code', CODE);
   await setField(page, 'Description', 'Created by the workflow test');
   await setField(page, 'School', String(schoolId));
@@ -111,8 +116,8 @@ async function go(page, hash, heading) {
     return { driver: pick('Assigned driver'), pa: pick('Assigned PA') };
   });
   await clickButton(page, 'Save');
-  await page.waitForFunction(() => /^#\/contracts\/\d+$/.test(location.hash), { timeout: 10000 });
-  await page.waitForSelector('.tabs'); await sleep(500);
+  await page.waitForFunction(() => /^#\/contracts\/\d+$/.test(location.hash), { timeout: 25000 });
+  await page.waitForSelector('.tabs', { timeout: 25000 }); await sleep(500);
   const contractId = Number(page.url().split('/').pop());
   ok(contractId > 0, 'contract created and opened');
   const cText = await page.$eval('#view', e => e.textContent);
@@ -123,7 +128,7 @@ async function go(page, hash, heading) {
   console.log('\n3. Add a child to the contract');
   await go(page, '/children', 'Children');
   await clickButton(page, '+ New child', '.actions');
-  await page.waitForSelector('.modal');
+  await page.waitForSelector('.modal', { timeout: 25000 });
   await setField(page, 'First name', 'Workflow');
   await setField(page, 'Last name', 'Child' + stamp);
   await setField(page, 'Date of birth', '2014-05-05');
@@ -133,8 +138,8 @@ async function go(page, hash, heading) {
   await setField(page, 'Allergies', 'Peanuts');
   await setField(page, 'Wheelchair user — requires an accessible vehicle', true);
   await clickButton(page, 'Save');
-  await page.waitForFunction(() => /^#\/children\/\d+$/.test(location.hash), { timeout: 10000 });
-  await page.waitForSelector('.tabs'); await sleep(500);
+  await page.waitForFunction(() => /^#\/children\/\d+$/.test(location.hash), { timeout: 25000 });
+  await page.waitForSelector('.tabs', { timeout: 25000 }); await sleep(500);
   const childId = Number(page.url().split('/').pop());
   const chText = await page.$eval('#view', e => e.textContent);
   ok(chText.includes('Workflow Test School'), 'child inherited the school from the contract');
@@ -176,7 +181,7 @@ async function go(page, hash, heading) {
   }, staffIds.driver.id);
 
   await go(page, `/calendar?from=2026-09-07&to=2026-09-11&contract=${contractId}`, 'Operations calendar');
-  await page.waitForSelector('.cell'); await sleep(400);
+  await page.waitForSelector('.cell', { timeout: 25000 }); await sleep(400);
   await page.evaluate(() => document.querySelectorAll('.cell')[1].click()); // Tuesday
   await page.waitForSelector('.modal fieldset'); await sleep(500);
   const absClicked = await page.evaluate(() => {
@@ -186,7 +191,7 @@ async function go(page, hash, heading) {
     if (b) { b.click(); return true; } return false;
   });
   ok(absClicked, 'driver "Absent all day" control is available from the calendar cell');
-  await page.waitForSelector('.modal .form-grid select[name=cover_staff_id]', { timeout: 8000 });
+  await page.waitForSelector('.modal .form-grid select[name=cover_staff_id]', { timeout: 20000 });
   await sleep(300);
   const coverName = await page.evaluate(() => {
     const s = document.querySelector('.modal select[name=cover_staff_id]');
@@ -219,9 +224,9 @@ async function go(page, hash, heading) {
 
   console.log('\n6. Calendar reflects the cover once the dialog is closed');
   await clickButton(page, 'Done');            // closing the day dialog refreshes the grid behind it
-  await page.waitForFunction(() => !document.querySelector('.modal-bg'), { timeout: 8000 });
+  await page.waitForFunction(() => !document.querySelector('.modal-bg'), { timeout: 20000 });
   await sleep(1200);
-  await page.waitForSelector('.cell');
+  await page.waitForSelector('.cell', { timeout: 25000 });
   const cells = await page.$$eval('.cell', els => els.map(e => e.textContent));
   const coverCell = cells[1] || '';
   ok(/Cover/.test(coverCell), `the calendar cell shows cover in use (cells: ${JSON.stringify(cells)})`);
@@ -259,7 +264,7 @@ async function go(page, hash, heading) {
   console.log('\n10. Editing a contract flows through to the children');
   await go(page, '/contracts/' + contractId, CODE);
   await clickButton(page, 'Edit', '.actions');
-  await page.waitForSelector('.modal');
+  await page.waitForSelector('.modal', { timeout: 25000 });
   const newDriverName = await page.evaluate(() => {
     const f = [...document.querySelectorAll('.modal .field')].find(x => x.querySelector('label')?.textContent.trim() === 'Assigned driver');
     const s = f.querySelector('select');

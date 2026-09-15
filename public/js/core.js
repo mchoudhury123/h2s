@@ -117,36 +117,48 @@ const Router = window.Router = {
     return { path, query: Object.fromEntries(new URLSearchParams(qs || '')) };
   },
   go(to, replace) { if (replace) location.replace('#' + to); else location.hash = to; },
+  // Each navigation takes a ticket. A page that finishes loading after the user has
+  // already moved on throws its result away instead of overwriting the newer page.
+  // Without this, a slow page clobbers a fast one you navigated to in the meantime.
+  _ticket: 0,
   async handle() {
+    const ticket = ++Router._ticket;
+    const stale = () => ticket !== Router._ticket;
     const { path, query } = Router.parse();
     const root = document.getElementById('root');
+    const host = () => document.getElementById('view') || root;
+
     for (const r of Router.routes) {
       const m = r.rx.exec(path);
       if (!m) continue;
       const params = {};
       r.keys.forEach((k, i) => params[k] = decodeURIComponent(m[i + 1]));
       App.setActiveNav(path);
-      const host = document.getElementById('view') || root;
-      host.innerHTML = '<div class="loading"><span class="spinner"></span></div>';
+      host().innerHTML = '<div class="loading"><span class="spinner"></span></div>';
       try {
         const node = await r.handler({ params, query, path });
-        host.innerHTML = '';
-        if (node) host.appendChild(node);
+        if (stale()) return;
+        const el = host();
+        el.innerHTML = '';
+        if (node) el.appendChild(node);
         window.scrollTo(0, 0);
         return;
       } catch (e) {
+        if (stale()) return;
         console.error(e);
-        host.innerHTML = '';
-        host.appendChild(h('div', { class: 'card' }, h('div', { class: 'card-body' },
+        const el = host();
+        el.innerHTML = '';
+        el.appendChild(h('div', { class: 'card' }, h('div', { class: 'card-body' },
           h('h2', { style: 'color:var(--red)' }, 'Could not load this page'),
           h('p', { style: 'color:var(--text-dim)' }, e.message),
           h('button', { class: 'btn', onclick: () => Router.handle() }, 'Try again'))));
         return;
       }
     }
-    const host2 = document.getElementById('view') || root;
-    host2.innerHTML = '';
-    host2.appendChild(h('div', { class: 'empty-state' }, h('div', { class: 'big' }, '🤔'), 'Page not found: ' + path));
+    if (stale()) return;
+    const el = host();
+    el.innerHTML = '';
+    el.appendChild(h('div', { class: 'empty-state' }, h('div', { class: 'big' }, '🤔'), 'Page not found: ' + path));
   },
 };
 window.addEventListener('hashchange', () => Router.handle());
