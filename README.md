@@ -55,6 +55,18 @@ There are **no roles**. Everyone who can sign in administers their own firm and 
 
 An email address belongs to one account in one firm. Signing in finds the account, and the account fixes which firm's records you see for the whole session.
 
+### Emptying or removing a business
+
+```
+npm run business -- --list                    every business, its accounts and its records
+npm run business -- --empty  --id 7           show what emptying would remove
+npm run business -- --empty  --id 7 --yes     remove every record; keep the business,
+                                              its accounts, its settings and its audit log
+npm run business -- --delete --id 7 --yes     remove the business entirely, accounts included
+```
+
+Nothing changes without `--yes`. Before anything is removed, every row belonging to that business is written to `data/backups/` as JSON, which is not committed, so a mistake can be put back by hand. Emptying is for handing a firm a clean system after showing it demo data; deleting is for a firm that should no longer exist.
+
 ### How the separation is enforced
 
 Every table of firm data carries an `organisation_id`, and every query filters on it. That is the kind of thing that is easy to get almost right, so three things make a mistake fail loudly instead of quietly leaking:
@@ -135,7 +147,7 @@ npm run test:workflow    # create records through the forms, through to payroll
 npm run test:schedules   # weekly schedules and child timetables, in a browser
 ```
 
-The browser suites expect Chrome at the default Windows location and the server already running.
+The browser suites expect Chrome at the default Windows location and the server already running. The walkthrough suites (`test:browser`, `test:workflow` and `test:schedules`) sign in as the seeded sample business, so run them against a local SQLite server after `npm run seed`, or point them at a filled business of your own with `USER_EMAIL` and `USER_PASS`. A live database with only a real, empty firm on it has nothing for them to walk through.
 
 `npm test` never touches live data. On SQLite it builds a temporary file; on Postgres it creates a temporary schema and drops it afterwards, and refuses to run at all if that isolation fails.
 
@@ -376,6 +388,7 @@ scripts/
   check-workflow.js     end-to-end workflow through the forms
   check-schedules.js    weekly schedules and child timetables in a browser
   demo-data.js          fills one named business with demo records
+  business.js           lists, empties or removes a business, with a backup first
   db-check.js           connection and row counts
   db-push.js            copies SQLite into Postgres
 data/                   SQLite database (created on first run)
