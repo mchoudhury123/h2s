@@ -18,6 +18,7 @@ App.views.contracts = async function ({ query }) {
   if (query.gap) data = rows.filter(r => ['active', 'pending'].includes(r.status) && (!r.driver_id || (r.requires_pa && !r.pa_id)));
   const showMoney = App.can('finance');
   return UI.listPage({
+    deleteRecord: { resource: 'contracts', label: r => r.code },
     title: 'Contracts & routes',
     subtitle: query.gap ? 'Showing only contracts missing a driver or PA' : `${rows.length} contracts`,
     actions: [
@@ -222,7 +223,7 @@ Rec.contractEditor = async function (c) {
       toast(c ? 'Contract updated — changes flow through to children, calendar and wages' : 'Contract created', 'ok');
       if (c) Router.handle(); else Router.go('/contracts/' + saved.id);
     },
-    extraFooter: c && App.can('edit') ? h('button', { class: 'btn danger left', onclick: () => UI.confirm(`Delete ${c.code}? This cannot be undone.`, async () => { try { await api.del('/api/contracts/' + c.id); toast('Contract deleted', 'ok'); Router.go('/contracts'); } catch (e) { toast(e.message, 'err'); } }) }, 'Delete') : null,
+    extraFooter: c && App.can('edit') ? h('button', { class: 'btn danger left', onclick: () => UI.confirmDelete(`Delete ${c.code}? This cannot be undone.`, async () => { await api.del('/api/contracts/' + c.id); App.state.lookups = null; toast('Contract deleted', 'ok'); Router.go('/contracts'); }) }, 'Delete') : null,
   });
 };
 
@@ -232,6 +233,7 @@ Rec.contractEditor = async function (c) {
 App.views.children = async function ({ query }) {
   const rows = await api.get('/api/children', clean({ school_id: query.school, contract_id: query.contract, status: query.status }));
   return UI.listPage({
+    deleteRecord: { resource: 'children', label: r => r.name },
     title: 'Children',
     subtitle: `${rows.filter(r => r.status === 'active').length} active`,
     actions: App.can('edit') ? [h('button', { class: 'btn primary', onclick: () => Rec.childEditor(null) }, '+ New child')] : null,
@@ -397,7 +399,7 @@ Rec.childEditor = async function (c, defaults) {
       toast(c ? 'Child updated' : 'Child added', 'ok');
       if (c) Router.handle(); else Router.go('/children/' + saved.id);
     },
-    extraFooter: c && App.can('edit') ? h('button', { class: 'btn danger left', onclick: () => UI.confirm(`Delete ${c.name}? This removes their profile and absence history.`, async () => { try { await api.del('/api/children/' + c.id); toast('Child deleted', 'ok'); Router.go('/children'); } catch (e) { toast(e.message, 'err'); } }) }, 'Delete') : null,
+    extraFooter: c && App.can('edit') ? h('button', { class: 'btn danger left', onclick: () => UI.confirmDelete(`Delete ${c.name}? This removes their profile and absence history.`, async () => { await api.del('/api/children/' + c.id); App.state.lookups = null; toast('Child deleted', 'ok'); Router.go('/children'); }) }, 'Delete') : null,
   });
 };
 
@@ -409,6 +411,7 @@ App.views.staffList = async function ({ params, query }) {
   const rows = await api.get('/api/staff', clean({ type, status: query.status }));
   const label = type === 'driver' ? 'Drivers' : 'Passenger assistants';
   return UI.listPage({
+    deleteRecord: { resource: 'staff', label: r => r.name },
     title: label,
     subtitle: `${rows.filter(r => r.status === 'active').length} active · ${rows.filter(r => r.status === 'pool').length} in the staff pool`,
     actions: [
@@ -612,7 +615,7 @@ Rec.staffEditor = function (s, type) {
       toast(s ? 'Staff record updated' : 'Staff member added', 'ok');
       if (s) Router.handle(); else Router.go('/staff/' + saved.id);
     },
-    extraFooter: s && App.can('edit') ? h('button', { class: 'btn danger left', onclick: () => UI.confirm(`Delete ${s.name}?`, async () => { try { await api.del('/api/staff/' + s.id); toast('Deleted', 'ok'); Router.go('/staff/list/' + t); } catch (e) { toast(e.message, 'err'); } }) }, 'Delete') : null,
+    extraFooter: s && App.can('edit') ? h('button', { class: 'btn danger left', onclick: () => UI.confirmDelete(`Delete ${s.name}?`, async () => { await api.del('/api/staff/' + s.id); App.state.lookups = null; toast('Deleted', 'ok'); Router.go('/staff/list/' + t); }) }, 'Delete') : null,
   });
 };
 
@@ -644,6 +647,7 @@ Rec.vehicleEditor = function (v, driverId) {
 App.views.schools = async function () {
   const rows = await api.get('/api/schools');
   return UI.listPage({
+    deleteRecord: { resource: 'schools', label: r => r.name },
     title: 'Schools',
     subtitle: `${rows.length} schools`,
     actions: App.can('edit') ? [h('button', { class: 'btn primary', onclick: () => Rec.schoolEditor(null) }, '+ New school')] : null,
@@ -737,7 +741,7 @@ Rec.schoolEditor = function (s) {
       await UI.lookups(true); toast('School saved', 'ok');
       if (s) Router.handle(); else Router.go('/schools/' + saved.id);
     },
-    extraFooter: s && App.can('edit') ? h('button', { class: 'btn danger left', onclick: () => UI.confirm(`Delete ${s.name}?`, async () => { try { await api.del('/api/schools/' + s.id); toast('Deleted', 'ok'); Router.go('/schools'); } catch (e) { toast(e.message, 'err'); } }) }, 'Delete') : null,
+    extraFooter: s && App.can('edit') ? h('button', { class: 'btn danger left', onclick: () => UI.confirmDelete(`Delete ${s.name}?`, async () => { await api.del('/api/schools/' + s.id); App.state.lookups = null; toast('Deleted', 'ok'); Router.go('/schools'); }) }, 'Delete') : null,
   });
 };
 
@@ -747,6 +751,7 @@ Rec.schoolEditor = function (s) {
 App.views.councils = async function () {
   const rows = await api.get('/api/councils');
   return UI.listPage({
+    deleteRecord: { resource: 'councils', label: r => r.name },
     title: 'Councils & customers', subtitle: `${rows.length} customers`,
     actions: App.can('edit') ? [h('button', { class: 'btn primary', onclick: () => Rec.councilEditor(null) }, '+ New council')] : null,
     columns: [
@@ -800,6 +805,7 @@ Rec.councilEditor = function (c) {
 App.views.vehicles = async function () {
   const rows = await api.get('/api/vehicles');
   return UI.listPage({
+    deleteRecord: { resource: 'vehicles', label: r => r.registration },
     title: 'Vehicles', subtitle: `${rows.filter(r => r.active).length} in service`,
     columns: [
       { key: 'registration', label: 'Registration', value: r => h('strong', r.registration) },

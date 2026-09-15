@@ -51,6 +51,30 @@ UI.confirm = function (message, onYes, { title = 'Please confirm', yes = 'Confir
   return m;
 };
 
+/** Destructive record actions require an exact, case-sensitive confirmation. */
+UI.confirmDelete = function (message, onDelete) {
+  let busy = false;
+  const input = h('input', { type: 'text', autocomplete: 'off', spellcheck: 'false', 'aria-label': 'Type DELETE to confirm' });
+  const error = h('div', { class: 'note-box danger', role: 'alert', hidden: true });
+  const button = h('button', { type: 'button', class: 'btn danger', disabled: true }, 'Delete');
+  const m = UI.modal({
+    title: 'Delete record', width: 'narrow',
+    body: h('div', null, h('p', message), h('p', 'This cannot be undone.'),
+      h('label', { class: 'field' }, h('span', 'Type DELETE to confirm'), input), error),
+    footer: [h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'), button],
+  });
+  input.addEventListener('input', () => { button.disabled = busy || input.value !== 'DELETE'; });
+  button.onclick = async () => {
+    if (busy || input.value !== 'DELETE') return;
+    busy = true; button.disabled = true; input.disabled = true;
+    button.textContent = 'Deleting…'; error.hidden = true;
+    try { await onDelete(); m.close(); }
+    catch (e) { error.textContent = e.message || 'Unable to delete this record.'; error.hidden = false; }
+    finally { busy = false; input.disabled = false; button.disabled = input.value !== 'DELETE'; button.textContent = 'Delete'; }
+  };
+  return m;
+};
+
 /* ---------- form builder ----------
    fields: [{ name, label, type, options, value, required, help, span, min, max, step, rows, when }] */
 UI.form = function (fields, values = {}) {
@@ -176,7 +200,22 @@ UI.table = function (columns, rows, opts = {}) {
 };
 
 /* Searchable list page: filter box + table. */
-UI.listPage = function ({ title, subtitle, actions, columns, rows, onRow, searchFields, filters, empty, extra }) {
+UI.listPage = function ({ title, subtitle, actions, columns, rows, onRow, searchFields, filters, empty, extra, deleteRecord }) {
+  if (deleteRecord && App.can('edit')) columns = [...columns, {
+    label: 'Actions', sortable: false, num: true, nowrap: true, width: '1%',
+    value: row => h('button', {
+      type: 'button', class: 'btn xs danger', 'aria-label': 'Delete ' + deleteRecord.label(row),
+      onclick: e => {
+        e.stopPropagation();
+        UI.confirmDelete(`Delete ${deleteRecord.label(row)}? Their record and associated history or documents may be permanently removed.`, async () => {
+          await api.del('/api/' + deleteRecord.resource + '/' + row.id);
+          App.state.lookups = null;
+          toast('Record deleted', 'ok');
+          Router.handle();
+        });
+      },
+    }, 'Delete'),
+  }];
   let query = '';
   const activeFilters = {};
   const tableHost = h('div');
