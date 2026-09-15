@@ -1,0 +1,23 @@
+{
+  "name": "h2s-transport-crm",
+  "version": "1.0.0",
+  "description": "Home-to-School Transport Management CRM",
+  "main": "server/server.js",
+  "scripts": {
+    "start": "node --experimental-sqlite --no-warnings server/server.js",
+    "seed": "node --experimental-sqlite --no-warnings server/seed.js --reset",
+    "test": "node --experimental-sqlite --no-warnings scripts/test-rules.js",
+    "test:browser": "node --no-warnings scripts/smoke.js",
+    "test:workflow": "node --no-warnings scripts/check-workflow.js",
+    "test:roles": "node --no-warnings scripts/check-roles.js",
+    "test:all": "npm test && npm run test:browser && npm run test:roles && npm run test:workflow"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "license": "UNLICENSED",
+  "private": true,
+  "devDependencies": {
+    "puppeteer-core": "^25.11.0"
+  }
+}
