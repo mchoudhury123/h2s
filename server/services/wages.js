@@ -1,7 +1,7 @@
 'use strict';
 // Wage calculation engine. Every figure is derived from scheduled journeys +/- exceptions,
 // and every line is traceable back to a date, contract and reason.
-const { all, get } = require('../db');
+const { all } = require('../db');
 const cal = require('./calendar');
 const { round2 } = cal;
 
@@ -10,16 +10,16 @@ const { round2 } = cal;
  * opts: { from, to, staff_ids?, contract_id?, type? ('driver'|'pa'), include_paid? }
  * Returns one entry per staff member with a fully itemised breakdown.
  */
-function calculateWages(opts) {
+async function calculateWages(opts) {
   const { from, to } = opts;
-  const contracts = cal.loadContracts(" WHERE c.status IN ('active','suspended','ended')");
-  const childMap = cal.loadChildrenByContract(contracts.map(c => c.id));
-  const exceptions = cal.loadExceptions(from, to);
+  const contracts = await cal.loadContracts(" WHERE c.status IN ('active','suspended','ended')");
+  const childMap = await cal.loadChildrenByContract(contracts.map(c => c.id));
+  const exceptions = await cal.loadExceptions(from, to);
   const dates = cal.dateRange(from, to);
 
   // staff ledger
   const ledger = new Map(); // staff_id -> { staff, lines: [] }
-  const staffRows = all('SELECT id, type, first_name, last_name, default_day_rate, status FROM staff');
+  const staffRows = await all('SELECT id, type, first_name, last_name, default_day_rate, status FROM staff');
   const staffById = new Map(staffRows.map(s => [s.id, s]));
   function entry(staffId) {
     if (!staffId) return null;
@@ -97,7 +97,7 @@ function calculateWages(opts) {
   }
 
   // Payments already made in the period (deducted so nothing is paid twice)
-  const paidRows = all(`SELECT p.*, s.first_name || ' ' || s.last_name AS staff_name FROM payments p JOIN staff s ON s.id = p.staff_id WHERE p.work_date >= ? AND p.work_date <= ?`, [from, to]);
+  const paidRows = await all(`SELECT p.*, s.first_name || ' ' || s.last_name AS staff_name FROM payments p JOIN staff s ON s.id = p.staff_id WHERE p.work_date >= ? AND p.work_date <= ?`, [from, to]);
   for (const p of paidRows) {
     const e = entry(p.staff_id);
     if (!e) continue;
@@ -155,8 +155,8 @@ function sumBy(arr, fn) { return arr.reduce((a, x) => a + (fn(x) || 0), 0); }
 function countDays(lines) { return new Set(lines.map(l => l.date)).size; }
 
 /** Staff cost for a set of contracts over a range - used by profitability. */
-function staffCostForRange(from, to, contractId = null) {
-  const w = calculateWages({ from, to, contract_id: contractId || undefined, include_zero: true });
+async function staffCostForRange(from, to, contractId = null) {
+  const w = await calculateWages({ from, to, contract_id: contractId || undefined, include_zero: true });
   const byContract = {};
   for (const r of w.results) {
     for (const l of r.lines) {

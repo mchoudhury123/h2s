@@ -4,13 +4,13 @@ const { all } = require('../db');
 
 function like(q) { return '%' + q.replace(/[%_]/g, m => '\\' + m) + '%'; }
 
-function universalSearch(q, limit = 8) {
+async function universalSearch(q, limit = 8) {
   const term = (q || '').trim();
   if (term.length < 1) return { query: term, groups: [] };
   const p = like(term);
   const groups = [];
 
-  const children = all(`SELECT ch.id, ch.first_name, ch.last_name, ch.postcode, ch.address, ch.council_ref,
+  const children = await all(`SELECT ch.id, ch.first_name, ch.last_name, ch.postcode, ch.address, ch.council_ref,
       s.name AS school_name, c.code AS contract_code,
       d.first_name || ' ' || d.last_name AS driver_name
     FROM children ch
@@ -23,13 +23,13 @@ function universalSearch(q, limit = 8) {
     ORDER BY ch.last_name LIMIT ?`, [p, p, p, p, p, p, limit]);
   if (children.length) groups.push({ type: 'child', label: 'Children', items: children.map(r => ({ id: r.id, title: `${r.first_name} ${r.last_name}`, subtitle: [r.school_name, r.contract_code, r.postcode].filter(Boolean).join(' · '), meta: r.driver_name ? 'Driver: ' + r.driver_name : null, href: `#/children/${r.id}` })) });
 
-  const schools = all(`SELECT id, name, postcode, address,
+  const schools = await all(`SELECT id, name, postcode, address,
       (SELECT COUNT(*) FROM children WHERE school_id = schools.id AND status='active') AS child_count,
       (SELECT COUNT(*) FROM contracts WHERE school_id = schools.id AND status='active') AS contract_count
     FROM schools WHERE name LIKE ? ESCAPE '\\' OR postcode LIKE ? ESCAPE '\\' OR address LIKE ? ESCAPE '\\' ORDER BY name LIMIT ?`, [p, p, p, limit]);
   if (schools.length) groups.push({ type: 'school', label: 'Schools', items: schools.map(r => ({ id: r.id, title: r.name, subtitle: [r.address, r.postcode].filter(Boolean).join(', '), meta: `${r.child_count} ${r.child_count === 1 ? 'child' : 'children'} · ${r.contract_count} ${r.contract_count === 1 ? 'contract' : 'contracts'}`, href: `#/schools/${r.id}` })) });
 
-  const contracts = all(`SELECT c.id, c.code, c.name, c.status, c.council_ref, s.name AS school_name, cl.name AS council_name,
+  const contracts = await all(`SELECT c.id, c.code, c.name, c.status, c.council_ref, s.name AS school_name, cl.name AS council_name,
       d.first_name || ' ' || d.last_name AS driver_name,
       (SELECT COUNT(*) FROM children WHERE contract_id = c.id AND status='active') AS child_count
     FROM contracts c
@@ -40,7 +40,7 @@ function universalSearch(q, limit = 8) {
     ORDER BY c.code LIMIT ?`, [p, p, p, p, limit]);
   if (contracts.length) groups.push({ type: 'contract', label: 'Contracts / Routes', items: contracts.map(r => ({ id: r.id, title: r.code, subtitle: [r.name, r.school_name].filter(Boolean).join(' · '), meta: `${r.child_count} ${r.child_count === 1 ? 'child' : 'children'}${r.driver_name ? ' · ' + r.driver_name : ' · NO DRIVER'}`, badge: r.status, href: `#/contracts/${r.id}` })) });
 
-  const staff = all(`SELECT id, type, first_name, last_name, postcode, phone, status, badge_number,
+  const staff = await all(`SELECT id, type, first_name, last_name, postcode, phone, status, badge_number,
       (SELECT COUNT(*) FROM contracts WHERE (driver_id = staff.id OR pa_id = staff.id) AND status='active') AS contract_count
     FROM staff
     WHERE first_name LIKE ? ESCAPE '\\' OR last_name LIKE ? ESCAPE '\\' OR (first_name || ' ' || last_name) LIKE ? ESCAPE '\\'
@@ -51,10 +51,10 @@ function universalSearch(q, limit = 8) {
   if (drivers.length) groups.push({ type: 'driver', label: 'Drivers', items: drivers.map(r => ({ id: r.id, title: `${r.first_name} ${r.last_name}`, subtitle: [r.postcode, r.phone].filter(Boolean).join(' · '), meta: `${r.contract_count} ${r.contract_count === 1 ? 'contract' : 'contracts'}`, badge: r.status, href: `#/staff/${r.id}` })) });
   if (pas.length) groups.push({ type: 'pa', label: 'Passenger Assistants', items: pas.map(r => ({ id: r.id, title: `${r.first_name} ${r.last_name}`, subtitle: [r.postcode, r.phone].filter(Boolean).join(' · '), meta: `${r.contract_count} ${r.contract_count === 1 ? 'contract' : 'contracts'}`, badge: r.status, href: `#/staff/${r.id}` })) });
 
-  const councils = all(`SELECT id, name, (SELECT COUNT(*) FROM contracts WHERE council_id = councils.id) AS contract_count FROM councils WHERE name LIKE ? ESCAPE '\\' ORDER BY name LIMIT ?`, [p, limit]);
+  const councils = await all(`SELECT id, name, (SELECT COUNT(*) FROM contracts WHERE council_id = councils.id) AS contract_count FROM councils WHERE name LIKE ? ESCAPE '\\' ORDER BY name LIMIT ?`, [p, limit]);
   if (councils.length) groups.push({ type: 'council', label: 'Councils / Customers', items: councils.map(r => ({ id: r.id, title: r.name, subtitle: `${r.contract_count} ${r.contract_count === 1 ? 'contract' : 'contracts'}`, href: `#/councils/${r.id}` })) });
 
-  const vehicles = all(`SELECT v.id, v.registration, v.make, v.model, v.seats, v.driver_id, s.first_name || ' ' || s.last_name AS driver_name FROM vehicles v LEFT JOIN staff s ON s.id = v.driver_id WHERE v.registration LIKE ? ESCAPE '\\' OR v.make LIKE ? ESCAPE '\\' OR v.model LIKE ? ESCAPE '\\' LIMIT ?`, [p, p, p, limit]);
+  const vehicles = await all(`SELECT v.id, v.registration, v.make, v.model, v.seats, v.driver_id, s.first_name || ' ' || s.last_name AS driver_name FROM vehicles v LEFT JOIN staff s ON s.id = v.driver_id WHERE v.registration LIKE ? ESCAPE '\\' OR v.make LIKE ? ESCAPE '\\' OR v.model LIKE ? ESCAPE '\\' LIMIT ?`, [p, p, p, limit]);
   if (vehicles.length) groups.push({ type: 'vehicle', label: 'Vehicles', items: vehicles.map(r => ({ id: r.id, title: r.registration, subtitle: [r.make, r.model].filter(Boolean).join(' '), meta: r.driver_name || 'Unassigned', href: r.driver_id ? `#/staff/${r.driver_id}` : `#/vehicles` })) });
 
   const count = groups.reduce((a, g) => a + g.items.length, 0);

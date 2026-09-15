@@ -5,3 +5,6 @@ uploads/*
 !uploads/.gitkeep
 shots/
 data/*.log
+.env
+.env.*
+!.env.example

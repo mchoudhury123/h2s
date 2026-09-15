@@ -6,11 +6,12 @@
   "scripts": {
     "start": "node --experimental-sqlite --no-warnings server/server.js",
     "seed": "node --experimental-sqlite --no-warnings server/seed.js --reset",
+    "db:check": "node --experimental-sqlite --no-warnings scripts/db-check.js",
+    "db:push": "node --experimental-sqlite --no-warnings scripts/db-push.js",
     "test": "node --experimental-sqlite --no-warnings scripts/test-rules.js",
     "test:browser": "node --no-warnings scripts/smoke.js",
-    "test:workflow": "node --no-warnings scripts/check-workflow.js",
     "test:roles": "node --no-warnings scripts/check-roles.js",
-    "test:all": "npm test && npm run test:browser && npm run test:roles && npm run test:workflow"
+    "test:workflow": "node --no-warnings scripts/check-workflow.js"
   },
   "engines": {
     "node": ">=22.5"
@@ -19,5 +20,8 @@
   "private": true,
   "devDependencies": {
     "puppeteer-core": "^25.11.0"
+  },
+  "dependencies": {
+    "pg": "^8.13.0"
   }
 }

@@ -1,6 +1,6 @@
 'use strict';
 // Report builders. Each returns { title, columns, rows, totals? } and can render as JSON or CSV.
-const { all, get } = require('./db');
+const { all } = require('./db');
 const H = require('./http');
 const cal = require('./services/calendar');
 const wages = require('./services/wages');
@@ -11,13 +11,13 @@ const auth = require('./services/auth');
 const money = n => (n === null || n === undefined) ? '' : Number(n).toFixed(2);
 
 const BUILDERS = {
-  'driver-wages': (q, user) => wageReport(q, 'driver', 'Driver Wage Report'),
-  'pa-wages': (q, user) => wageReport(q, 'pa', 'PA Wage Report'),
+  'driver-wages': (q) => wageReport(q, 'driver', 'Driver Wage Report'),
+  'pa-wages': (q) => wageReport(q, 'pa', 'PA Wage Report'),
   'payroll': (q) => wageReport(q, null, 'Full Payroll Report'),
 
-  'wage-breakdown': (q) => {
+  'wage-breakdown': async (q) => {
     const from = q.from, to = q.to;
-    const calc = wages.calculateWages({ from, to, staff_ids: q.staff_ids ? String(q.staff_ids).split(',').map(Number) : undefined });
+    const calc = await wages.calculateWages({ from, to, staff_ids: q.staff_ids ? String(q.staff_ids).split(',').map(Number) : undefined });
     const rows = [];
     for (const r of calc.results) {
       for (const l of r.lines) rows.push({ staff: r.staff.name, type: r.staff.type, date: l.date, leg: l.leg || '', contract: l.contract_code || '', kind: l.kind, description: l.description, rate: l.rate, amount: l.amount });
@@ -30,8 +30,8 @@ const BUILDERS = {
     };
   },
 
-  'contract-profitability': (q) => {
-    const p = finance.profitability({ from: q.from, to: q.to });
+  'contract-profitability': async (q) => {
+    const p = await finance.profitability({ from: q.from, to: q.to });
     return {
       title: `Contract Profitability ${q.from} to ${q.to}`,
       columns: [c('code', 'Contract'), c('name', 'Name'), c('school_name', 'School'), c('council_name', 'Council'), c('children', 'Children'),
@@ -44,8 +44,8 @@ const BUILDERS = {
     };
   },
 
-  'contract-income': (q) => {
-    const p = finance.profitability({ from: q.from, to: q.to });
+  'contract-income': async (q) => {
+    const p = await finance.profitability({ from: q.from, to: q.to });
     return {
       title: `Contract Income ${q.from} to ${q.to}`,
       columns: [c('code', 'Contract'), c('council_name', 'Council'), c('school_name', 'School'), c('journeys_operated', 'Journeys'), c('income', 'Income', money)],
@@ -53,10 +53,10 @@ const BUILDERS = {
     };
   },
 
-  'school-contracts': () => ({
+  'school-contracts': async () => ({
     title: 'School Contracts',
     columns: [c('school', 'School'), c('postcode', 'Postcode'), c('code', 'Contract'), c('status', 'Status'), c('children', 'Children'), c('driver', 'Driver'), c('pa', 'PA'), c('days', 'Operating days')],
-    rows: all(`SELECT s.name AS school, s.postcode, c.code, c.status, c.days_of_week AS days,
+    rows: await all(`SELECT s.name AS school, s.postcode, c.code, c.status, c.days_of_week AS days,
         (SELECT COUNT(*) FROM children WHERE contract_id=c.id AND status='active') AS children,
         COALESCE(d.first_name || ' ' || d.last_name, 'NONE') AS driver,
         COALESCE(p.first_name || ' ' || p.last_name, 'NONE') AS pa
@@ -64,12 +64,12 @@ const BUILDERS = {
       ORDER BY s.name, c.code`),
   }),
 
-  'children': () => ({
+  'children': async () => ({
     title: 'Child List',
     columns: [c('name', 'Child'), c('dob', 'DOB'), c('address', 'Address'), c('postcode', 'Postcode'), c('school', 'School'),
       c('contract', 'Contract'), c('driver', 'Driver'), c('pa', 'PA'), c('pickup_time', 'Pick-up'), c('dropoff_time', 'Drop-off'),
       c('wheelchair', 'Wheelchair', v => v ? 'Yes' : 'No'), c('sen_needs', 'SEN/Additional needs'), c('allergies', 'Allergies'), c('parent_name', 'Parent/Carer'), c('parent_phone', 'Phone'), c('status', 'Status')],
-    rows: all(`SELECT ch.first_name || ' ' || ch.last_name AS name, ch.dob, ch.address, ch.postcode, ch.pickup_time, ch.dropoff_time,
+    rows: await all(`SELECT ch.first_name || ' ' || ch.last_name AS name, ch.dob, ch.address, ch.postcode, ch.pickup_time, ch.dropoff_time,
         ch.wheelchair, ch.sen_needs, ch.allergies, ch.parent_name, ch.parent_phone, ch.status,
         s.name AS school, c.code AS contract,
         d.first_name || ' ' || d.last_name AS driver, p.first_name || ' ' || p.last_name AS pa
@@ -80,11 +80,12 @@ const BUILDERS = {
   'drivers': (q, user) => staffList('driver', 'Driver List', user),
   'pas': (q, user) => staffList('pa', 'PA List', user),
 
-  'compliance': () => {
-    const staff = all("SELECT id, type, first_name, last_name, status, phone FROM staff WHERE status IN ('active','pool') ORDER BY type, last_name");
+  'compliance': async () => {
+    const staff = await all("SELECT id, type, first_name, last_name, status, phone FROM staff WHERE status IN ('active','pool') ORDER BY type, last_name");
+    const complianceMap = await compliance.complianceForMany(staff);
     const rows = [];
     for (const s of staff) {
-      const cmp = compliance.staffCompliance(s.id, s.type);
+      const cmp = complianceMap.get(s.id);
       rows.push({
         name: `${s.first_name} ${s.last_name}`, type: s.type.toUpperCase(), staff_status: s.status, phone: s.phone,
         status: cmp.status.toUpperCase(),
@@ -95,14 +96,14 @@ const BUILDERS = {
     return { title: 'Compliance Report', columns: [c('name', 'Staff'), c('type', 'Type'), c('staff_status', 'Staff status'), c('phone', 'Phone'), c('status', 'Compliance'), c('problems', 'Problems'), c('detail', 'All documents')], rows };
   },
 
-  'expiring-documents': (q) => ({
-    title: `Expiring Documents (next ${q.days || compliance.amberDays()} days)`,
+  'expiring-documents': async (q) => ({
+    title: `Expiring Documents (next ${q.days || 30} days)`,
     columns: [c('entity_label', 'Record'), c('entity_type', 'Type'), c('doc_type', 'Document'), c('expiry_date', 'Expiry'), c('days_left', 'Days left'), c('status', 'Status'), c('reference', 'Reference')],
-    rows: compliance.expiringDocuments(Number(q.days || compliance.amberDays()), true),
+    rows: await compliance.expiringDocuments(Number(q.days) || undefined, true),
   }),
 
-  'journeys': (q) => {
-    const data = cal.buildCalendar(q.from, q.to, q.contract_id ? { contract_id: Number(q.contract_id) } : {});
+  'journeys': async (q) => {
+    const data = await cal.buildCalendar(q.from, q.to, q.contract_id ? { contract_id: Number(q.contract_id) } : {});
     const rows = [];
     for (const r of data.rows) {
       for (const d of data.dates) {
@@ -124,8 +125,8 @@ const BUILDERS = {
     return { title: `Journey & Attendance Report ${q.from} to ${q.to}`, columns: [c('date', 'Date'), c('contract', 'Contract'), c('school', 'School'), c('leg', 'Leg'), c('status', 'Status'), c('reason', 'Reason'), c('driver', 'Driver'), c('pa', 'PA'), c('children_travelling', 'Children travelling'), c('children_absent', 'Children absent')], rows };
   },
 
-  'attendance': (q) => {
-    const data = cal.buildCalendar(q.from, q.to, q.contract_id ? { contract_id: Number(q.contract_id) } : {});
+  'attendance': async (q) => {
+    const data = await cal.buildCalendar(q.from, q.to, q.contract_id ? { contract_id: Number(q.contract_id) } : {});
     const rows = [];
     for (const r of data.rows) for (const d of data.dates) {
       const day = r.days[d];
@@ -138,8 +139,8 @@ const BUILDERS = {
     return { title: `Child Absence Report ${q.from} to ${q.to}`, columns: [c('date', 'Date'), c('contract', 'Contract'), c('child', 'Child'), c('am', 'AM'), c('pm', 'PM')], rows };
   },
 
-  'cover-staff': (q) => {
-    const rows = all(`SELECT e.date, e.leg, e.role, c.code AS contract, s.name AS school,
+  'cover-staff': async (q) => {
+    const rows = await all(`SELECT e.date, e.leg, e.role, c.code AS contract, s.name AS school,
         st.first_name || ' ' || st.last_name AS normal_staff,
         cs.first_name || ' ' || cs.last_name AS cover_staff,
         e.cover_pay, e.paid_immediately,
@@ -160,17 +161,17 @@ const BUILDERS = {
     };
   },
 
-  'audit': (q) => ({
+  'audit': async (q) => ({
     title: 'Audit Log',
     columns: [c('created_at', 'When'), c('user_name', 'User'), c('entity_type', 'Record type'), c('entity_label', 'Record'), c('action', 'Action'), c('field', 'Field'), c('old_value', 'Previous value'), c('new_value', 'New value'), c('summary', 'Summary')],
-    rows: require('./services/audit').recent(q, 2000),
+    rows: await require('./services/audit').recent(q, 2000),
   }),
 };
 
 function c(key, label, value) { return value ? { key, label, value: r => value(r[key]) } : { key, label }; }
 
-function wageReport(q, type, title) {
-  const calc = wages.calculateWages({ from: q.from, to: q.to, type: type || undefined, staff_ids: q.staff_ids ? String(q.staff_ids).split(',').map(Number) : undefined });
+async function wageReport(q, type, title) {
+  const calc = await wages.calculateWages({ from: q.from, to: q.to, type: type || undefined, staff_ids: q.staff_ids ? String(q.staff_ids).split(',').map(Number) : undefined });
   const rows = calc.results.map(r => ({
     name: r.staff.name, type: r.staff.type.toUpperCase(),
     normal_days: r.totals.normal_days, journeys: r.totals.journeys, normal_earnings: r.totals.normal_earnings,
@@ -186,18 +187,19 @@ function wageReport(q, type, title) {
   };
 }
 
-function staffList(type, title, user) {
-  const rows = all(`SELECT s.*, (SELECT COUNT(*) FROM contracts WHERE (driver_id=s.id OR pa_id=s.id) AND status='active') AS contracts,
-      (SELECT group_concat(registration, '; ') FROM vehicles WHERE driver_id=s.id AND active=1) AS vehicles,
-      (SELECT group_concat(code, '; ') FROM contracts WHERE (driver_id=s.id OR pa_id=s.id) AND status='active') AS contract_codes
+async function staffList(type, title, user) {
+  const rows = await all(`SELECT s.*, (SELECT COUNT(*) FROM contracts WHERE (driver_id=s.id OR pa_id=s.id) AND status='active') AS contracts,
+      (SELECT string_agg(registration, '; ') FROM vehicles WHERE driver_id=s.id AND active=1) AS vehicles,
+      (SELECT string_agg(code, '; ') FROM contracts WHERE (driver_id=s.id OR pa_id=s.id) AND status='active') AS contract_codes
     FROM staff s WHERE s.type = ? ORDER BY s.last_name`, [type]);
+  const complianceMap = await compliance.complianceForMany(rows);
   const showMoney = auth.can(user, 'finance');
   const out = rows.map(r => ({
     name: `${r.first_name} ${r.last_name}`, status: r.status, phone: r.phone, email: r.email,
     address: r.address, postcode: r.postcode, badge_number: r.badge_number, licensing_authority: r.licensing_authority,
     vehicles: r.vehicles, contracts: r.contracts, contract_codes: r.contract_codes,
     day_rate: showMoney ? r.default_day_rate : null,
-    compliance: compliance.staffCompliance(r.id, r.type).status.toUpperCase(),
+    compliance: (complianceMap.get(r.id) || { status: 'red' }).status.toUpperCase(),
     availability: r.availability, preferred_areas: r.preferred_areas,
   }));
   const cols = [c('name', 'Name'), c('status', 'Status'), c('phone', 'Phone'), c('email', 'Email'), c('address', 'Address'), c('postcode', 'Postcode')];
@@ -208,7 +210,7 @@ function staffList(type, title, user) {
   return { title, columns: cols, rows: out };
 }
 
-function handle(ctx) {
+async function handle(ctx) {
   const name = String(ctx.params.name).replace(/\.(csv|json)$/, '');
   const format = /\.csv$/.test(ctx.params.name) ? 'csv' : (ctx.query.format || 'json');
   const builder = BUILDERS[name];
@@ -217,7 +219,7 @@ function handle(ctx) {
   if (needsDates.includes(name) && (!ctx.query.from || !ctx.query.to)) return H.error(ctx.res, 'This report needs a from and to date');
   const financeReports = ['driver-wages', 'pa-wages', 'payroll', 'wage-breakdown', 'contract-profitability', 'contract-income'];
   if (financeReports.includes(name) && !auth.can(ctx.user, 'finance') && !auth.can(ctx.user, 'wages')) return H.error(ctx.res, 'Your role does not permit financial reports', 403);
-  const data = builder(ctx.query, ctx.user);
+  const data = await builder(ctx.query, ctx.user);
   if (format === 'csv') {
     const csv = H.toCSV(data.columns, data.rows);
     return H.sendCSV(ctx.res, `${name}-${ctx.query.from || cal.today()}.csv`, csv);

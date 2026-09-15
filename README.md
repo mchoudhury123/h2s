@@ -8,10 +8,11 @@ The system is built around **exception management**. It already knows what is su
 
 ## Running it
 
-You need Node.js 22.5 or newer. There is nothing else to install: the database is SQLite through Node's built-in driver, and the interface is plain HTML, CSS and JavaScript with no build step.
+You need Node.js 22.5 or newer. There is one dependency, the Postgres driver, and no build step: the interface is plain HTML, CSS and JavaScript.
 
 ```
-npm run seed      # creates the database and loads realistic demo data
+npm install
+npm run seed      # demo data
 npm start         # http://localhost:4000
 ```
 
@@ -19,16 +20,47 @@ Sign in with `admin` / `admin123`. Change that password under Settings once you 
 
 The demo data also includes `manager`, `ops`, `finance` and `viewer` accounts, each with the password shown on the sign-in screen, so you can see how each role differs.
 
-To start from an empty system instead, skip `npm run seed` and run `npm start`. The database and an administrator account are created on first launch.
+To start from an empty system instead, skip `npm run seed`. The tables and an administrator account are created on first launch.
+
+### Which database it uses
+
+The CRM runs on either SQLite or Postgres, and the application code is the same for both.
+
+| | When it is used | Good for |
+|---|---|---|
+| SQLite | No `DATABASE_URL` set | A single office, local development, no setup |
+| Postgres | `DATABASE_URL` set in `.env` | Supabase, several people, access from more than one machine |
+
+To point it at Supabase, copy `.env.example` to `.env` and fill in the connection string from Supabase under **Project Settings > Database > Connection string**:
+
+```
+DATABASE_URL=postgresql://postgres:YOUR-PASSWORD@db.YOUR-PROJECT.supabase.co:5432/postgres
+```
+
+Then:
+
+```
+npm run db:check              # confirm the connection and see what is there
+npm run db:push               # create the tables and copy the local data across
+npm start                     # now running on Supabase
+```
+
+`npm run db:push` only reads the local SQLite file, never changes it, and refuses to write over a Supabase database that already holds records unless you pass `--replace`. Use `-- --schema-only` to create the tables without copying anything.
+
+`.env` is listed in `.gitignore` and must never be committed. If a password does reach the repository, reset it under **Project Settings > Database**.
+
+Two things worth knowing about Supabase connections. The direct host, `db.<project>.supabase.co`, resolves over IPv6 only; on an IPv4 network use the Session pooler string that Supabase lists on the same page. And every query is now a network round trip rather than a local file read, so the dashboard and wage pages are slower than on SQLite. The queries that would have run once per staff member are batched for exactly this reason.
 
 ### Tests
 
 ```
-npm test            # 63 business-rule tests: journeys, cover, wages, compliance, profitability
-npm run test:browser  # drives every page in a real browser, fails on any console error
+npm test              # 63 business-rule tests
+npm run test:browser  # every page in a real browser, fails on any console error
+npm run test:roles    # role restrictions and both themes
+npm run test:workflow # create records through the forms, through to payroll
 ```
 
-`npm run test:browser` expects Chrome at the default Windows location and the server already running.
+The browser suites expect Chrome at the default Windows location and the server already running. `npm test` builds its own throwaway database, so it can be run against either backend.
 
 ---
 
@@ -181,7 +213,12 @@ Financial figures are removed on the server, not hidden in the browser, so an op
 
 ```
 server/
-  db.js                 schema and query helpers
+  db.js                 one async interface over whichever database is in use
+  schema.js             the table definitions, rendered per database
+  env.js                loads .env
+  drivers/
+    sqlite.js           local file, via Node's built-in driver
+    postgres.js         Supabase, via pg
   http.js               request parsing, static files, CSV
   routes.js             the API
   reports.js            report builders
@@ -203,8 +240,12 @@ scripts/
   test-rules.js         business-rule tests
   smoke.js              browser walkthrough
   check-roles.js        permission and theme checks
+  check-workflow.js     end-to-end workflow through the forms
+  db-check.js           connection and row counts
+  db-push.js            copies SQLite into Postgres
 data/                   SQLite database (created on first run)
 uploads/                uploaded document files
+.env                    credentials, never committed
 ```
 
 ### Adding to it
@@ -214,7 +255,12 @@ The database is normalised and every calculation reads from it rather than from 
 - A new record type is a table plus one `crud()` call in `routes.js` and one view.
 - A new kind of exception is a value in the `exceptions.type` check constraint plus a branch in `evaluateContractDay`. Wages and profitability pick it up without further changes.
 - A new report is one entry in the `BUILDERS` map in `reports.js`; it gets CSV export and on-screen viewing for free.
+- A new column goes in `schema.js` once and renders correctly for both databases.
+
+Queries are written once with `?` placeholders and a few portable spellings (`string_agg`, `CAST(x AS TEXT)`). The Postgres driver rewrites placeholders to `$1, $2`; the SQLite driver rewrites `string_agg` to `group_concat`. Dates and timestamps are stored as text in both, so comparisons and JSON output are identical and no timezone conversion happens anywhere.
 
 ### Notes for production
 
-This runs as-is for a single office. Before putting it on the open internet you would want HTTPS in front of it, a stronger session store than the in-memory one, rate limiting on sign-in, and a backup schedule for `data/h2s.db` and `uploads/`.
+This runs as-is for a single office. Before putting it on the open internet you would want HTTPS in front of it, a stronger session store than the in-memory one, and rate limiting on sign-in.
+
+On Supabase, the database is backed up by Supabase itself, but `uploads/` is still a local folder on whichever machine runs the server, so that needs its own backup. Row Level Security is not used: the CRM connects as the database owner and enforces permissions in the application, which is why the connection string must stay private.

@@ -9,20 +9,20 @@ const { round2 } = cal;
  * Profitability over a range, itemised per contract, with roll-ups by school and council.
  * opts: { from, to, contract_id?, school_id?, council_id? }
  */
-function profitability(opts) {
+async function profitability(opts) {
   const { from, to } = opts;
   let where = " WHERE c.status IN ('active','suspended','ended')";
   const params = [];
   if (opts.contract_id) { where += ' AND c.id = ?'; params.push(opts.contract_id); }
   if (opts.school_id) { where += ' AND c.school_id = ?'; params.push(opts.school_id); }
   if (opts.council_id) { where += ' AND c.council_id = ?'; params.push(opts.council_id); }
-  const contracts = cal.loadContracts(where, params);
-  const childMap = cal.loadChildrenByContract(contracts.map(c => c.id));
-  const exceptions = cal.loadExceptions(from, to);
+  const contracts = await cal.loadContracts(where, params);
+  const childMap = await cal.loadChildrenByContract(contracts.map(c => c.id));
+  const exceptions = await cal.loadExceptions(from, to);
   const dates = cal.dateRange(from, to);
-  const costMap = wages.staffCostForRange(from, to, opts.contract_id || null);
+  const costMap = await wages.staffCostForRange(from, to, opts.contract_id || null);
 
-  const expenseRows = all(`SELECT contract_id, SUM(amount) AS total FROM expenses WHERE date >= ? AND date <= ? GROUP BY contract_id`, [from, to]);
+  const expenseRows = await all(`SELECT contract_id, SUM(amount) AS total FROM expenses WHERE date >= ? AND date <= ? GROUP BY contract_id`, [from, to]);
   const expenseMap = Object.fromEntries(expenseRows.map(r => [r.contract_id, r.total]));
 
   const rows = [];
@@ -90,10 +90,10 @@ function groupBy(rows, keyFn, labelFn) {
 }
 
 /** Forward-looking expected weekly/annual run-rate used on the dashboard. */
-function expectedDaily(date) {
-  const contracts = cal.loadContracts(" WHERE c.status = 'active'");
-  const childMap = cal.loadChildrenByContract(contracts.map(c => c.id));
-  const exceptions = cal.loadExceptions(date, date);
+async function expectedDaily(date) {
+  const contracts = await cal.loadContracts(" WHERE c.status = 'active'");
+  const childMap = await cal.loadChildrenByContract(contracts.map(c => c.id));
+  const exceptions = await cal.loadExceptions(date, date);
   let income = 0, driverCost = 0, paCost = 0, other = 0, operating = 0;
   for (const c of contracts) {
     if (!cal.contractOperatesOn(c, date)) continue;

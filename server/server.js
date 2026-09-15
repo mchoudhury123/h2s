@@ -6,12 +6,10 @@ const auth = require('./services/auth');
 const routes = require('./routes');
 const { getSetting } = require('./db');
 
+const db = require('./db');
+
 const PORT = Number(process.env.PORT || 4000);
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
-
-if (auth.ensureSeedAdmin()) {
-  console.log('Created default administrator account: admin / admin123  (change this on first sign-in)');
-}
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
@@ -50,8 +48,36 @@ function parseCookies(header) {
   return out;
 }
 
-server.listen(PORT, () => {
-  const name = getSetting('company_name', 'Home-to-School Transport');
-  console.log(`\n  ${name} CRM`);
-  console.log(`  Running at http://localhost:${PORT}\n`);
-});
+async function start() {
+  try {
+    await db.migrate();
+  } catch (e) {
+    console.error(`\n  Could not prepare the database.`);
+    console.error(`  ${db.describe}`);
+    console.error(`  ${e.message}\n`);
+    if (db.dialect === 'postgres') {
+      console.error('  Check DATABASE_URL in your .env file. Supabase shows it under');
+      console.error('  Project Settings > Database > Connection string.\n');
+    }
+    process.exit(1);
+  }
+  if (await auth.ensureSeedAdmin()) {
+    console.log('Created default administrator account: admin / admin123  (change this on first sign-in)');
+  }
+  const name = await getSetting('company_name', 'Home-to-School Transport');
+  server.listen(PORT, () => {
+    console.log(`\n  ${name} CRM`);
+    console.log(`  Database: ${db.describe}`);
+    console.log(`  Running at http://localhost:${PORT}\n`);
+  });
+}
+
+start();
+
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.on(signal, async () => {
+    server.close();
+    try { await db.close(); } catch (_) {}
+    process.exit(0);
+  });
+}

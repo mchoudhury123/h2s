@@ -1,6 +1,7 @@
 'use strict';
 // Demo data. Run: npm run seed  (add --reset to wipe first)
-const { db, run, get, all, insert, setSetting, transaction } = require('./db');
+const database = require('./db');
+const { run, get, all, insert, setSetting } = database;
 const auth = require('./services/auth');
 const cal = require('./services/calendar');
 
@@ -9,17 +10,23 @@ const TODAY = cal.today();
 
 function d(offset) { return cal.addDays(TODAY, offset); }
 
-if (RESET) {
-  for (const t of ['payroll_run_lines', 'payroll_runs', 'payments', 'exceptions', 'expenses', 'documents', 'audit_log', 'children', 'contracts', 'vehicles', 'staff', 'schools', 'councils', 'users', 'settings']) {
-    try { run(`DELETE FROM ${t}`); } catch (e) { console.warn('skip', t, e.message); }
-  }
-  try { run("DELETE FROM sqlite_sequence"); } catch (e) {}
-  console.log('Cleared existing data.');
-}
+async function main() {
+  await database.migrate();
 
-transaction(() => {
-  setSetting('amber_days', '30');
-  setSetting('company_name', 'Northgate Home-to-School Transport');
+  if (RESET) {
+    // Reverse dependency order so foreign keys stay satisfied.
+    const order = ['payroll_run_lines', 'payroll_runs', 'payments', 'exceptions', 'expenses',
+      'documents', 'audit_log', 'children', 'contracts', 'vehicles', 'staff', 'schools', 'councils', 'users', 'settings'];
+    for (const t of order) {
+      try { await run(`DELETE FROM ${t}`); } catch (e) { console.warn('skip', t, e.message); }
+    }
+    if (database.dialect === 'sqlite') { try { await run('DELETE FROM sqlite_sequence'); } catch (_) {} }
+    await database.resetSequences();
+    console.log('Cleared existing data.');
+  }
+
+  await setSetting('amber_days', '30');
+  await setSetting('company_name', 'Northgate Home-to-School Transport');
 
   // ---- users ----
   const users = [
@@ -30,8 +37,8 @@ transaction(() => {
     ['viewer', 'viewer123', 'Sam Reade', 'readonly'],
   ];
   for (const [u, p, n, r] of users) {
-    if (!get('SELECT id FROM users WHERE username = ?', [u])) {
-      run('INSERT INTO users (username, password_hash, name, role) VALUES (?,?,?,?)', [u, auth.hash(p), n, r]);
+    if (!(await get('SELECT id FROM users WHERE username = ?', [u]))) {
+      await run('INSERT INTO users (username, password_hash, name, role) VALUES (?,?,?,?)', [u, auth.hash(p), n, r]);
     }
   }
 
@@ -41,7 +48,7 @@ transaction(() => {
     { name: 'Sunderland City Council', contact_name: 'Helen Marsh', phone: '0191 520 5555', email: 'transport@sunderland.gov.uk', address: 'Civic Centre, Burdon Road, Sunderland' },
     { name: 'Durham County Council', contact_name: 'Ian Pallister', phone: '03000 260 000', email: 'sentransport@durham.gov.uk', address: 'County Hall, Durham' },
     { name: 'Newcastle City Council', contact_name: 'Bev Turnbull', phone: '0191 278 7878', email: 'schooltransport@newcastle.gov.uk', address: 'Civic Centre, Barras Bridge, Newcastle' },
-  ]) councils[c.name] = insert('councils', c, ['name', 'contact_name', 'phone', 'email', 'address']);
+  ]) councils[c.name] = await insert('councils', c, ['name', 'contact_name', 'phone', 'email', 'address']);
 
   // ---- schools ----
   const schools = {};
@@ -51,7 +58,7 @@ transaction(() => {
     { name: 'Portland Academy', address: 'Weymouth Road, Sunderland', postcode: 'SR3 4AF', phone: '0191 553 6000', contact_name: 'Lisa Moran', email: 'office@portlandacademy.org', open_time: '09:00', close_time: '15:10', notes: 'Wheelchair access via rear gate only.' },
     { name: 'Elemore Hall School', address: 'Pittington, Durham', postcode: 'DH6 1QD', phone: '0191 372 0275', contact_name: 'Tom Ridley', email: 'elemorehall@durhamlearning.net', open_time: '09:15', close_time: '15:20' },
     { name: 'Hadrian School', address: 'Bertram Crescent, Newcastle', postcode: 'NE15 6PY', phone: '0191 273 4440', contact_name: 'Angela Frost', email: 'admin@hadrian.newcastle.sch.uk', open_time: '09:00', close_time: '15:00' },
-  ]) schools[s.name] = insert('schools', s, ['name', 'address', 'postcode', 'phone', 'contact_name', 'email', 'open_time', 'close_time', 'notes']);
+  ]) schools[s.name] = await insert('schools', s, ['name', 'address', 'postcode', 'phone', 'contact_name', 'email', 'open_time', 'close_time', 'notes']);
 
   // ---- staff ----
   const staff = {};
@@ -72,8 +79,8 @@ transaction(() => {
     { first_name: 'Tracy', last_name: 'Hoban', postcode: 'SR5 2LL', address: '30 Southwick Road, Sunderland', phone: '07700 900850', email: 't.hoban@example.com', default_day_rate: 35, status: 'pool', availability: 'Available for cover at short notice', preferred_areas: 'Sunderland north' },
     { first_name: 'Michael', last_name: 'Arturo', postcode: 'SR2 7BB', address: '15 Mowbray Road, Sunderland', phone: '07700 900860', email: 'm.arturo@example.com', default_day_rate: 37, status: 'pool', availability: 'PM journeys only', preferred_areas: 'Sunderland central' },
   ];
-  for (const s of drivers) staff[`${s.first_name} ${s.last_name}`] = insert('staff', { ...s, type: 'driver' }, ['type', 'first_name', 'last_name', 'address', 'postcode', 'phone', 'email', 'emergency_contact_name', 'emergency_contact_phone', 'status', 'licensing_authority', 'badge_number', 'dbs_number', 'default_day_rate', 'availability', 'preferred_areas', 'start_date', 'notes']);
-  for (const s of pas) staff[`${s.first_name} ${s.last_name}`] = insert('staff', { ...s, type: 'pa' }, ['type', 'first_name', 'last_name', 'address', 'postcode', 'phone', 'email', 'emergency_contact_name', 'emergency_contact_phone', 'status', 'licensing_authority', 'badge_number', 'dbs_number', 'default_day_rate', 'availability', 'preferred_areas', 'start_date', 'notes']);
+  for (const s of drivers) staff[`${s.first_name} ${s.last_name}`] = await insert('staff', { ...s, type: 'driver' }, ['type', 'first_name', 'last_name', 'address', 'postcode', 'phone', 'email', 'emergency_contact_name', 'emergency_contact_phone', 'status', 'licensing_authority', 'badge_number', 'dbs_number', 'default_day_rate', 'availability', 'preferred_areas', 'start_date', 'notes']);
+  for (const s of pas) staff[`${s.first_name} ${s.last_name}`] = await insert('staff', { ...s, type: 'pa' }, ['type', 'first_name', 'last_name', 'address', 'postcode', 'phone', 'email', 'emergency_contact_name', 'emergency_contact_phone', 'status', 'licensing_authority', 'badge_number', 'dbs_number', 'default_day_rate', 'availability', 'preferred_areas', 'start_date', 'notes']);
 
   // ---- vehicles ----
   const vehicles = {};
@@ -85,7 +92,7 @@ transaction(() => {
     { driver: 'Susan Blakey', registration: 'NE23 TYU', make: 'Volkswagen', model: 'Caravelle', seats: 7, wheelchair_accessible: 0, colour: 'Black' },
     { driver: 'Ray Chesterton', registration: 'SR68 MNB', make: 'Renault', model: 'Trafic', seats: 8, wheelchair_accessible: 0, colour: 'White' },
     { driver: 'Priya Raman', registration: 'NL23 QWE', make: 'Ford', model: 'Tourneo Connect', seats: 5, wheelchair_accessible: 1, colour: 'Red' },
-  ]) vehicles[v.registration] = insert('vehicles', { ...v, driver_id: staff[v.driver] }, ['driver_id', 'registration', 'make', 'model', 'seats', 'wheelchair_accessible', 'colour']);
+  ]) vehicles[v.registration] = await insert('vehicles', { ...v, driver_id: staff[v.driver] }, ['driver_id', 'registration', 'make', 'model', 'seats', 'wheelchair_accessible', 'colour']);
 
   // ---- contracts ----
   const contracts = {};
@@ -99,7 +106,7 @@ transaction(() => {
     { code: 'PORTLAND 2', name: 'Portland Academy second run (awaiting staff)', council: 'Sunderland City Council', council_ref: 'SCC/HTS/2026/208', school: 'Portland Academy', driver: null, pa: null, vehicle: null, am_pickup_time: '08:00', am_arrival_time: '08:55', pm_finish_time: '15:10', pm_dropoff_time: '16:10', income_per_day: 140, driver_pay_per_day: 60, pa_pay_per_day: 35, other_costs_per_day: 6, route_info: 'Washington -> Portland Academy', start_date: d(7), end_date: '2027-07-21', status: 'pending', notes: 'Starts next week. Driver and PA still to be allocated from the pool.' },
   ];
   for (const c of contractDefs) {
-    contracts[c.code] = insert('contracts', {
+    contracts[c.code] = await insert('contracts', {
       code: c.code, name: c.name, council_id: councils[c.council], council_ref: c.council_ref,
       school_id: schools[c.school], driver_id: c.driver ? staff[c.driver] : null, pa_id: c.pa ? staff[c.pa] : null,
       vehicle_id: c.vehicle ? vehicles[c.vehicle] : null, requires_pa: c.requires_pa === undefined ? 1 : c.requires_pa,
@@ -128,8 +135,8 @@ transaction(() => {
   ];
   for (const c of childDefs) {
     const contractId = contracts[c.contract];
-    const schoolId = get('SELECT school_id FROM contracts WHERE id = ?', [contractId]).school_id;
-    insert('children', { ...c, contract_id: contractId, school_id: schoolId, status: 'active' },
+    const schoolId = await get('SELECT school_id FROM contracts WHERE id = ?', [contractId]).school_id;
+    await insert('children', { ...c, contract_id: contractId, school_id: schoolId, status: 'active' },
       ['first_name', 'last_name', 'dob', 'address', 'postcode', 'parent_name', 'parent_phone', 'emergency_contact_name', 'emergency_contact_phone', 'school_id', 'contract_id', 'council_ref', 'pickup_time', 'arrival_time', 'finish_time', 'dropoff_time', 'medical_info', 'sen_needs', 'conditions', 'mobility', 'wheelchair', 'behaviour', 'communication', 'allergies', 'safeguarding_info', 'risk_info', 'notes', 'status']);
   }
 
@@ -173,7 +180,7 @@ transaction(() => {
   for (const [entityType, key, docType, expiry] of docs) {
     const entityId = entityType === 'staff' ? staff[key] : vehicles[key];
     if (!entityId) { console.warn('missing entity for doc', key); continue; }
-    insert('documents', {
+    await insert('documents', {
       entity_type: entityType, entity_id: entityId, doc_type: docType,
       issue_date: cal.addDays(expiry, -365), expiry_date: expiry, status: 'valid', uploaded_by: 'Seed data',
       notes: 'Demo record - no file attached',
@@ -183,43 +190,59 @@ transaction(() => {
 
   // ---- exceptions over the last few weeks, demonstrating every mechanism ----
   const lastWeekday = n => { let x = d(-n); while ([0, 6].includes(cal.dow(x))) x = cal.addDays(x, -1); return x; };
+  const childId = async name => {
+    const [first, ...rest] = name.split(' ');
+    const r = await get('SELECT id FROM children WHERE first_name = ? AND last_name = ?', [first, rest.join(' ')]);
+    return r ? r.id : null;
+  };
   const ex = [];
-  ex.push({ date: lastWeekday(3), type: 'child_absence', leg: 'DAY', contract_id: contracts['THORNHILL PARK 1'], child_id: childId('Alfie Brennan'), note: 'Parent rang - unwell' });
-  ex.push({ date: lastWeekday(4), type: 'child_absence', leg: 'PM', contract_id: contracts['THORNHILL PARK 1'], child_id: childId('Maisie Cotterill'), note: 'Collected by parent from school' });
+  ex.push({ date: lastWeekday(3), type: 'child_absence', leg: 'DAY', contract_id: contracts['THORNHILL PARK 1'], child_id: await childId('Alfie Brennan'), note: 'Parent rang - unwell' });
+  ex.push({ date: lastWeekday(4), type: 'child_absence', leg: 'PM', contract_id: contracts['THORNHILL PARK 1'], child_id: await childId('Maisie Cotterill'), note: 'Collected by parent from school' });
   ex.push({ date: lastWeekday(5), type: 'staff_absence', leg: 'DAY', contract_id: contracts['THORNHILL PARK 1'], role: 'driver', staff_id: staff['John Reeve'], cover_staff_id: staff['Ahmed Khan'], cover_pay: 75, paid_immediately: 1, note: 'John at hospital appointment. Ahmed covered, paid same day in cash.' });
   ex.push({ date: lastWeekday(2), type: 'staff_absence', leg: 'AM', contract_id: contracts['THORNHILL PARK 2'], role: 'pa', staff_id: staff['Gemma Shipley'], cover_staff_id: staff['Tracy Hoban'], cover_pay: 22, paid_immediately: 0, note: 'Gemma delayed, Tracy covered AM only' });
   ex.push({ date: lastWeekday(6), type: 'school_closed', leg: 'DAY', school_id: schools['Thornhill Park School'], note: 'Staff training day' });
   ex.push({ date: lastWeekday(1), type: 'staff_absence', leg: 'DAY', contract_id: contracts['ELEMORE 1'], role: 'driver', staff_id: staff['Dennis Okonkwo'], cover_staff_id: null, note: 'Dennis off sick, no cover found - journey did not run' });
   ex.push({ date: lastWeekday(7), type: 'journey_cancelled', leg: 'PM', contract_id: contracts['HADRIAN 1'], note: 'Severe weather, school closed early and parents collected' });
   ex.push({ date: d(1), type: 'staff_absence', leg: 'DAY', contract_id: contracts['PORTLAND 1'], role: 'driver', staff_id: staff['Ahmed Khan'], cover_staff_id: staff['Priya Raman'], cover_pay: 70, paid_immediately: 0, note: 'Pre-booked leave - Priya allocated from the pool' });
-  ex.push({ date: TODAY, type: 'child_absence', leg: 'DAY', contract_id: contracts['PORTLAND 1'], child_id: childId('Noah Feeney'), note: 'Hospital appointment' });
+  ex.push({ date: TODAY, type: 'child_absence', leg: 'DAY', contract_id: contracts['PORTLAND 1'], child_id: await childId('Noah Feeney'), note: 'Hospital appointment' });
   ex.push({ date: TODAY, type: 'staff_absence', leg: 'DAY', contract_id: contracts['HADRIAN 1'], role: 'pa', staff_id: staff['Aisha Bello'], cover_staff_id: null, note: 'Aisha off sick - cover still required' });
 
   for (const e of ex) {
-    const id = insert('exceptions', { ...e, created_by: 'Seed data' }, ['date', 'type', 'leg', 'contract_id', 'school_id', 'child_id', 'role', 'staff_id', 'cover_staff_id', 'cover_pay', 'paid_immediately', 'amount', 'note', 'created_by']);
+    const id = await insert('exceptions', { ...e, created_by: 'Seed data' }, ['date', 'type', 'leg', 'contract_id', 'school_id', 'child_id', 'role', 'staff_id', 'cover_staff_id', 'cover_pay', 'paid_immediately', 'amount', 'note', 'created_by']);
     if (e.paid_immediately && e.cover_staff_id) {
-      insert('payments', { staff_id: e.cover_staff_id, work_date: e.date, paid_date: e.date, amount: e.cover_pay, source: 'cover_immediate', exception_id: id, note: 'Cover paid immediately', created_by: 'Seed data' },
+      await insert('payments', { staff_id: e.cover_staff_id, work_date: e.date, paid_date: e.date, amount: e.cover_pay, source: 'cover_immediate', exception_id: id, note: 'Cover paid immediately', created_by: 'Seed data' },
         ['staff_id', 'work_date', 'paid_date', 'amount', 'source', 'exception_id', 'note', 'created_by']);
     }
   }
 
   // ---- a couple of ad-hoc expenses ----
-  insert('expenses', { date: lastWeekday(4), contract_id: contracts['ELEMORE 1'], category: 'Fuel', amount: 48.5, description: 'Additional fuel - diversion via Hetton', created_by: 'Seed data' }, ['date', 'contract_id', 'category', 'amount', 'description', 'created_by']);
-  insert('expenses', { date: lastWeekday(9), contract_id: contracts['PORTLAND 1'], category: 'Vehicle repair', amount: 165, description: 'Wheelchair ramp hinge replacement', created_by: 'Seed data' }, ['date', 'contract_id', 'category', 'amount', 'description', 'created_by']);
+  await insert('expenses', { date: lastWeekday(4), contract_id: contracts['ELEMORE 1'], category: 'Fuel', amount: 48.5, description: 'Additional fuel - diversion via Hetton', created_by: 'Seed data' }, ['date', 'contract_id', 'category', 'amount', 'description', 'created_by']);
+  await insert('expenses', { date: lastWeekday(9), contract_id: contracts['PORTLAND 1'], category: 'Vehicle repair', amount: 165, description: 'Wheelchair ramp hinge replacement', created_by: 'Seed data' }, ['date', 'contract_id', 'category', 'amount', 'description', 'created_by']);
 
-  function childId(name) {
-    const [first, ...rest] = name.split(' ');
-    const r = get('SELECT id FROM children WHERE first_name = ? AND last_name = ?', [first, rest.join(' ')]);
-    return r ? r.id : null;
-  }
-});
+  const summary = await get(`SELECT
+      (SELECT COUNT(*) FROM councils) AS councils,
+      (SELECT COUNT(*) FROM schools) AS schools,
+      (SELECT COUNT(*) FROM staff) AS staff,
+      (SELECT COUNT(*) FROM contracts) AS contracts,
+      (SELECT COUNT(*) FROM children) AS children,
+      (SELECT COUNT(*) FROM documents) AS documents,
+      (SELECT COUNT(*) FROM exceptions) AS exceptions`);
 
-console.log('Seed complete.');
-console.log('  Councils :', get('SELECT COUNT(*) n FROM councils').n);
-console.log('  Schools  :', get('SELECT COUNT(*) n FROM schools').n);
-console.log('  Staff    :', get('SELECT COUNT(*) n FROM staff').n);
-console.log('  Contracts:', get('SELECT COUNT(*) n FROM contracts').n);
-console.log('  Children :', get('SELECT COUNT(*) n FROM children').n);
-console.log('  Documents:', get('SELECT COUNT(*) n FROM documents').n);
-console.log('  Exceptions:', get('SELECT COUNT(*) n FROM exceptions').n);
-console.log('\nSign in with: admin / admin123   (also manager/manager123, ops/ops123, finance/finance123, viewer/viewer123)');
+  console.log('Seed complete on ' + database.describe);
+  console.log('  Councils  :', Number(summary.councils));
+  console.log('  Schools   :', Number(summary.schools));
+  console.log('  Staff     :', Number(summary.staff));
+  console.log('  Contracts :', Number(summary.contracts));
+  console.log('  Children  :', Number(summary.children));
+  console.log('  Documents :', Number(summary.documents));
+  console.log('  Exceptions:', Number(summary.exceptions));
+  console.log('\nSign in with: admin / admin123   (also manager/manager123, ops/ops123, finance/finance123, viewer/viewer123)');
+}
+
+main()
+  .then(() => database.close())
+  .catch(async e => {
+    console.error('\nSeed failed:', e.message);
+    try { await database.close(); } catch (_) {}
+    process.exit(1);
+  });

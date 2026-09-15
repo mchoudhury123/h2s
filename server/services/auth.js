@@ -27,8 +27,8 @@ function verify(password, stored) {
 const sessions = new Map(); // token -> { user, expires }
 const SESSION_MS = 12 * 60 * 60 * 1000;
 
-function login(username, password) {
-  const u = get('SELECT * FROM users WHERE lower(username) = lower(?) AND active = 1', [String(username || '').trim()]);
+async function login(username, password) {
+  const u = await get('SELECT * FROM users WHERE lower(username) = lower(?) AND active = 1', [String(username || '').trim()]);
   if (!u || !verify(password, u.password_hash)) return null;
   const token = crypto.randomBytes(24).toString('hex');
   const user = { id: u.id, username: u.username, name: u.name, role: u.role };
@@ -57,10 +57,11 @@ function redact(user, obj, fields) {
   return Array.isArray(copy) ? copy.map(apply) : apply(copy);
 }
 
-function ensureSeedAdmin() {
-  const n = get('SELECT COUNT(*) n FROM users').n;
-  if (n === 0) {
-    run('INSERT INTO users (username, password_hash, name, role) VALUES (?,?,?,?)', ['admin', hash('admin123'), 'System Administrator', 'admin']);
+async function ensureSeedAdmin() {
+  const row = await get('SELECT COUNT(*) AS n FROM users');
+  if (Number(row.n) === 0) {
+    await run('INSERT INTO users (username, password_hash, name, role) VALUES (?,?,?,?)',
+      ['admin', hash('admin123'), 'System Administrator', 'admin']);
     return true;
   }
   return false;

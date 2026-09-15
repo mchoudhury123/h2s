@@ -9,25 +9,25 @@ const LABELS = {
 };
 
 function logChange(user, entityType, entityId, entityLabel, field, oldValue, newValue, summary) {
-  run(`INSERT INTO audit_log (user_name, entity_type, entity_id, entity_label, action, field, old_value, new_value, summary)
+  return run(`INSERT INTO audit_log (user_name, entity_type, entity_id, entity_label, action, field, old_value, new_value, summary)
        VALUES (?,?,?,?,?,?,?,?,?)`,
     [user ? user.name : 'system', entityType, entityId, entityLabel || null, 'update', field, str(oldValue), str(newValue), summary || null]);
 }
 function logAction(user, entityType, entityId, entityLabel, action, summary) {
-  run(`INSERT INTO audit_log (user_name, entity_type, entity_id, entity_label, action, summary) VALUES (?,?,?,?,?,?)`,
+  return run(`INSERT INTO audit_log (user_name, entity_type, entity_id, entity_label, action, summary) VALUES (?,?,?,?,?,?)`,
     [user ? user.name : 'system', entityType, entityId, entityLabel || null, action, summary || null]);
 }
 /** Diff an existing row against an incoming patch and log each changed field. */
-function logDiff(user, entityType, entityId, entityLabel, before, patch, columns, resolve) {
+async function logDiff(user, entityType, entityId, entityLabel, before, patch, columns, resolve) {
   for (const col of columns) {
     if (patch[col] === undefined) continue;
     const oldV = before ? before[col] : null;
     const newV = patch[col] === '' ? null : patch[col];
     if (String(oldV ?? '') === String(newV ?? '')) continue;
     const label = LABELS[col] || col.replace(/_/g, ' ');
-    const o = resolve ? resolve(col, oldV) : oldV;
-    const n = resolve ? resolve(col, newV) : newV;
-    logChange(user, entityType, entityId, entityLabel, label, o, n, `${label} changed from "${o ?? '(empty)'}" to "${n ?? '(empty)'}"`);
+    const o = resolve ? await resolve(col, oldV) : oldV;
+    const n = resolve ? await resolve(col, newV) : newV;
+    await logChange(user, entityType, entityId, entityLabel, label, o, n, `${label} changed from "${o ?? '(empty)'}" to "${n ?? '(empty)'}"`);
   }
 }
 function str(v) { return v === null || v === undefined ? null : String(v); }
