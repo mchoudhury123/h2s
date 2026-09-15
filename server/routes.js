@@ -12,6 +12,7 @@ const H = require('./http');
 const auth = require('./services/auth');
 const audit = require('./services/audit');
 const cal = require('./services/calendar');
+const sched = require('./services/schedule');
 const compliance = require('./services/compliance');
 const wages = require('./services/wages');
 const finance = require('./services/finance');
@@ -441,6 +442,9 @@ crud('contracts', 'contracts', {
       LEFT JOIN staff cs ON cs.id = e.cover_staff_id
       LEFT JOIN staff st ON st.id = e.staff_id
       WHERE e.organisation_id = ? AND e.contract_id = ? AND e.date >= ? ORDER BY e.date DESC LIMIT 60`, [org, id, recentFrom]);
+    const scheduleVersions = (await sched.loadSchedules(org, [id])).get(id) || [];
+    row.week = sched.weekSummary(row, scheduleVersions, cal.today());
+    row.schedule_versions = scheduleVersions.length;
     row.history = await audit.history(org, 'contracts', id, 50);
     return row;
   },
@@ -538,6 +542,12 @@ crud('children', 'children', {
     row.absences = await all(`SELECT e.*, c.code AS contract_code FROM exceptions e
       LEFT JOIN contracts c ON c.id = e.contract_id
       WHERE e.organisation_id = ? AND e.child_id = ? ORDER BY e.date DESC LIMIT 40`, [org, id]);
+    const contract = row.contract_id
+      ? await get('SELECT * FROM contracts WHERE id = ? AND organisation_id = ?', [row.contract_id, org])
+      : null;
+    const timetableVersions = (await sched.loadTimetables(org, [id])).get(id) || [];
+    row.timetable = sched.timetableSummary(row, contract, timetableVersions, cal.today());
+    row.timetable_versions = timetableVersions.length;
     row.history = await audit.history(org, 'children', id, 40);
     return row;
   },
@@ -777,7 +787,8 @@ route('GET', '/api/exceptions', async ctx => {
 });
 
 const EX_COLS = ['date', 'type', 'leg', 'contract_id', 'school_id', 'child_id', 'role', 'staff_id',
-  'cover_staff_id', 'cover_pay', 'paid_immediately', 'amount', 'note', 'created_by'];
+  'cover_staff_id', 'cover_pay', 'paid_immediately', 'amount', 'note', 'created_by',
+  'trip_seq', 'trip_label', 'trip_kind'];
 
 route('POST', '/api/exceptions', async ctx => {
   const b = ctx.body;
@@ -816,6 +827,18 @@ route('POST', '/api/exceptions', async ctx => {
         }
         if (data.type === 'child_absence' && !data.child_id) throw new Error('Select the child who was absent');
         if (data.type === 'school_closed' && data.school_id) data.contract_id = null;
+        if (data.type === 'extra_journey') {
+          if (!data.contract_id) throw new Error('Choose the contract this extra journey belongs to');
+          if (!data.trip_label) throw new Error('Name the extra journey, for example "1pm college collection"');
+          data.leg = data.leg || 'DAY';
+        }
+        // An exception can name one journey of the day. Anything else is a leg.
+        if (data.trip_seq === '' || data.trip_seq === undefined) data.trip_seq = null;
+        if (data.trip_seq !== null) {
+          data.trip_seq = Number(data.trip_seq);
+          if (!Number.isInteger(data.trip_seq) || data.trip_seq < 1) throw new Error('That is not one of the day\u2019s journeys');
+          if (!data.leg) data.leg = 'DAY';
+        }
 
         const id = await insert('exceptions', data, EX_COLS, tx, ctx.org);
         // "Paid immediately" writes a payment straight away so payroll never pays it twice.
@@ -861,17 +884,285 @@ route('DELETE', '/api/exceptions/:id', async ctx => {
 });
 
 function describeException(r) {
-  const leg = r.leg === 'DAY' ? 'full day' : r.leg;
+  // A journey number is more specific than a leg, so it wins when both are set.
+  const leg = r.trip_seq ? (r.trip_label || `journey ${r.trip_seq}`)
+    : r.leg === 'DAY' ? 'full day' : r.leg;
   switch (r.type) {
     case 'child_absence': return `Child absent (${leg})`;
     case 'staff_absence': return `${r.role === 'driver' ? 'Driver' : 'PA'} absent (${leg})${r.cover_staff_id ? ' - cover assigned' : ' - no cover'}`;
     case 'school_closed': return `School closed (${leg})`;
     case 'contract_cancelled': return `Contract cancelled (${leg})`;
     case 'journey_cancelled': return `Journey cancelled (${leg})`;
+    case 'extra_journey': return `Extra journey: ${r.trip_label || r.note || 'additional run'}`;
     case 'pay_override': return `Pay override ${r.amount} (${leg})`;
     default: return r.note || 'Note';
   }
 }
+
+// =====================================================================
+// Weekly patterns: what a contract normally runs, and when a child travels
+//
+// Both are versioned by an effective date. Saving next term's pattern leaves
+// last term's journeys, wages and invoices exactly as they were.
+// =====================================================================
+const TRIP_KINDS = new Set(['outbound', 'return', 'other']);
+const DATE_RX = /^\d{4}-\d{2}-\d{2}$/;
+
+function readTrip(t, i) {
+  const label = String(t.label || '').trim();
+  if (!label) throw new Error(`Journey ${i + 1} needs a name, for example "AM school run"`);
+  const kind = t.kind || 'outbound';
+  if (!TRIP_KINDS.has(kind)) throw new Error(`"${kind}" is not a journey type`);
+  return {
+    label, kind,
+    depart_time: t.depart_time || null,
+    arrive_time: t.arrive_time || null,
+    driver_pay: blankToNull(t.driver_pay),
+    pa_pay: blankToNull(t.pa_pay),
+    income: blankToNull(t.income),
+    notes: t.notes || null,
+    child_ids: Array.isArray(t.child_ids) ? t.child_ids.map(Number).filter(Boolean) : [],
+  };
+}
+function blankToNull(v) {
+  if (v === '' || v === null || v === undefined) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Every version of a contract's week, plus the one in force on a date. */
+route('GET', '/api/contracts/:id/schedule', async ctx => {
+  const id = Number(ctx.params.id);
+  const contract = await owned('contracts', id, ctx.org);
+  if (!contract) return H.error(ctx.res, 'Contract not found', 404);
+  const on = ctx.query.date || cal.today();
+  const versions = (await sched.loadSchedules(ctx.org, [id])).get(id) || [];
+  const inForce = sched.versionFor(versions, on);
+  const children = await all(
+    `SELECT id, first_name, last_name, pickup_time FROM children
+     WHERE organisation_id = ? AND contract_id = ? AND status = 'active' ORDER BY last_name, first_name`,
+    [ctx.org, id]);
+  H.json(ctx.res, {
+    contract_id: id,
+    date: on,
+    summary: sched.weekSummary(contract, versions, on),
+    children: children.map(c => ({ ...c, name: `${c.first_name} ${c.last_name}` })),
+    versions: versions.map(v => ({
+      id: v.id, effective_from: v.effective_from, note: v.note,
+      in_force: !!inForce && inForce.id === v.id,
+      days: [1, 2, 3, 4, 5, 6, 0].map(weekday => ({
+        weekday,
+        name: sched.WEEKDAY_NAMES[weekday],
+        trips: v.trips.filter(t => t.weekday === weekday).sort((a, b) => a.seq - b.seq),
+      })),
+      trip_count: v.trips.length,
+    })),
+  });
+});
+
+/**
+ * Saves one version of a contract's week. An existing version with the same
+ * effective date is replaced; a new date adds a version and leaves earlier
+ * weeks, and everything already calculated from them, untouched.
+ */
+route('PUT', '/api/contracts/:id/schedule', async ctx => {
+  const id = Number(ctx.params.id);
+  const contract = await owned('contracts', id, ctx.org);
+  if (!contract) return H.error(ctx.res, 'Contract not found', 404);
+
+  const b = ctx.body || {};
+  const from = String(b.effective_from || '').slice(0, 10);
+  if (!DATE_RX.test(from)) return H.error(ctx.res, 'Choose the date this pattern starts from');
+
+  let days;
+  try {
+    days = (Array.isArray(b.days) ? b.days : []).map(d => {
+      const weekday = Number(d.weekday);
+      if (!(weekday >= 0 && weekday <= 6)) throw new Error('That is not a day of the week');
+      return { weekday, trips: (Array.isArray(d.trips) ? d.trips : []).map(readTrip) };
+    });
+  } catch (e) { return H.error(ctx.res, e.message, 400); }
+  if (!days.some(d => d.trips.length)) {
+    return H.error(ctx.res, 'A weekly pattern needs at least one journey. Remove the pattern instead to go back to the standard week.');
+  }
+
+  // Children named on a journey must be on this contract.
+  const mine = new Set((await all(
+    'SELECT id FROM children WHERE organisation_id = ? AND contract_id = ?', [ctx.org, id])).map(r => r.id));
+  for (const d of days) {
+    for (const t of d.trips) {
+      for (const cid of t.child_ids) {
+        if (!mine.has(cid)) return H.error(ctx.res, 'One of the children named on a journey is not on this contract', 400);
+      }
+    }
+  }
+
+  const tripCols = ['schedule_id', 'weekday', 'seq', 'label', 'kind', 'depart_time', 'arrive_time',
+    'driver_pay', 'pa_pay', 'income', 'notes'];
+  let scheduleId;
+  try {
+    await transaction(async tx => {
+      // Replacing a version drops its journeys with it, through the cascade.
+      await tx.run('DELETE FROM contract_schedules WHERE organisation_id = ? AND contract_id = ? AND effective_from = ?',
+        [ctx.org, id, from]);
+      scheduleId = await insert('contract_schedules', {
+        contract_id: id, effective_from: from, note: b.note || null, created_by: ctx.user.name,
+      }, ['contract_id', 'effective_from', 'note', 'created_by'], tx, ctx.org);
+
+      for (const d of days) {
+        let seq = 0;
+        for (const t of d.trips) {
+          seq += 1;
+          const tripId = await insert('contract_trips',
+            { ...t, schedule_id: scheduleId, weekday: d.weekday, seq }, tripCols, tx, ctx.org);
+          for (const cid of t.child_ids) {
+            await insert('contract_trip_children', { trip_id: tripId, child_id: cid },
+              ['trip_id', 'child_id'], tx, ctx.org);
+          }
+        }
+      }
+    });
+  } catch (e) { return H.error(ctx.res, friendly(e), 400); }
+
+  const counts = days.filter(d => d.trips.length)
+    .map(d => `${sched.SHORT_DAYS[d.weekday]} ${d.trips.length}`).join(', ');
+  await audit.logAction(ctx.user, 'contracts', id, contract.code, 'schedule',
+    `Weekly pattern from ${compliance.ukDate(from)}: ${counts}`);
+
+  const versions = (await sched.loadSchedules(ctx.org, [id])).get(id) || [];
+  H.json(ctx.res, {
+    schedule_id: scheduleId,
+    effective_from: from,
+    rewrites_history: from < cal.today(),
+    summary: sched.weekSummary(contract, versions, ctx.query.date || cal.today()),
+  }, 201);
+});
+
+/** Removes one version. With none left the contract goes back to its standard week. */
+route('DELETE', '/api/contracts/:id/schedule/:scheduleId', async ctx => {
+  const id = Number(ctx.params.id);
+  const contract = await owned('contracts', id, ctx.org);
+  if (!contract) return H.error(ctx.res, 'Contract not found', 404);
+  const row = await get('SELECT * FROM contract_schedules WHERE id = ? AND contract_id = ? AND organisation_id = ?',
+    [Number(ctx.params.scheduleId), id, ctx.org]);
+  if (!row) return H.error(ctx.res, 'That weekly pattern was not found', 404);
+  await run('DELETE FROM contract_schedules WHERE id = ? AND organisation_id = ?', [row.id, ctx.org]);
+  await audit.logAction(ctx.user, 'contracts', id, contract.code, 'schedule',
+    `Removed the weekly pattern that started ${compliance.ukDate(row.effective_from)}`);
+  H.json(ctx.res, { ok: true });
+});
+
+/** A child's week, every version of it, and the one in force. */
+route('GET', '/api/children/:id/timetable', async ctx => {
+  const id = Number(ctx.params.id);
+  const child = await owned('children', id, ctx.org);
+  if (!child) return H.error(ctx.res, 'Child not found', 404);
+  const contract = child.contract_id ? await owned('contracts', child.contract_id, ctx.org) : null;
+  const on = ctx.query.date || cal.today();
+  const versions = (await sched.loadTimetables(ctx.org, [id])).get(id) || [];
+  const inForce = sched.versionFor(versions, on);
+  H.json(ctx.res, {
+    child_id: id,
+    date: on,
+    summary: sched.timetableSummary(child, contract, versions, on),
+    versions: versions.map(v => ({
+      id: v.id, effective_from: v.effective_from, note: v.note,
+      same_all_week: !!v.same_all_week, start_time: v.start_time, finish_time: v.finish_time,
+      in_force: !!inForce && inForce.id === v.id,
+      days: [1, 2, 3, 4, 5, 6, 0].map(weekday => {
+        const d = v.days.find(x => x.weekday === weekday);
+        return {
+          weekday, name: sched.WEEKDAY_NAMES[weekday],
+          attends: d ? !!d.attends : true,
+          start_time: d ? d.start_time : null,
+          finish_time: d ? d.finish_time : null,
+        };
+      }),
+    })),
+  });
+});
+
+/** Saves one version of a child's week. */
+route('PUT', '/api/children/:id/timetable', async ctx => {
+  const id = Number(ctx.params.id);
+  const child = await owned('children', id, ctx.org);
+  if (!child) return H.error(ctx.res, 'Child not found', 404);
+
+  const b = ctx.body || {};
+  const from = String(b.effective_from || '').slice(0, 10);
+  if (!DATE_RX.test(from)) return H.error(ctx.res, 'Choose the date this timetable starts from');
+  const sameAllWeek = (b.same_all_week === false || Number(b.same_all_week) === 0) ? 0 : 1;
+  if (sameAllWeek && !b.start_time && !b.finish_time) {
+    return H.error(ctx.res, 'Enter the start and finish times, or choose different times by day');
+  }
+
+  const days = (Array.isArray(b.days) ? b.days : []).map(d => ({
+    weekday: Number(d.weekday),
+    attends: (d.attends === false || Number(d.attends) === 0) ? 0 : 1,
+    start_time: d.start_time || null,
+    finish_time: d.finish_time || null,
+  })).filter(d => d.weekday >= 0 && d.weekday <= 6);
+  if (!sameAllWeek && !days.some(d => d.attends)) {
+    return H.error(ctx.res, 'A timetable needs at least one day the child attends');
+  }
+
+  let timetableId;
+  try {
+    await transaction(async tx => {
+      await tx.run('DELETE FROM child_timetables WHERE organisation_id = ? AND child_id = ? AND effective_from = ?',
+        [ctx.org, id, from]);
+      timetableId = await insert('child_timetables', {
+        child_id: id, effective_from: from, same_all_week: sameAllWeek,
+        start_time: b.start_time || null, finish_time: b.finish_time || null,
+        note: b.note || null, created_by: ctx.user.name,
+      }, ['child_id', 'effective_from', 'same_all_week', 'start_time', 'finish_time', 'note', 'created_by'], tx, ctx.org);
+      for (const d of days) {
+        await insert('child_timetable_days', { ...d, timetable_id: timetableId },
+          ['timetable_id', 'weekday', 'attends', 'start_time', 'finish_time'], tx, ctx.org);
+      }
+    });
+  } catch (e) { return H.error(ctx.res, friendly(e), 400); }
+
+  const off = days.filter(d => !d.attends).map(d => sched.SHORT_DAYS[d.weekday]);
+  await audit.logAction(ctx.user, 'children', id, `${child.first_name} ${child.last_name}`, 'timetable',
+    `Weekly timetable from ${compliance.ukDate(from)}${off.length ? ` - does not attend ${off.join(', ')}` : ''}`);
+
+  const versions = (await sched.loadTimetables(ctx.org, [id])).get(id) || [];
+  const contract = child.contract_id ? await owned('contracts', child.contract_id, ctx.org) : null;
+  H.json(ctx.res, {
+    timetable_id: timetableId,
+    effective_from: from,
+    rewrites_history: from < cal.today(),
+    summary: sched.timetableSummary(child, contract, versions, ctx.query.date || cal.today()),
+  }, 201);
+});
+
+route('DELETE', '/api/children/:id/timetable/:timetableId', async ctx => {
+  const id = Number(ctx.params.id);
+  const child = await owned('children', id, ctx.org);
+  if (!child) return H.error(ctx.res, 'Child not found', 404);
+  const row = await get('SELECT * FROM child_timetables WHERE id = ? AND child_id = ? AND organisation_id = ?',
+    [Number(ctx.params.timetableId), id, ctx.org]);
+  if (!row) return H.error(ctx.res, 'That timetable was not found', 404);
+  await run('DELETE FROM child_timetables WHERE id = ? AND organisation_id = ?', [row.id, ctx.org]);
+  await audit.logAction(ctx.user, 'children', id, `${child.first_name} ${child.last_name}`, 'timetable',
+    `Removed the timetable that started ${compliance.ukDate(row.effective_from)}`);
+  H.json(ctx.res, { ok: true });
+});
+
+/**
+ * One contract on one date, journey by journey. The exception screens use this
+ * so staff pick from the journeys that actually run that day.
+ */
+route('GET', '/api/contracts/:id/day/:date', async ctx => {
+  const id = Number(ctx.params.id);
+  if (!DATE_RX.test(ctx.params.date)) return H.error(ctx.res, 'That is not a date');
+  const data = await cal.loadContext(ctx.org, ctx.params.date, ctx.params.date, ' AND c.id = ?', [id]);
+  const c = data.contracts[0];
+  if (!c) return H.error(ctx.res, 'Contract not found', 404);
+  const day = cal.evaluateContractDay(c, ctx.params.date, data.childMap[id] || [], data.exceptions, data);
+  H.json(ctx.res, { ...day, contract: c });
+});
 
 // =====================================================================
 // Dashboard and search

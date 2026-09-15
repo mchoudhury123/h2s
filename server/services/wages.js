@@ -1,26 +1,24 @@
 'use strict';
-// Wage calculation engine. Every figure is derived from scheduled journeys +/- exceptions,
-// and every line is traceable back to a date, contract and reason.
+// Wage calculation engine. Every figure is derived from the journeys a contract
+// was scheduled to run, plus the exceptions recorded against them, and every
+// line traces back to a date, a contract, a trip and a reason.
 const { all } = require('../db');
 const cal = require('./calendar');
 const { round2 } = cal;
 
 /**
  * Calculate wages for a date range.
- * opts: { from, to, staff_ids?, contract_id?, type? ('driver'|'pa'), include_paid? }
- * Returns one entry per staff member with a fully itemised breakdown.
+ * opts: { from, to, staff_ids?, contract_id?, type? ('driver'|'pa'), include_zero? }
  */
 async function calculateWages(orgId, opts) {
   if (!orgId) throw new Error('An organisation id is required');
   const { from, to } = opts;
-  const contracts = await cal.loadContracts(orgId, " AND c.status IN ('active','suspended','ended')");
-  const childMap = await cal.loadChildrenByContract(orgId, contracts.map(c => c.id));
-  const exceptions = await cal.loadExceptions(orgId, from, to);
+  const ctx = await cal.loadContext(orgId, from, to, " AND c.status IN ('active','suspended','ended')");
   const dates = cal.dateRange(from, to);
 
-  // staff ledger
-  const ledger = new Map(); // staff_id -> { staff, lines: [] }
-  const staffRows = await all('SELECT id, type, first_name, last_name, default_day_rate, status FROM staff WHERE organisation_id = ?', [orgId]);
+  const ledger = new Map();
+  const staffRows = await all(
+    'SELECT id, type, first_name, last_name, default_day_rate, status FROM staff WHERE organisation_id = ?', [orgId]);
   const staffById = new Map(staffRows.map(s => [s.id, s]));
   function entry(staffId) {
     if (!staffId) return null;
@@ -32,72 +30,81 @@ async function calculateWages(orgId, opts) {
     return ledger.get(staffId);
   }
 
-  for (const c of contracts) {
+  for (const c of ctx.contracts) {
     if (opts.contract_id && c.id !== opts.contract_id) continue;
     for (const date of dates) {
-      if (!cal.contractOperatesOn(c, date)) continue;
-      const day = cal.evaluateContractDay(c, date, childMap[c.id] || [], exceptions);
-      for (const leg of cal.LEGS) {
-        const L = day.legs[leg];
+      const day = cal.evaluateContractDay(c, date, ctx.childMap[c.id] || [], ctx.exceptions, ctx);
+      if (!day.trips.length) continue;
+
+      // Two-trip days keep reading as AM and PM; busier days name the trip.
+      const simple = day.trips.filter(x => x.source !== 'extra').length <= 2;
+      const tripName = t => (t.source === 'extra' ? 'Extra'
+        : simple ? (t.kind === 'outbound' ? 'AM' : 'PM') : `Trip ${t.seq}`);
+
+      for (const t of day.trips) {
         for (const role of ['driver', 'pa']) {
-          const info = L[role];
+          const info = t[role];
           if (!info || info.status === 'not_required') continue;
-          // normal staff pay
+          const who = role === 'driver' ? 'Driver' : 'PA';
+
           if (!info.absent && info.normal_staff_id && info.pay > 0) {
             const e = entry(info.normal_staff_id);
             if (e) e.lines.push({
-              kind: 'normal', date, leg, contract_id: c.id, contract_code: c.code, role,
-              description: `${c.code} ${leg} (${role === 'driver' ? 'Driver' : 'PA'})`,
-              rate: info.override ? info.override.amount : (role === 'driver' ? c.driver_pay_per_day : c.pa_pay_per_day),
-              amount: info.pay,
+              kind: 'normal', date, leg: tripName(t), trip_seq: t.seq, trip_label: t.label,
+              contract_id: c.id, contract_code: c.code, role,
+              description: `${c.code} ${tripName(t)} — ${t.label} (${who})`,
+              rate: info.rate, amount: info.pay,
               note: info.override ? 'Pay override applied' : null,
             });
           }
-          // withheld pay explanation (zero-value, for transparency)
           if (info.absent && info.normal_staff_id) {
             const e = entry(info.normal_staff_id);
             if (e) e.lines.push({
-              kind: 'absence', date, leg, contract_id: c.id, contract_code: c.code, role,
-              description: `${c.code} ${leg} - absent, not paid${info.cover_name ? ` (covered by ${info.cover_name})` : ''}`,
+              kind: 'absence', date, leg: tripName(t), trip_seq: t.seq, trip_label: t.label,
+              contract_id: c.id, contract_code: c.code, role,
+              description: `${c.code} ${tripName(t)} — absent, not paid${info.cover_name ? ` (covered by ${info.cover_name})` : ''}`,
               rate: 0, amount: 0,
             });
           }
-          if (!info.absent && info.normal_staff_id && info.pay === 0 && L.status !== 'operated') {
+          if (!info.absent && info.normal_staff_id && info.pay === 0 && t.status !== 'operated') {
             const e = entry(info.normal_staff_id);
             if (e) e.lines.push({
-              kind: 'not_operated', date, leg, contract_id: c.id, contract_code: c.code, role,
-              description: `${c.code} ${leg} not operated - ${L.reason}`,
+              kind: 'not_operated', date, leg: tripName(t), trip_seq: t.seq, trip_label: t.label,
+              contract_id: c.id, contract_code: c.code, role,
+              description: `${c.code} ${tripName(t)} not operated — ${t.reason}`,
               rate: 0, amount: 0,
             });
           }
         }
       }
-      // cover payments: one per absence exception (not per leg) so a DAY cover pays once
-      const coverEx = day.exceptions.filter(e => e.type === 'staff_absence' && e.cover_staff_id);
-      for (const ce of coverEx) {
+
+      // Cover is paid once per absence, however many trips it spans.
+      for (const ce of day.exceptions.filter(e => e.type === 'staff_absence' && e.cover_staff_id)) {
         const e = entry(ce.cover_staff_id);
         if (!e) continue;
-        const roleLabel = ce.role === 'driver' ? 'Driver' : 'PA';
-        const defaultRate = ce.role === 'driver' ? c.driver_pay_per_day : c.pa_pay_per_day;
-        const fullDay = ce.leg === 'DAY';
-        const baseAmount = ce.cover_pay != null ? ce.cover_pay : round2(defaultRate * (fullDay ? 1 : 0.5));
-        // if the contract did not operate at all that day, no cover pay is due
-        const operatedLegs = cal.LEGS.filter(l => day.legs[l].status === 'operated');
-        const relevant = fullDay ? operatedLegs.length > 0 : day.legs[ce.leg].status === 'operated';
+        const who = ce.role === 'driver' ? 'Driver' : 'PA';
+        const covered = day.trips.filter(t => cal.appliesToTrip(ce, t));
+        const operated = covered.filter(t => t.status === 'operated');
+        // Without an agreed figure, cover is worth what those journeys are worth.
+        const standard = round2(covered.reduce((a, t) => a + (ce.role === 'driver' ? t.driver_rate : t.pa_rate), 0));
+        const amount = ce.cover_pay != null ? Number(ce.cover_pay) : standard;
+        const span = ce.trip_seq != null ? `trip ${ce.trip_seq}` : ce.leg === 'DAY' ? 'full day' : ce.leg;
         e.lines.push({
-          kind: 'cover', date, leg: ce.leg, contract_id: c.id, contract_code: c.code, role: ce.role,
-          description: `COVER ${roleLabel} ${c.code} ${ce.leg === 'DAY' ? 'full day' : ce.leg}${relevant ? '' : ' - journey not operated'}`,
-          rate: ce.cover_pay != null ? ce.cover_pay : defaultRate,
-          amount: relevant ? round2(baseAmount) : 0,
+          kind: 'cover', date, leg: span, trip_seq: ce.trip_seq,
+          contract_id: c.id, contract_code: c.code, role: ce.role,
+          description: `COVER ${who} ${c.code} ${span}${operated.length ? '' : ' - journey not operated'}`,
+          rate: ce.cover_pay != null ? Number(ce.cover_pay) : standard,
+          amount: operated.length ? round2(amount) : 0,
           exception_id: ce.id,
           paid_immediately: !!ce.paid_immediately,
-          note: ce.cover_pay != null ? 'Cover rate override' : 'Contract rate',
+          note: ce.cover_pay != null ? 'Agreed cover rate' : 'Rate for the journeys covered',
+          journeys: covered.length,
         });
       }
     }
   }
 
-  // Payments already made in the period (deducted so nothing is paid twice)
+  // Payments already made in the period, so nothing is paid twice.
   const paidRows = await all(`SELECT p.*, s.first_name || ' ' || s.last_name AS staff_name
     FROM payments p JOIN staff s ON s.id = p.staff_id
     WHERE p.organisation_id = ? AND p.work_date >= ? AND p.work_date <= ?`, [orgId, from, to]);
@@ -106,7 +113,7 @@ async function calculateWages(orgId, opts) {
     if (!e) continue;
     const label = p.source === 'cover_immediate' ? 'Cover paid immediately'
       : p.source === 'payroll' ? 'Paid through payroll'
-      : (p.note || 'Payment already made');
+        : (p.note || 'Payment already made');
     e.lines.push({
       kind: 'already_paid', date: p.work_date, leg: null, contract_id: null, contract_code: null,
       description: `${label} on ${ukDate(p.paid_date)}${p.reference ? ' (ref ' + p.reference + ')' : ''}`,
@@ -114,23 +121,24 @@ async function calculateWages(orgId, opts) {
     });
   }
 
-  // Build results
   let results = [...ledger.values()].map(e => {
-    const lines = e.lines.sort((a, b) => (a.date || '').localeCompare(b.date || '') || (a.kind).localeCompare(b.kind));
+    const lines = e.lines.sort((a, b) => (a.date || '').localeCompare(b.date || '')
+      || (a.trip_seq || 0) - (b.trip_seq || 0)
+      || a.kind.localeCompare(b.kind));
     const normal = sum(lines.filter(l => l.kind === 'normal'));
     const cover = sum(lines.filter(l => l.kind === 'cover'));
     const already = sum(lines.filter(l => l.kind === 'already_paid'));
     const gross = round2(normal + cover);
-    const due = round2(gross + already);
-    const normalDays = countDays(lines.filter(l => l.kind === 'normal'));
-    const coverDays = countDays(lines.filter(l => l.kind === 'cover' && l.amount > 0));
     return {
       staff: e.staff, from, to, lines,
       totals: {
         normal_earnings: round2(normal), cover_earnings: round2(cover),
-        gross: gross, already_paid: round2(-already), amount_due: due,
-        normal_days: normalDays, cover_days: coverDays,
+        gross, already_paid: round2(-already), amount_due: round2(gross + already),
+        normal_days: countDays(lines.filter(l => l.kind === 'normal')),
+        cover_days: countDays(lines.filter(l => l.kind === 'cover' && l.amount > 0)),
         journeys: lines.filter(l => l.kind === 'normal').length,
+        cover_journeys: lines.filter(l => l.kind === 'cover' && l.amount > 0)
+          .reduce((a, l) => a + (l.journeys || 1), 0),
         missed_journeys: lines.filter(l => l.kind === 'absence' || l.kind === 'not_operated').length,
       },
     };
@@ -141,15 +149,17 @@ async function calculateWages(orgId, opts) {
   if (!opts.include_zero) results = results.filter(r => r.lines.some(l => l.amount !== 0));
   results.sort((a, b) => a.staff.type.localeCompare(b.staff.type) || a.staff.name.localeCompare(b.staff.name));
 
-  const grand = {
-    drivers: round2(sumBy(results.filter(r => r.staff.type === 'driver'), r => r.totals.amount_due)),
-    pas: round2(sumBy(results.filter(r => r.staff.type === 'pa'), r => r.totals.amount_due)),
-    gross: round2(sumBy(results, r => r.totals.gross)),
-    already_paid: round2(sumBy(results, r => r.totals.already_paid)),
-    total_due: round2(sumBy(results, r => r.totals.amount_due)),
-    staff_count: results.length,
+  return {
+    from, to, results,
+    totals: {
+      drivers: round2(sumBy(results.filter(r => r.staff.type === 'driver'), r => r.totals.amount_due)),
+      pas: round2(sumBy(results.filter(r => r.staff.type === 'pa'), r => r.totals.amount_due)),
+      gross: round2(sumBy(results, r => r.totals.gross)),
+      already_paid: round2(sumBy(results, r => r.totals.already_paid)),
+      total_due: round2(sumBy(results, r => r.totals.amount_due)),
+      staff_count: results.length,
+    },
   };
-  return { from, to, results, totals: grand };
 }
 
 function ukDate(s) { if (!s) return ''; const [y, m, d] = String(s).slice(0, 10).split('-'); return `${d}/${m}/${y}`; }
@@ -157,7 +167,7 @@ function sum(lines) { return lines.reduce((a, l) => a + (l.amount || 0), 0); }
 function sumBy(arr, fn) { return arr.reduce((a, x) => a + (fn(x) || 0), 0); }
 function countDays(lines) { return new Set(lines.map(l => l.date)).size; }
 
-/** Staff cost for a set of contracts over a range - used by profitability. */
+/** Staff cost per contract over a range, used by profitability. */
 async function staffCostForRange(orgId, from, to, contractId = null) {
   const w = await calculateWages(orgId, { from, to, contract_id: contractId || undefined, include_zero: true });
   const byContract = {};

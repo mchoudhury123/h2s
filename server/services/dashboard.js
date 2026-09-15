@@ -35,6 +35,8 @@ async function dashboard(orgId, date) {
     }
   }
   const childAbsencesToday = day.items.reduce((a, i) => a + i.exceptions.filter(e => e.type === 'child_absence').length, 0);
+  const journeysToday = day.items.reduce((a, i) => a + i.planned_trips, 0);
+  const journeysOperatingToday = day.items.reduce((a, i) => a + i.operated_trips, 0);
   const notOperatingToday = day.items.filter(i => !i.operated);
 
   // Staffing gaps. Pending contracts count too: they need staffing before their start date.
@@ -93,11 +95,21 @@ async function dashboard(orgId, date) {
     counts,
     today: {
       operating: operatingToday,
+      journeys: journeysToday,
+      journeys_operating: journeysOperatingToday,
       not_operating: notOperatingToday.map(i => ({ contract_id: i.contract_id, code: i.code, reasons: i.summary })),
       staff_absences: absencesToday,
       covers: coversToday,
       child_absences: childAbsencesToday,
-      items: day.items.map(i => ({ contract_id: i.contract_id, code: i.code, summary: i.summary, operated: i.operated, legs: { AM: i.legs.AM.status, PM: i.legs.PM.status }, driver: i.legs.AM.driver, pa: i.legs.AM.pa, children: i.children.length })),
+      items: day.items.map(i => ({
+        contract_id: i.contract_id, code: i.code, summary: i.summary, operated: i.operated,
+        trips: i.trips.map(t => ({ seq: t.seq, label: t.label, kind: t.kind, status: t.status, reason: t.reason })),
+        planned_trips: i.planned_trips, operated_trips: i.operated_trips,
+        driver: i.trips[0] ? i.trips[0].driver : null,
+        pa: i.trips[0] ? i.trips[0].pa : null,
+        children: i.children.length,
+        children_scheduled: i.children.filter(c => c.scheduled).length,
+      })),
     },
     gaps: { no_driver: noDriver, no_pa: noPa, no_vehicle: noVehicle, ending_soon: endingSoon },
     compliance: { green: statuses.green.length, amber: statuses.amber.length, red: statuses.red.length, amber_list: statuses.amber, red_list: statuses.red, expiring },

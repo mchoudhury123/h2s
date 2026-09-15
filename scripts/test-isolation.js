@@ -256,6 +256,39 @@ class Firm {
   ok(aSettings.company_name !== bSettings.company_name, 'each firm has its own business name');
 
   // ---------------------------------------------------------------
+  section('9b. Weekly schedules and child timetables stay inside one firm');
+  const week = {
+    effective_from: '2026-09-07', note: 'A pattern',
+    days: [{ weekday: 1, trips: [{ label: 'AM run', kind: 'outbound', depart_time: '08:00' }] }],
+  };
+  ok((await b.put(`/api/contracts/${b.ids.contract}/schedule`, week)).status === 201, 'B can set its own weekly schedule');
+  ok((await a.put(`/api/contracts/${b.ids.contract}/schedule`, week)).status === 404, "A cannot set a weekly schedule on B's contract");
+  ok((await a.get(`/api/contracts/${b.ids.contract}/schedule`)).status === 404, "A cannot read B's weekly schedule");
+  ok((await a.get(`/api/contracts/${b.ids.contract}/day/2026-09-07`)).status === 404, "A cannot read a day of B's contract");
+
+  const bWeek = (await b.get(`/api/contracts/${b.ids.contract}/schedule`)).data;
+  ok(bWeek.versions.length === 1, "B's own schedule is still there after A's attempts");
+  ok((await a.del(`/api/contracts/${a.ids.contract}/schedule/${bWeek.versions[0].id}`)).status === 404,
+    "A cannot delete B's weekly schedule through its own contract");
+  ok((await b.get(`/api/contracts/${b.ids.contract}/schedule`)).data.versions.length === 1, "B's schedule survived");
+
+  const crossChild = { ...week, days: [{ weekday: 1, trips: [{ label: 'AM run', kind: 'outbound', child_ids: [b.ids.child] }] }] };
+  ok((await a.put(`/api/contracts/${a.ids.contract}/schedule`, crossChild)).status === 400,
+    "A cannot put B's child on one of its own journeys");
+
+  const tt = { effective_from: '2026-09-07', same_all_week: 1, start_time: '09:00', finish_time: '15:00', days: [{ weekday: 3, attends: 0 }] };
+  ok((await b.put(`/api/children/${b.ids.child}/timetable`, tt)).status === 201, 'B can set its own timetable');
+  ok((await a.put(`/api/children/${b.ids.child}/timetable`, tt)).status === 404, "A cannot set a timetable on B's child");
+  ok((await a.get(`/api/children/${b.ids.child}/timetable`)).status === 404, "A cannot read B's timetable");
+  const bTt = (await b.get(`/api/children/${b.ids.child}/timetable`)).data;
+  ok(bTt.versions.length === 1, "B's timetable is still there");
+  ok((await a.del(`/api/children/${a.ids.child}/timetable/${bTt.versions[0].id}`)).status === 404,
+    "A cannot delete B's timetable through its own child");
+  ok((await b.get(`/api/children/${b.ids.child}/timetable`)).data.versions.length === 1, "B's timetable survived");
+  ok((await a.get(`/api/contracts/${a.ids.contract}/schedule`)).data.children.every(c => c.id !== b.ids.child),
+    "the children offered for A's journeys are A's own");
+
+  // ---------------------------------------------------------------
   section('10. Signing out and back in keeps the firms apart');
   await a.post('/api/logout');
   const afterLogout = await a.get('/api/children');

@@ -170,6 +170,15 @@ window.toast = function (msg, kind) {
   setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity .3s'; setTimeout(() => el.remove(), 300); }, kind === 'err' ? 6000 : 3200);
 };
 
+/* ---------- which journeys an exception covers ----------
+   A journey number is more specific than a leg, so it wins when both are set. */
+window.journeyText = function (e) {
+  if (!e) return '—';
+  if (e.trip_seq) return e.trip_label || `Journey ${e.trip_seq}`;
+  if (!e.leg || e.leg === 'DAY') return 'All day';
+  return e.leg;
+};
+
 /* ---------- pluralisation ---------- */
 window.plural = function (n, one, many) { return `${n} ${n === 1 ? one : (many || one + 's')}`; };
 

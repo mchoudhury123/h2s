@@ -23,7 +23,13 @@ const cal = require('../server/services/calendar');
 const args = process.argv.slice(2);
 const REPLACE = args.includes('--replace');
 const LIST = args.includes('--list');
+// Adds only the weekly schedules and child timetables, leaving every other
+// record alone. Useful on a business that was filled before they existed.
+const PATTERNS_ONLY = args.includes('--patterns');
 const NAME = args.filter(a => !a.startsWith('--')).join(' ').trim();
+// Two businesses are allowed to share a name, so an id settles which one.
+const ID_AT = args.indexOf('--id');
+const ORG_ID = ID_AT >= 0 && args[ID_AT + 1] ? Number(args[ID_AT + 1]) : null;
 
 const TODAY = cal.today();
 const d = n => cal.addDays(TODAY, n);
@@ -134,6 +140,58 @@ const CHILDREN = [
   { first_name: 'Isla', last_name: 'Redpath', dob: '2013-09-23', address: '20 Grange Road, Jarrow', postcode: 'NE32 3LD', parent_name: 'Courtney Redpath', parent_phone: '07700 901453', contract: 'EPINAY 1', council_ref: 'STC-CH-1014', sen_needs: 'EHCP, autism', allergies: 'Dairy intolerance', pickup_time: '08:14', dropoff_time: '15:42' },
 ];
 
+// Weekly schedules for the contracts whose week is not the same every day.
+// Everything else runs the standard one out, one back, and needs nothing here.
+const AM = t => ({ label: 'AM school drop-off', kind: 'outbound', depart_time: t });
+const PM = t => ({ label: 'PM school collection', kind: 'return', depart_time: t });
+const SCHEDULES = [
+  {
+    contract: 'BEWICK 1',
+    note: 'Autumn term. Friday is a split collection.',
+    days: {
+      1: [AM('08:00'), PM('15:10')],
+      2: [AM('08:00'), PM('15:10')],
+      3: [AM('08:00'), PM('15:10')],
+      4: [AM('08:00'), PM('15:10')],
+      5: [
+        AM('08:00'),
+        { label: '1pm early collection', kind: 'return', depart_time: '13:00', children: ['Jacob Riddell', 'Amelia Coyne'] },
+        { label: '3pm collection', kind: 'return', depart_time: '15:00', children: ['Oliver Tweddle'] },
+      ],
+    },
+  },
+  {
+    contract: 'PARSONS 1',
+    note: 'College timetable. No Wednesday, early finish on Friday.',
+    days: {
+      1: [AM('08:15'), PM('15:15')],
+      2: [AM('08:15'), PM('15:15')],
+      4: [AM('08:15'), PM('15:15')],
+      5: [AM('08:15'), { label: 'Friday early finish', kind: 'return', depart_time: '12:30' }],
+    },
+  },
+];
+
+// Children whose own week differs from their contract's.
+const TIMETABLES = [
+  {
+    child: 'Sophie Hetherington', same_all_week: 0, note: 'College placement, Wednesdays at home',
+    days: {
+      1: ['09:00', '16:00'], 2: ['09:00', '16:00'], 3: null, 4: ['09:00', '16:00'], 5: ['09:00', '12:30'],
+    },
+  },
+  {
+    child: 'Nathan Purvis', same_all_week: 1, start_time: '09:00', finish_time: '15:15',
+    note: 'Work experience on a Friday, taken by his family',
+    days: { 1: true, 2: true, 3: false, 4: true, 5: false },
+  },
+  {
+    child: 'Oliver Tweddle', same_all_week: 1, start_time: '09:05', finish_time: '15:10',
+    note: 'Stays for after-school club on a Friday',
+    days: { 1: true, 2: true, 3: true, 4: true, 5: true },
+  },
+];
+
 // Expiry offsets in days from today. Negative is already expired, small positive is amber.
 const DOCUMENTS = [
   ['staff', 'Ian Charlton', ['Driving Licence', 820], ['Driver Badge', 460], ['DBS', 390], ['Safeguarding Training', 300]],
@@ -164,29 +222,115 @@ const DOCUMENTS = [
   ['staff', 'Michael Oyelaran', ['DBS', 630], ['Safeguarding Training', 590], ['PA Training', 610]],
 ];
 
+/**
+ * Writes the weekly schedules and child timetables. Anything already set up for
+ * the same start date is left alone, so this is safe to run more than once.
+ */
+async function applyPatterns(orgId, contracts, children) {
+  let scheduleCount = 0;
+  let tripCount = 0;
+  let skipped = 0;
+  for (const sc of SCHEDULES) {
+    if (!contracts[sc.contract]) continue;
+    const already = await get(
+      'SELECT id FROM contract_schedules WHERE organisation_id = ? AND contract_id = ? AND effective_from = ?',
+      [orgId, contracts[sc.contract], TERM_START]);
+    if (already) { skipped++; continue; }
+    const scheduleId = await insert('contract_schedules',
+      { contract_id: contracts[sc.contract], effective_from: TERM_START, note: sc.note, created_by: 'Demo data' },
+      ['contract_id', 'effective_from', 'note', 'created_by'], null, orgId);
+    scheduleCount++;
+    for (const [weekdayNo, trips] of Object.entries(sc.days)) {
+      let seq = 0;
+      for (const t of trips) {
+        seq++;
+        const tripId = await insert('contract_trips',
+          { schedule_id: scheduleId, weekday: Number(weekdayNo), seq, label: t.label, kind: t.kind, depart_time: t.depart_time },
+          ['schedule_id', 'weekday', 'seq', 'label', 'kind', 'depart_time'], null, orgId);
+        tripCount++;
+        for (const name of t.children || []) {
+          if (!children[name]) continue;
+          await insert('contract_trip_children', { trip_id: tripId, child_id: children[name] },
+            ['trip_id', 'child_id'], null, orgId);
+        }
+      }
+    }
+  }
+
+  let timetableCount = 0;
+  for (const tt of TIMETABLES) {
+    if (!children[tt.child]) continue;
+    const already = await get(
+      'SELECT id FROM child_timetables WHERE organisation_id = ? AND child_id = ? AND effective_from = ?',
+      [orgId, children[tt.child], TERM_START]);
+    if (already) { skipped++; continue; }
+    const timetableId = await insert('child_timetables', {
+      child_id: children[tt.child], effective_from: TERM_START, same_all_week: tt.same_all_week,
+      start_time: tt.start_time || null, finish_time: tt.finish_time || null,
+      note: tt.note, created_by: 'Demo data',
+    }, ['child_id', 'effective_from', 'same_all_week', 'start_time', 'finish_time', 'note', 'created_by'], null, orgId);
+    timetableCount++;
+    for (const [weekdayNo, value] of Object.entries(tt.days)) {
+      const attends = value ? 1 : 0;
+      const times = Array.isArray(value) ? value : [null, null];
+      await insert('child_timetable_days', {
+        timetable_id: timetableId, weekday: Number(weekdayNo), attends,
+        start_time: times[0], finish_time: times[1],
+      }, ['timetable_id', 'weekday', 'attends', 'start_time', 'finish_time'], null, orgId);
+    }
+  }
+
+  return { scheduleCount, tripCount, timetableCount, skipped };
+}
+
 // ---------------------------------------------------------------- run
 async function main() {
   await database.migrate();
 
-  if (LIST || !NAME) {
+  if (LIST || (!NAME && !ORG_ID)) {
     const orgs = await all('SELECT id, name FROM organisations ORDER BY id');
     console.log('\nBusinesses on this system:');
     for (const o of orgs) {
       const c = await get('SELECT (SELECT COUNT(*) FROM children WHERE organisation_id = ?) AS ch, (SELECT COUNT(*) FROM contracts WHERE organisation_id = ?) AS co', [o.id, o.id]);
-      console.log(`  ${String(o.id).padStart(3)}  ${o.name.padEnd(40)} ${c.ch} children, ${c.co} contracts`);
+      const shared = orgs.filter(x => x.name.toLowerCase() === o.name.toLowerCase()).length > 1;
+      console.log(`  ${String(o.id).padStart(3)}  ${o.name.padEnd(40)} ${c.ch} children, ${c.co} contracts${shared ? '   (name shared - use --id)' : ''}`);
     }
-    console.log('\nFill one with demo data:  npm run demo -- "<business name>"\n');
+    console.log('\nFill one with demo data:  npm run demo -- "<business name>"');
+    console.log('Or by id:                 npm run demo -- --id <number>');
+    console.log('Weekly patterns only:     npm run demo -- --id <number> --patterns\n');
     return;
   }
 
-  const org = await get('SELECT id, name FROM organisations WHERE LOWER(name) = LOWER(?)', [NAME]);
+  const org = ORG_ID
+    ? await get('SELECT id, name FROM organisations WHERE id = ?', [ORG_ID])
+    : await get('SELECT id, name FROM organisations WHERE LOWER(name) = LOWER(?) ORDER BY id', [NAME]);
+  const sameName = ORG_ID ? [] : await all('SELECT id FROM organisations WHERE LOWER(name) = LOWER(?) ORDER BY id', [NAME]);
+  if (org && sameName.length > 1) {
+    console.error(`\n${sameName.length} businesses are called "${org.name}" (ids ${sameName.map(o => o.id).join(', ')}).`);
+    console.error('Say which one with --id <number>. Nothing has been changed.\n');
+    process.exitCode = 1;
+    return;
+  }
   if (!org) {
-    console.error(`\nNo business called "${NAME}". Run with --list to see the names.\n`);
+    console.error(`\nNo business ${ORG_ID ? 'with id ' + ORG_ID : `called "${NAME}"`}. Run with --list to see them.\n`);
     process.exitCode = 1;
     return;
   }
   const orgId = org.id;
   console.log(`\nFilling "${org.name}" with demo data.`);
+
+  if (PATTERNS_ONLY) {
+    const contractRows = await all('SELECT id, code FROM contracts WHERE organisation_id = ?', [orgId]);
+    const childRows = await all('SELECT id, first_name, last_name FROM children WHERE organisation_id = ?', [orgId]);
+    const byCode = Object.fromEntries(contractRows.map(c => [c.code, c.id]));
+    const byName = Object.fromEntries(childRows.map(c => [`${c.first_name} ${c.last_name}`, c.id]));
+    const r = await applyPatterns(orgId, byCode, byName);
+    console.log(`\n  Weekly schedules added: ${r.scheduleCount}  (${r.tripCount} journeys a week)`);
+    console.log(`  Child timetables added: ${r.timetableCount}`);
+    if (r.skipped) console.log(`  Left alone because they were already set up: ${r.skipped}`);
+    console.log('\n  Nothing else was changed.\n');
+    return;
+  }
 
   const busy = await get(`SELECT (SELECT COUNT(*) FROM contracts WHERE organisation_id = ?) AS contracts,
      (SELECT COUNT(*) FROM children WHERE organisation_id = ?) AS children`, [orgId, orgId]);
@@ -197,8 +341,12 @@ async function main() {
     return;
   }
   if (REPLACE) {
+    // Named in dependency order. The weekly patterns would cascade with their
+    // contract and child anyway, but clearing them explicitly says so out loud.
     for (const t of ['payroll_run_lines', 'payroll_runs', 'payments', 'exceptions', 'expenses',
-      'documents', 'children', 'contracts', 'vehicles', 'staff', 'schools', 'councils']) {
+      'documents', 'contract_trip_children', 'contract_trips', 'contract_schedules',
+      'child_timetable_days', 'child_timetables', 'children', 'contracts', 'vehicles',
+      'staff', 'schools', 'councils']) {
       await run(`DELETE FROM ${t} WHERE organisation_id = ?`, [orgId]);
     }
     console.log('  Cleared its existing records. Sign-in accounts were left alone.');
@@ -307,6 +455,10 @@ async function main() {
         'notes', 'status'], null, orgId);
   }
 
+  // ---- weekly patterns ----
+  const patterns = await applyPatterns(orgId, contracts, children);
+  const { scheduleCount, tripCount, timetableCount } = patterns;
+
   let docCount = 0;
   // A driver the owner created gets a full, valid set, so their own record reads
   // green in the demo. Amber and red are shown by other staff.
@@ -403,6 +555,8 @@ async function main() {
   console.log(`  Contracts  ${summary.contracts}`);
   console.log(`  Children   ${summary.children}`);
   console.log(`  Documents  ${docCount}`);
+  console.log(`  Weekly schedules ${scheduleCount}  (${tripCount} journeys a week, including a three-journey Friday)`);
+  console.log(`  Child timetables ${timetableCount}  (including college days and days not attended)`);
   console.log(`  Exceptions ${summary.exceptions}  across the last fortnight and the days ahead`);
   console.log('');
   console.log(`  "${org.name}" is ready to show. Sign in as usual.`);

@@ -7,6 +7,13 @@ const wages = require('./services/wages');
 const finance = require('./services/finance');
 const compliance = require('./services/compliance');
 
+/** A journey number is more specific than a leg, so it wins when both are set. */
+function journeyText(r) {
+  if (r.trip_seq) return r.trip_label || `Journey ${r.trip_seq}`;
+  if (!r.leg || r.leg === 'DAY') return 'All day';
+  return r.leg;
+}
+
 const money = n => (n === null || n === undefined) ? '' : Number(n).toFixed(2);
 
 // Every builder receives (query, user, organisationId) and must scope its own SQL.
@@ -25,7 +32,7 @@ const BUILDERS = {
     }
     return {
       title: `Wage Breakdown ${from} to ${to}`,
-      columns: [c('staff', 'Staff'), c('type', 'Type'), c('date', 'Date'), c('leg', 'Leg'), c('contract', 'Contract'), c('kind', 'Line type'), c('description', 'Description'), c('rate', 'Rate', money), c('amount', 'Amount', money)],
+      columns: [c('staff', 'Staff'), c('type', 'Type'), c('date', 'Date'), c('leg', 'Journey'), c('contract', 'Contract'), c('kind', 'Line type'), c('description', 'Description'), c('rate', 'Rate', money), c('amount', 'Amount', money)],
       rows,
     };
   },
@@ -116,38 +123,75 @@ const BUILDERS = {
       for (const d of data.dates) {
         const day = r.days[d];
         if (!day) continue;
-        for (const leg of cal.LEGS) {
-          const L = day.legs[leg];
+        for (const t of day.trips) {
           rows.push({
-            date: d, contract: r.contract.code, school: r.contract.school_name, leg,
-            status: L.status === 'operated' ? 'Operated' : 'Not operated',
-            reason: L.reason || '',
-            driver: L.driver.status === 'covered' ? `${L.driver.cover_name} (cover)` : (L.driver.normal_name || 'NONE'),
-            pa: L.pa.status === 'not_required' ? 'n/a' : (L.pa.status === 'covered' ? `${L.pa.cover_name} (cover)` : (L.pa.normal_name || 'NONE')),
-            children_travelling: L.children_travelling, children_absent: L.children_absent,
+            date: d,
+            contract: r.contract.code,
+            school: r.contract.school_name,
+            trip: t.seq,
+            journey: t.label,
+            kind: t.kind,
+            planned: t.source === 'extra' ? 'One-off extra' : 'Weekly schedule',
+            depart: t.depart_time || '',
+            status: t.status === 'operated' ? 'Operated' : 'Not operated',
+            reason: t.reason || '',
+            driver: t.driver.status === 'covered' ? `${t.driver.cover_name} (cover)` : (t.driver.normal_name || 'NONE'),
+            pa: t.pa.status === 'not_required' ? 'n/a'
+              : (t.pa.status === 'covered' ? `${t.pa.cover_name} (cover)` : (t.pa.normal_name || 'NONE')),
+            children_travelling: t.children_travelling,
+            children_absent: t.children_absent,
+            children_off: t.children_not_scheduled,
           });
         }
       }
     }
-    return { title: `Journey & Attendance Report ${q.from} to ${q.to}`, columns: [c('date', 'Date'), c('contract', 'Contract'), c('school', 'School'), c('leg', 'Leg'), c('status', 'Status'), c('reason', 'Reason'), c('driver', 'Driver'), c('pa', 'PA'), c('children_travelling', 'Children travelling'), c('children_absent', 'Children absent')], rows };
+    return {
+      title: `Journey & Attendance Report ${q.from} to ${q.to}`,
+      columns: [c('date', 'Date'), c('contract', 'Contract'), c('school', 'School'), c('trip', 'Trip'),
+        c('journey', 'Journey'), c('planned', 'Planned as'), c('depart', 'Departs'), c('status', 'Status'),
+        c('reason', 'Reason'), c('driver', 'Driver'), c('pa', 'PA'),
+        c('children_travelling', 'Children travelling'), c('children_absent', 'Children absent'),
+        c('children_off', 'Children not scheduled')],
+      rows,
+    };
   },
 
   'attendance': async (q, user, org) => {
     const data = await cal.buildCalendar(org, q.from, q.to, q.contract_id ? { contract_id: Number(q.contract_id) } : {});
     const rows = [];
-    for (const r of data.rows) for (const d of data.dates) {
-      const day = r.days[d];
-      if (!day) continue;
-      for (const ch of day.children) {
-        if (ch.AM === 'travelling' && ch.PM === 'travelling') continue;
-        rows.push({ date: d, contract: r.contract.code, child: ch.name, am: ch.AM, pm: ch.PM });
+    for (const r of data.rows) {
+      for (const d of data.dates) {
+        const day = r.days[d];
+        if (!day) continue;
+        for (const ch of day.children) {
+          const perTrip = day.trips.map(t => `${t.label}: ${ch.trips[t.seq] || 'not on this trip'}`);
+          const travelled = day.trips.filter(t => ch.trips[t.seq] === 'travelling').length;
+          const absent = day.trips.filter(t => ch.trips[t.seq] === 'absent').length;
+          // Only the days worth explaining: a normal day off, or a missed journey.
+          if (ch.scheduled && !absent && travelled === day.trips.filter(t => t.status === 'operated').length) continue;
+          rows.push({
+            date: d,
+            contract: r.contract.code,
+            child: ch.name,
+            expected: ch.scheduled ? 'Yes' : 'No, normal day off',
+            journeys_travelled: travelled,
+            journeys_absent: absent,
+            detail: ch.scheduled ? perTrip.join('; ') : 'Not scheduled to travel on this day',
+          });
+        }
       }
     }
-    return { title: `Child Absence Report ${q.from} to ${q.to}`, columns: [c('date', 'Date'), c('contract', 'Contract'), c('child', 'Child'), c('am', 'AM'), c('pm', 'PM')], rows };
+    return {
+      title: `Child Attendance Report ${q.from} to ${q.to}`,
+      columns: [c('date', 'Date'), c('contract', 'Contract'), c('child', 'Child'),
+        c('expected', 'Expected in'), c('journeys_travelled', 'Journeys travelled'),
+        c('journeys_absent', 'Journeys missed'), c('detail', 'Detail')],
+      rows,
+    };
   },
 
   'cover-staff': async (q, user, org) => {
-    const rows = await all(`SELECT e.date, e.leg, e.role, c.code AS contract, s.name AS school,
+    const rows = await all(`SELECT e.date, e.leg, e.trip_seq, e.trip_label, e.role, c.code AS contract, s.name AS school,
         st.first_name || ' ' || st.last_name AS normal_staff,
         cs.first_name || ' ' || cs.last_name AS cover_staff,
         e.cover_pay, e.paid_immediately,
@@ -161,7 +205,8 @@ const BUILDERS = {
       ORDER BY e.date DESC`, [org, q.from, q.to]);
     return {
       title: `Cover Staff Report ${q.from} to ${q.to}`,
-      columns: [c('date', 'Date'), c('contract', 'Contract'), c('school', 'School'), c('leg', 'Leg'), c('role', 'Role'),
+      columns: [c('date', 'Date'), c('contract', 'Contract'), c('school', 'School'),
+        { key: 'leg', label: 'Journeys', value: r => journeyText(r) }, c('role', 'Role'),
         c('normal_staff', 'Normal staff'), c('cover_staff', 'Cover staff'), c('cover_pay', 'Cover pay', money),
         c('paid_immediately', 'Paid immediately', v => v ? 'YES' : 'No'), c('paid_count', 'Payment recorded', v => v ? 'YES' : 'No')],
       rows,

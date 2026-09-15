@@ -34,12 +34,16 @@ That creates "Northgate Home-to-School Transport" with twelve children, seven co
 To show the system to colleagues using your own account rather than the sample one:
 
 ```
-npm run demo -- --list                        see the businesses on this system
-npm run demo -- "Your Business Name"          fill that one with demo data
-npm run demo -- "Your Business Name" --replace   clear its records first
+npm run demo -- --list                            see the businesses on this system
+npm run demo -- "Your Business Name"              fill that one with demo data
+npm run demo -- "Your Business Name" --replace    clear its records first
+npm run demo -- --id 7                            when two businesses share a name
+npm run demo -- --id 7 --patterns                 add only the weekly patterns
 ```
 
-It builds a Tyne and Wear operation: four councils, nine special schools, twelve routes, twenty-seven children, seventeen drivers and passenger assistants, a fortnight of absences and cover, and documents set up so the compliance lights show green, amber and red together.
+It builds a Tyne and Wear operation: four councils, nine special schools, twelve routes, twenty-seven children, seventeen drivers and passenger assistants, a fortnight of absences and cover, and documents set up so the compliance lights show green, amber and red together. Two of the routes have a week that is not the same every day, including a Friday split into a 1pm and a 3pm collection, and three children have their own timetable, including a college week and days not attended.
+
+`--patterns` adds only the weekly schedules and child timetables, skipping any already set up. Use it on a business that was filled before those existed.
 
 It only ever touches the business you name. Without `--replace` it keeps what you have already entered and works around it, so a driver you added yourself is given a vehicle and a route. With `--replace` it clears that business's records first, so use it only on a business you are happy to empty. Sign-in accounts are never removed either way.
 
@@ -122,12 +126,13 @@ Three things had to change for this to work, and all three are done:
 ### Tests
 
 ```
-npm test                 # 63 business-rule tests
-npm run test:isolation   # 77 checks that one firm cannot reach another's data
+npm test                 # 112 business-rule tests
+npm run test:isolation   # 92 checks that one firm cannot reach another's data
 npm run test:auth        # registration, sign-in and separation, in a browser
 npm run test:serverless  # sessions and uploads across instance restarts
 npm run test:browser     # every page in a real browser, fails on any console error
 npm run test:workflow    # create records through the forms, through to payroll
+npm run test:schedules   # weekly schedules and child timetables, in a browser
 ```
 
 The browser suites expect Chrome at the default Windows location and the server already running.
@@ -147,7 +152,10 @@ Council  →  Contract / route  →  School  →  Children
                     ↓
           Driver  +  Passenger assistant
                     ↓
-          Daily journeys (AM and PM)
+          The normal week: how many journeys each day, and
+          which children are on each one
+                    ↓
+          Expected journeys, generated for every date
                     ↓
           Exceptions: absence, cover, cancellation
                     ↓
@@ -156,7 +164,9 @@ Council  →  Contract / route  →  School  →  Children
 
 **Information is entered once.** A child's school, driver, PA, vehicle and route all come from the contract they travel on. Reassign the driver on a contract and every child's profile, the calendar, the wage calculation and the school page all change at the same moment, because none of them store a copy.
 
-**Journeys are never created by hand.** A contract has operating days, a start date and an end date. From those the system generates an AM and a PM journey for every operating day, forever. Nobody confirms a normal day.
+**Journeys are never created by hand.** A contract has operating days, a start date and an end date, and it may have a weekly schedule saying how many journeys each weekday really has. From those the system generates the journeys for every date, forever. Nobody confirms a normal day.
+
+**Not every day is one out and one back.** A contract can run three journeys on a Friday and two on a Tuesday, and a child can finish at 12:30 on a Friday or not attend at all on a Wednesday. Both are described once, as a normal week, and everything downstream follows: the calendar, the wages and the profitability. A day a child never attends is a normal day off, not an absence, and it does not stop the contract running for everybody else.
 
 **Exceptions are the only data entry.** A child did not travel, a driver was absent, a cover driver stepped in, the school closed. Each exception changes what was operated, which changes who gets paid, which changes what the contract earned. One entry, three consequences, automatically.
 
@@ -176,9 +186,46 @@ Search a school and you see its children and contracts. Search a driver and you 
 
 ### Operations calendar
 
-A grid of contracts against dates. Each cell shows the AM and PM journey colour-coded: green operated, amber a child absent, purple cover staff used, red not run. Filter by contract, school or staff member; switch between week, fortnight and month.
+A grid of contracts against dates. Each cell shows that day's journeys colour-coded: green operated, amber a child absent, purple cover staff used, red not run. A two-journey day reads as AM and PM; a busier day names each journey. A cell also says how many children have a normal day off. Filter by contract, school or staff member; switch between week, fortnight and month.
 
-Click any cell to open that contract on that date. From there, recording "Child A absent PM" is one more click. Driver absent, cover assigned, school closed, journey cancelled, pay override and free-text notes are all in the same panel, with everything already recorded for that day listed underneath so it can be undone.
+Click any cell to open that contract on that date. The panel lists the journeys that really run that day, so recording "Child A absent from the 1pm collection" is one more click, and a child is only ever offered the journeys they travel on. Driver absent, cover assigned, school closed, journey cancelled, a one-off extra journey, pay override and free-text notes are all in the same panel, with everything already recorded for that day listed underneath so it can be undone.
+
+Every absence asks the question that matters: is this a one-off, or has the normal week changed? One choice records today. The other opens the weekly timetable, from a date you pick, leaving every earlier day exactly as it was.
+
+### The normal week
+
+Two screens describe what is supposed to happen, and the rest of the system reads them.
+
+**A contract's weekly schedule** gives each weekday the journeys it really runs, so the contract page says:
+
+```
+MON   2 Trips   08:00 AM school drop-off · 15:10 PM school collection
+TUE   2 Trips   08:00 AM school drop-off · 15:10 PM school collection
+WED   2 Trips   08:00 AM school drop-off · 15:10 PM school collection
+THU   2 Trips   08:00 AM school drop-off · 15:10 PM school collection
+FRI   3 Trips   08:00 AM school drop-off · 13:00 1pm early collection (2 children only)
+                                         · 15:00 3pm collection (1 child only)
+```
+
+Each journey has a name, a type, its times, optionally the children who are on it, and optionally its own pay and income. Set it up once and the calendar generates those journeys by itself.
+
+**A child's weekly timetable** says when that child travels:
+
+```
+MON   09:00 – 15:00
+TUE   09:00 – 15:00
+WED   Does Not Attend          normal day off — not an absence
+THU   09:00 – 15:00
+FRI   09:00 – 12:30
+```
+
+Choose "Same all week" for one start and finish time, or "Different times by day" for a college or part-time week. Any day can be marked Does Not Attend.
+
+A contract with no weekly schedule behaves exactly as it always has: one journey out and one back on each of its operating days. A child with no timetable travels whenever their contract runs. Nothing needs setting up until something differs from that.
+
+**Both are dated.** Saving next term's pattern from the first day of term leaves this term alone. Journeys, wages and profitability already worked out from an earlier pattern are never recalculated, because each date reads the version that was in force on it. Every version is listed and any of them can be removed.
+
+**Pay follows the journeys.** The contract's day rate buys a normal day, so a two-journey day splits it in half. A Friday with a third journey pays that journey at the same rate rather than making all three worth less, and a journey can be given its own figure that overrides all of it. Pay is worked out per contract and per journey, never per child: one child's day off does not cancel a journey the others are still on.
 
 ### Children
 
@@ -188,7 +235,7 @@ The profile also shows who they travel with, their assigned driver and PA, and t
 
 ### Contracts and routes
 
-Contract code, council, school, every child travelling, assigned driver and PA, vehicle, route, AM and PM timings, operating days, start and end dates, status. Financially: income per day, driver pay, PA pay, other direct costs, expected profit and margin, plus actual performance for the current month drawn from journeys that really operated.
+Contract code, council, school, every child travelling, assigned driver and PA, vehicle, route, standard timings, operating days, start and end dates, status, and the normal weekly schedule with the number of journeys on each day. Financially: income per day, driver pay, PA pay, other direct costs, expected profit and margin, plus actual performance for the current month drawn from journeys that really operated.
 
 Three children in one vehicle each keep their own profile and all appear under the same contract.
 
@@ -229,8 +276,13 @@ Choose a date range and calculate for one person, one contract, selected staff, 
 Every figure is explained. A breakdown shows normal journeys grouped by contract and rate, each cover journey with its date and rate, every journey that was not paid and why, and every payment already made. The bottom line is the amount due.
 
 ```
-Normal scheduled journeys              £682.00
-  11 days   PORTLAND 1 — 22 journeys at £62.00/day
+Normal scheduled journeys              £713.00
+  15/09/26  BEWICK 1 AM — AM school drop-off (Driver)          £33.00
+  15/09/26  BEWICK 1 PM — PM school collection (Driver)        £33.00
+  ...
+  18/09/26  BEWICK 1 Trip 1 — AM school drop-off (Driver)      £33.00
+  18/09/26  BEWICK 1 Trip 2 — 1pm early collection (Driver)    £33.00
+  18/09/26  BEWICK 1 Trip 3 — 3pm collection (Driver)          £33.00
 
 Cover journeys                          £75.00
   10/09/26  COVER Driver THORNHILL PARK 1 full day   [paid immediately]
@@ -238,8 +290,10 @@ Cover journeys                          £75.00
 Payments already made                  -£75.00
   10/09/26  Cover paid immediately on 10/09/2026
 
-AMOUNT DUE                             £682.00
+AMOUNT DUE                             £713.00
 ```
+
+Each journey is its own line, so the Friday that runs three of them is visibly paid for three.
 
 "Mark period as paid" records a payment for each person so the same period can never be paid again.
 
@@ -301,6 +355,7 @@ server/
   reports.js            report builders
   seed.js               demo data
   services/
+    schedule.js         the normal week: contract patterns and child timetables
     calendar.js         journey generation and exception evaluation
     wages.js            wage calculation
     finance.js          profitability
@@ -312,13 +367,15 @@ server/
 public/
   index.html
   css/app.css
-  js/                   core, ui, and the three view modules
+  js/                   core, ui, and the four view modules
 scripts/
   test-rules.js         business-rule tests
   test-isolation.js     proves one firm cannot reach another's data
   check-auth.js         registration, sign-in and separation in a browser
   smoke.js              browser walkthrough
   check-workflow.js     end-to-end workflow through the forms
+  check-schedules.js    weekly schedules and child timetables in a browser
+  demo-data.js          fills one named business with demo records
   db-check.js           connection and row counts
   db-push.js            copies SQLite into Postgres
 data/                   SQLite database (created on first run)
@@ -332,6 +389,7 @@ The database is normalised and every calculation reads from it rather than from 
 
 - A new record type is a table plus one `crud()` call in `routes.js` and one view.
 - A new kind of exception is a value in the `exceptions.type` check constraint plus a branch in `evaluateContractDay`. Wages and profitability pick it up without further changes.
+- A journey is described by `plannedTrips` in `schedule.js` and evaluated by `evaluateContractDay`. Anything that changes what runs on a date belongs in the first; anything that changes what happened to it belongs in the second.
 - A new report is one entry in the `BUILDERS` map in `reports.js`; it gets CSV export and on-screen viewing for free.
 - A new column goes in `schema.js` once and renders correctly for both databases.
 - A new table of firm data needs `organisation_id` and a place in `TENANT_TABLES`; the guards then insist every query filters on it.
@@ -341,7 +399,7 @@ Queries are written once with `?` placeholders and a few portable spellings (`st
 
 ### Notes for production
 
-This runs as-is for a single office. Before putting it on the open internet you would want HTTPS in front of it, a stronger session store than the in-memory one, and rate limiting on sign-in.
+This runs as-is for a single office. Before putting it on the open internet you would want HTTPS in front of it and rate limiting on sign-in. Sessions already live in the database, so instances can come and go without signing anybody out.
 
 On Supabase, the database is backed up by Supabase itself, and uploaded documents live in it too, so one backup covers everything. The `uploads/` folder is only read now, for files kept by an older self-hosted version.
 

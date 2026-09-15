@@ -117,6 +117,38 @@ const TABLES = [
   )`,
   // A contract code only has to be unique inside the firm that uses it.
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_contracts_code ON contracts(organisation_id, code)`,
+  // ---- weekly patterns -------------------------------------------------
+  // A contract's normal week. Each row is a version taking effect on a date, so
+  // changing next term's pattern never rewrites what already happened.
+  // A contract with no version behaves as it always has: an outward and a return
+  // trip on each of its operating days.
+  `CREATE TABLE IF NOT EXISTS contract_schedules (
+    id {{PK}},
+    organisation_id ${ORG},
+    contract_id {{INT}} NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
+    effective_from TEXT NOT NULL,
+    note TEXT,
+    created_by TEXT,
+    created_at TEXT NOT NULL DEFAULT {{NOW}}
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_contract_schedules_from
+     ON contract_schedules(contract_id, effective_from)`,
+  // The journeys that normally run on one weekday of one version.
+  // Leaving a pay or income figure blank shares the contract's day rate evenly
+  // across that day's trips, which is what a plain two-trip day has always done.
+  `CREATE TABLE IF NOT EXISTS contract_trips (
+    id {{PK}},
+    organisation_id ${ORG},
+    schedule_id {{INT}} NOT NULL REFERENCES contract_schedules(id) ON DELETE CASCADE,
+    weekday {{INT}} NOT NULL,
+    seq {{INT}} NOT NULL,
+    label TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'outbound' CHECK (kind IN ('outbound','return','other')),
+    depart_time TEXT, arrive_time TEXT,
+    driver_pay {{REAL}}, pa_pay {{REAL}}, income {{REAL}},
+    notes TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_contract_trips_day ON contract_trips(schedule_id, weekday, seq)`,
   `CREATE TABLE IF NOT EXISTS children (
     id {{PK}},
     organisation_id ${ORG},
@@ -136,6 +168,42 @@ const TABLES = [
     status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','inactive')),
     created_at TEXT NOT NULL DEFAULT {{NOW}}
   )`,
+  // Which children a trip carries. No rows means everyone travelling that day,
+  // which is the normal case; rows are only needed when a day splits into
+  // separate collections at different times.
+  `CREATE TABLE IF NOT EXISTS contract_trip_children (
+    id {{PK}},
+    organisation_id ${ORG},
+    trip_id {{INT}} NOT NULL REFERENCES contract_trips(id) ON DELETE CASCADE,
+    child_id {{INT}} NOT NULL REFERENCES children(id) ON DELETE CASCADE
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_trip_children ON contract_trip_children(trip_id)`,
+  // A child's normal week. Versioned the same way. A child with no version
+  // travels whenever their contract runs, using the contract's own times.
+  `CREATE TABLE IF NOT EXISTS child_timetables (
+    id {{PK}},
+    organisation_id ${ORG},
+    child_id {{INT}} NOT NULL REFERENCES children(id) ON DELETE CASCADE,
+    effective_from TEXT NOT NULL,
+    same_all_week {{INT}} NOT NULL DEFAULT 1,
+    start_time TEXT, finish_time TEXT,
+    note TEXT,
+    created_by TEXT,
+    created_at TEXT NOT NULL DEFAULT {{NOW}}
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_child_timetables_from
+     ON child_timetables(child_id, effective_from)`,
+  // One row per weekday. "attends = 0" is a normal day off, which is not the
+  // same thing as being absent from a day they were expected to travel.
+  `CREATE TABLE IF NOT EXISTS child_timetable_days (
+    id {{PK}},
+    organisation_id ${ORG},
+    timetable_id {{INT}} NOT NULL REFERENCES child_timetables(id) ON DELETE CASCADE,
+    weekday {{INT}} NOT NULL,
+    attends {{INT}} NOT NULL DEFAULT 1,
+    start_time TEXT, finish_time TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_child_timetable_days ON child_timetable_days(timetable_id, weekday)`,
   `CREATE TABLE IF NOT EXISTS documents (
     id {{PK}},
     organisation_id ${ORG},
@@ -159,8 +227,13 @@ const TABLES = [
     id {{PK}},
     organisation_id ${ORG},
     date TEXT NOT NULL,
-    type TEXT NOT NULL CHECK (type IN ('child_absence','staff_absence','school_closed','contract_cancelled','journey_cancelled','pay_override','note')),
+    type TEXT NOT NULL CHECK (type IN ('child_absence','staff_absence','school_closed','contract_cancelled','journey_cancelled','pay_override','note','extra_journey')),
+    -- Which journey this applies to. A trip number targets one journey; without
+    -- one, AM means the outward trips, PM the return trips, DAY the whole day.
     leg TEXT NOT NULL DEFAULT 'DAY' CHECK (leg IN ('AM','PM','DAY')),
+    trip_seq {{INT}},
+    trip_label TEXT,
+    trip_kind TEXT,
     contract_id {{INT}} REFERENCES contracts(id) ON DELETE CASCADE,
     school_id {{INT}} REFERENCES schools(id) ON DELETE CASCADE,
     child_id {{INT}} REFERENCES children(id) ON DELETE CASCADE,
@@ -275,8 +348,9 @@ function statements(dialect) {
 
 // Order matters for deletes and for copying rows between databases.
 const TABLE_ORDER = ['organisations', 'settings', 'users', 'councils', 'schools', 'staff', 'vehicles',
-  'contracts', 'children', 'documents', 'exceptions', 'payroll_runs', 'payments', 'payroll_run_lines',
-  'expenses', 'audit_log'];
+  'contracts', 'contract_schedules', 'contract_trips', 'children', 'contract_trip_children',
+  'child_timetables', 'child_timetable_days', 'documents', 'exceptions', 'payroll_runs', 'payments',
+  'payroll_run_lines', 'expenses', 'audit_log'];
 
 // Every table holding one firm's data. Each must be filtered by organisation_id.
 // "sessions" is deliberately outside this: a session is looked up by its token

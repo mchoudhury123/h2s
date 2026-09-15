@@ -114,12 +114,62 @@ async function addColumn(driver, table, column, definition, log) {
   log(`  ${table}: added ${column}`);
 }
 
+/**
+ * Allows the new 'extra_journey' exception type on a database created before it.
+ * SQLite cannot alter a CHECK constraint, so its table is rebuilt; Postgres
+ * replaces the constraint in place.
+ */
+async function widenExceptionTypes(driver, log) {
+  if (!(await driver.tableExists('exceptions'))) return;
+  try {
+    if (driver.dialect === 'postgres') {
+      const row = await driver.get(
+        `SELECT conname FROM pg_constraint
+         WHERE conrelid = 'exceptions'::regclass AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%child_absence%'`);
+      if (!row) return;
+      const def = await driver.get(
+        `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = ?`, [row.conname]);
+      if (def && def.def.includes('extra_journey')) return;
+      await driver.exec(`ALTER TABLE exceptions DROP CONSTRAINT ${row.conname}`);
+      await driver.exec(`ALTER TABLE exceptions ADD CONSTRAINT ${row.conname} CHECK (type IN
+        ('child_absence','staff_absence','school_closed','contract_cancelled','journey_cancelled','pay_override','note','extra_journey'))`);
+      log('  exceptions: one-off extra journeys are now allowed');
+      return;
+    }
+    // SQLite: only rebuild if the old constraint is actually in the way.
+    const info = await driver.get("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'exceptions'");
+    if (!info || info.sql.includes('extra_journey')) return;
+    const rows = await driver.all('SELECT * FROM exceptions');
+    const cols = await driver.columns('exceptions');
+    await driver.exec('ALTER TABLE exceptions RENAME TO exceptions_old');
+    for (const stmt of schema.statements('sqlite')) {
+      if (/CREATE TABLE IF NOT EXISTS exceptions /.test(stmt)) { await driver.exec(stmt); break; }
+    }
+    const shared = (await driver.columns('exceptions')).filter(c => cols.includes(c));
+    for (const r of rows) {
+      await driver.run(
+        `INSERT INTO exceptions (${shared.join(',')}) VALUES (${shared.map(() => '?').join(',')})`,
+        shared.map(c => (r[c] === undefined ? null : r[c])));
+    }
+    await driver.exec('DROP TABLE exceptions_old');
+    log(`  exceptions: rebuilt to allow one-off extra journeys (${rows.length} kept)`);
+  } catch (e) {
+    log(`  exceptions: could not widen the type list (${e.message})`);
+  }
+}
+
 /** Runs any pending upgrades, then makes sure every table and index exists. */
 async function run(driver, log = () => {}) {
   await upgradeToMultiTenant(driver, log);
   // Uploaded files moved from a local folder into the database, so they survive
   // on a host with no writable disk.
   await addColumn(driver, 'documents', 'file_data', 'TEXT', log);
+  // An exception can now name the individual journey it applies to, for days
+  // that run more than an outward and a return trip.
+  await addColumn(driver, 'exceptions', 'trip_seq', 'INTEGER', log);
+  await addColumn(driver, 'exceptions', 'trip_label', 'TEXT', log);
+  await addColumn(driver, 'exceptions', 'trip_kind', 'TEXT', log);
+  await widenExceptionTypes(driver, log);
   for (const stmt of schema.statements(driver.dialect)) await driver.exec(stmt);
 }
 

@@ -30,6 +30,7 @@ App.views.dashboard = async function () {
   wrap.appendChild(h('div', { style: 'height:14px' }));
   wrap.appendChild(h('div', { class: 'stats' },
     UI.stat({ label: 'Contracts today', value: d.today.operating, hint: d.today.not_operating.length ? `${d.today.not_operating.length} not running` : 'All running', href: '#/day/' + d.date, tone: d.today.not_operating.length ? 'amber' : '' }),
+    UI.stat({ label: 'Journeys today', value: d.today.journeys, hint: d.today.journeys === d.today.journeys_operating ? 'All running' : `${d.today.journeys_operating} running`, href: '#/day/' + d.date, tone: d.today.journeys > d.today.journeys_operating ? 'amber' : '' }),
     UI.stat({ label: 'Staff absences today', value: d.today.staff_absences.length, hint: d.today.covers.length ? `${d.today.covers.length} covered` : (d.today.staff_absences.length ? 'Cover needed' : 'None'), href: '#/day/' + d.date, tone: d.today.staff_absences.length > d.today.covers.length ? 'red' : (d.today.staff_absences.length ? 'amber' : '') }),
     UI.stat({ label: 'Cover staff in use', value: d.today.covers.length, hint: 'Today', href: '#/day/' + d.date, tone: d.today.covers.length ? 'amber' : '' }),
     UI.stat({ label: 'Child absences today', value: d.today.child_absences, href: '#/day/' + d.date }),
@@ -69,7 +70,7 @@ App.views.dashboard = async function () {
       const warn = i.summary.length > 0;
       return h('div', { class: 'oprow ' + (bad ? 'bad' : warn ? 'warn' : '') },
         h('div', { class: 'oc' }, h('a', { class: 'code', href: '#/contracts/' + i.contract_id }, i.code),
-          h('div', { class: 'sch' }, plural(i.children, 'child', 'children'))),
+          h('div', { class: 'sch' }, `${plural(i.children_scheduled, 'child', 'children')} · ${plural(i.planned_trips, 'journey')}`)),
         h('div', { class: 'ostaff' }, i.summary.length ? i.summary.join(' · ') : 'Running as normal'),
         h('div', { class: 'oacts' },
           App.can('calendar') ? h('button', { class: 'btn xs', onclick: () => Ops.dayDialog(i.contract_id, d.date, () => Router.handle()) }, 'Record exception') : null));
@@ -192,18 +193,83 @@ Ops.calendarGrid = function (data, onChange) {
   return table;
 };
 
+/* ---------- journeys ----------
+   A day is a list of journeys, not a fixed AM and PM pair. Days that run one
+   out and one back still read as AM and PM, because that is what they are;
+   a Friday with three journeys names them instead. */
+function regularTrips(day) { return day.trips.filter(t => t.source !== 'extra'); }
+function isSimpleDay(day) { return regularTrips(day).length <= 2; }
+
+/** Short label for a tight space: AM, PM, T3, EXTRA. */
+function tripShort(day, t) {
+  if (t.source === 'extra') return 'EXTRA';
+  if (isSimpleDay(day)) return t.kind === 'outbound' ? 'AM' : 'PM';
+  return 'T' + t.seq;
+}
+/** Full label for a sentence: AM, PM, Trip 3, Extra journey. */
+function tripFull(day, t) {
+  if (t.source === 'extra') return 'Extra journey';
+  if (isSimpleDay(day)) return t.kind === 'outbound' ? 'AM' : 'PM';
+  return 'Trip ' + t.seq;
+}
+/** How an exception should name this journey. */
+function tripScope(day, t) {
+  if (t.source !== 'extra' && isSimpleDay(day)) {
+    return { leg: t.kind === 'outbound' ? 'AM' : 'PM', label: `${tripFull(day, t)} only` };
+  }
+  return { leg: 'DAY', trip_seq: t.seq, trip_label: t.label, label: `${t.label} only` };
+}
+/** Which journeys a scope covers — the same rule the server uses. */
+function scopeTrips(day, scope) {
+  return day.trips.filter(t => {
+    if (scope.trip_seq !== null && scope.trip_seq !== undefined) return t.seq === scope.trip_seq;
+    if (scope.leg === 'DAY') return true;
+    if (scope.leg === 'AM') return t.kind === 'outbound';
+    if (scope.leg === 'PM') return t.kind === 'return';
+    return false;
+  });
+}
+const ALL_DAY = { leg: 'DAY', label: 'All day' };
+window.tripShort = tripShort;
+
+/**
+ * Every way of naming part of a day, for the pickers.
+ * `only` narrows it to a subset of journeys, so a child is never offered a
+ * journey they do not travel on.
+ */
+function scopeChoices(day, { includeDay = true, only = null } = {}) {
+  const out = includeDay ? [{ ...ALL_DAY }] : [];
+  for (const t of (only || day.trips)) out.push(tripScope(day, t));
+  return out;
+}
+
+/** A select of journeys plus a button, for days with more than two. */
+function scopePicker(day, buttonLabel, onChoose, { includeDay = true, only = null, cls = 'btn xs' } = {}) {
+  const choices = scopeChoices(day, { includeDay, only });
+  const sel = h('select', { style: 'padding:3px 5px;font-size:11.5px;max-width:190px' },
+    ...choices.map((c, i) => h('option', { value: i }, c.label)));
+  const btn = h('button', { class: cls, onclick: () => onChoose(choices[Number(sel.value)]) }, buttonLabel);
+  return h('span', { class: 'pill-row', style: 'gap:4px' }, sel, btn);
+}
+
 Ops.cell = function (day, contract, date, onChange) {
-  const cell = h('div', { class: 'cell', title: 'Click to record an exception' });
-  for (const leg of ['AM', 'PM']) {
-    const L = day.legs[leg];
+  const cell = h('div', { class: 'cell' + (day.trips.length > 2 ? ' many' : ''), title: 'Click to record an exception' });
+  for (const t of day.trips) {
     let cls = 'leg', text = 'Operated';
-    if (L.status !== 'operated') { cls += ' bad'; text = L.reason || 'Not operated'; }
-    else if (L.driver.status === 'covered' || L.pa.status === 'covered') {
+    if (t.status !== 'operated') { cls += ' bad'; text = t.reason || 'Not operated'; }
+    else if (t.driver.status === 'covered' || t.pa.status === 'covered') {
       cls += ' cover';
-      const who = L.driver.status === 'covered' ? L.driver.cover_name : L.pa.cover_name;
+      const who = t.driver.status === 'covered' ? t.driver.cover_name : t.pa.cover_name;
       text = 'Cover: ' + (who || '').split(' ')[0];
-    } else if (L.children_absent > 0) { cls += ' partial'; text = `${L.children_absent} absent`; }
-    cell.appendChild(h('div', { class: cls }, h('span', { class: 'lt' }, leg), h('span', { class: 'lx' }, text)));
+    } else if (t.children_absent > 0) { cls += ' partial'; text = `${t.children_absent} absent`; }
+    else if (t.source === 'extra') { cls += ' cover'; text = t.label; }
+    cell.appendChild(h('div', { class: cls, title: `${t.label}${t.depart_time ? ' · departs ' + fmt.time(t.depart_time) : ''}` },
+      h('span', { class: 'lt' }, tripShort(day, t)), h('span', { class: 'lx' }, text)));
+  }
+  const off = day.children.filter(c => !c.scheduled).length;
+  if (off && day.trips.length) {
+    cell.appendChild(h('div', { class: 'cellnote', title: day.children.filter(c => !c.scheduled).map(c => c.name + ' — normal day off').join('\n') },
+      `🏠 ${off} off`));
   }
   const notes = day.exceptions.filter(e => e.type === 'note');
   if (notes.length) cell.appendChild(h('div', { class: 'cellnote', title: notes.map(n => n.note).join('\n') }, '📝 ' + notes[0].note));
@@ -225,50 +291,69 @@ App.views.day = async function ({ params }) {
     h('input', { type: 'date', value: date, style: 'padding:5px 8px;border:1px solid var(--border-strong);border-radius:6px', onchange: e => Router.go('/day/' + e.target.value) }));
 
   const list = h('div', { class: 'oplist' });
+  const journeys = rows.reduce((a, i) => a + i.trips.length, 0);
   for (const item of rows) {
     const bad = !item.operated;
     const warn = item.summary.length > 0;
     const c = data.contracts.find(x => x.id === item.contract_id);
-    const driverInfo = legStaffText(item, 'driver');
-    const paInfo = legStaffText(item, 'pa');
     list.appendChild(h('div', { class: 'oprow ' + (bad ? 'bad' : warn ? 'warn' : '') },
       h('div', { class: 'oc' },
         h('a', { class: 'code', href: '#/contracts/' + item.contract_id }, item.code),
         h('div', { class: 'sch' }, c ? c.school_name : '')),
       h('div', { class: 'ostaff' },
-        h('div', null, h('strong', 'Driver: '), driverInfo),
-        h('div', null, h('strong', 'PA: '), paInfo)),
-      h('div', { style: 'min-width:150px' },
-        h('div', { class: 'pill-row' },
-          legBadge('AM', item.legs.AM), legBadge('PM', item.legs.PM)),
+        h('div', null, h('strong', 'Driver: '), staffText(item, 'driver')),
+        h('div', null, h('strong', 'PA: '), staffText(item, 'pa'))),
+      h('div', { style: 'min-width:170px' },
+        h('div', { class: 'pill-row' }, ...item.trips.map(t => tripBadge(item, t))),
         item.summary.length ? h('div', { style: 'font-size:11.5px;color:var(--text-dim);margin-top:4px' }, item.summary.join(' · ')) : null),
-      h('div', { style: 'min-width:140px;font-size:12.5px' },
-        ...item.children.map(ch => h('div', null,
-          h('span', { class: 'dot ' + (ch.AM === 'travelling' && ch.PM === 'travelling' ? 'green' : (ch.AM === 'absent' && ch.PM === 'absent' ? 'red' : 'amber')), style: 'margin-right:5px' }),
-          h('a', { href: '#/children/' + ch.id }, ch.name)))),
+      h('div', { style: 'min-width:150px;font-size:12.5px' },
+        ...item.children.map(ch => h('div', { title: childDayText(item, ch) },
+          h('span', { class: 'dot ' + childDot(item, ch), style: 'margin-right:5px' }),
+          h('a', { href: '#/children/' + ch.id }, ch.name),
+          ch.scheduled ? null : h('span', { style: 'color:var(--text-faint);font-size:11px' }, ' · day off')))),
       h('div', { class: 'oacts' },
         App.can('calendar') ? h('button', { class: 'btn sm primary', onclick: () => Ops.dayDialog(item.contract_id, date, () => Router.handle()) }, 'Record exception') : null)));
   }
 
   return h('div', null,
-    UI.pageHead('Day view — ' + fmt.dateLong(date), `${rows.length} contracts scheduled`, [nav, h('a', { class: 'btn', href: '#/calendar' }, 'Calendar view')]),
+    UI.pageHead('Day view — ' + fmt.dateLong(date),
+      `${plural(rows.length, 'contract')} · ${plural(journeys, 'journey')} scheduled`,
+      [nav, h('a', { class: 'btn', href: '#/calendar' }, 'Calendar view')]),
     h('div', { class: 'card' }, h('div', { class: 'card-body tight' }, rows.length ? list : UI.empty('No contracts operate on this date', '📅'))));
 };
-function legBadge(leg, L) {
+
+function tripBadge(day, t) {
   let cls = 'green', text = 'Operated';
-  if (L.status !== 'operated') { cls = 'red'; text = L.reason || 'Not run'; }
-  else if (L.driver.status === 'covered' || L.pa.status === 'covered') { cls = 'purple'; text = 'Cover'; }
-  else if (L.children_absent) { cls = 'amber'; text = `${L.children_absent} absent`; }
-  return h('span', { class: 'badge ' + cls }, h('strong', leg), ' ', text);
+  if (t.status !== 'operated') { cls = 'red'; text = t.reason || 'Not run'; }
+  else if (t.driver.status === 'covered' || t.pa.status === 'covered') { cls = 'purple'; text = 'Cover'; }
+  else if (t.children_absent) { cls = 'amber'; text = `${t.children_absent} absent`; }
+  else if (t.source === 'extra') { cls = 'blue'; text = 'Extra'; }
+  return h('span', { class: 'badge ' + cls, title: `${t.label}${t.depart_time ? ' · departs ' + fmt.time(t.depart_time) : ''}` },
+    h('strong', tripShort(day, t)), ' ', text);
 }
-function legStaffText(item, role) {
-  const am = item.legs.AM[role], pm = item.legs.PM[role];
-  const t = L => L.status === 'not_required' ? 'Not required' :
-    L.status === 'covered' ? `${L.cover_name} (cover for ${L.normal_name || 'unassigned'})` :
-    L.status === 'absent_no_cover' ? `${L.normal_name || 'unassigned'} — ABSENT, no cover` :
-    (L.normal_name || 'NOT ASSIGNED');
-  const a = t(am), b = t(pm);
-  return a === b ? a : `AM ${a} / PM ${b}`;
+/** One line for a role across the whole day, only naming journeys when they differ. */
+function staffText(day, role) {
+  const describe = L => L.status === 'not_required' ? 'Not required'
+    : L.status === 'covered' ? `${L.cover_name} (cover for ${L.normal_name || 'unassigned'})`
+      : L.status === 'absent_no_cover' ? `${L.normal_name || 'unassigned'} — ABSENT, no cover`
+        : (L.normal_name || 'NOT ASSIGNED');
+  if (!day.trips.length) return '—';
+  const parts = day.trips.map(t => [tripShort(day, t), describe(t[role])]);
+  const first = parts[0][1];
+  if (parts.every(p => p[1] === first)) return first;
+  return parts.map(([n, txt]) => `${n} ${txt}`).join(' / ');
+}
+function childDot(day, ch) {
+  if (!ch.scheduled) return 'grey';
+  const states = Object.values(ch.trips);
+  if (!states.length) return 'grey';
+  if (states.every(s => s === 'travelling')) return 'green';
+  if (states.every(s => s === 'absent')) return 'red';
+  return 'amber';
+}
+function childDayText(day, ch) {
+  if (!ch.scheduled) return `${ch.name} — normal day off, not an absence`;
+  return day.trips.map(t => `${t.label}: ${ch.trips[t.seq] || 'not on this journey'}`).join('\n');
 }
 
 /* =========================================================
@@ -276,24 +361,20 @@ function legStaffText(item, role) {
    ========================================================= */
 Ops.dayDialog = async function (contractId, date, onChange) {
   const loading = UI.modal({ title: 'Loading…', body: h('div', { class: 'loading' }, h('span', { class: 'spinner' })) });
-  let data, lookups;
+  let day, c;
   try {
-    [data, lookups] = await Promise.all([api.get('/api/calendar', { from: date, to: date, contract_id: contractId }), UI.lookups()]);
+    const [res] = await Promise.all([api.get(`/api/contracts/${contractId}/day/${date}`), UI.lookups()]);
+    day = res; c = res.contract;
   } catch (e) { loading.close(); return toast(e.message, 'err'); }
   loading.close();
-  const row = data.rows[0];
-  if (!row) return toast('This contract does not operate on that date', 'err');
-  const day = row.days[date];
-  const c = row.contract;
-  if (!day) return toast(`${c.code} does not operate on ${fmt.date(date)}`, 'err');
+  if (!day.trips.length) return toast(`${c.code} does not operate on ${fmt.date(date)}`, 'err');
 
   let dirty = false;
   const body = h('div');
   const refresh = async () => {
-    const fresh = await api.get('/api/calendar', { from: date, to: date, contract_id: contractId });
-    const nd = fresh.rows[0].days[date];
+    const fresh = await api.get(`/api/contracts/${contractId}/day/${date}`);
     body.innerHTML = '';
-    body.appendChild(render(nd));
+    body.appendChild(render(fresh));
   };
   const post = async payload => {
     try {
@@ -305,91 +386,167 @@ Ops.dayDialog = async function (contractId, date, onChange) {
     try { const r = await api.del('/api/exceptions/' + id); dirty = true; toast('Exception removed' + (r.payment_reversed ? ' and immediate payment reversed' : ''), 'ok'); await refresh(); }
     catch (e) { toast(e.message, 'err'); }
   };
+  const markDirty = () => { dirty = true; };
 
   function render(day) {
     const wrap = h('div');
+    const simple = isSimpleDay(day);
 
-    // current status
-    wrap.appendChild(h('div', { class: 'pill-row', style: 'margin-bottom:12px' },
-      legBadge('AM', day.legs.AM), legBadge('PM', day.legs.PM),
-      h('span', { style: 'color:var(--text-dim);font-size:12.5px' }, `${c.school_name || 'No school'} · ${plural(day.children.length, 'child', 'children')}`)));
+    // ---- what is meant to run today ----
+    const jbox = h('fieldset', h('legend', `Journeys on this date — ${plural(day.planned_trips, 'planned journey')}`));
+    for (const t of day.trips) {
+      const cancelled = day.exceptions.find(e =>
+        ['journey_cancelled', 'contract_cancelled', 'school_closed'].includes(e.type) && scopeTrips(day, e).some(x => x.seq === t.seq));
+      jbox.appendChild(h('div', { class: 'trip-head' },
+        h('div', { class: 'th-num' }, t.seq),
+        h('div', { class: 'th-name' }, t.label,
+          t.source === 'extra' ? h('span', { class: 'badge blue', style: 'margin-left:6px' }, 'One-off extra') : null),
+        h('div', { class: 'th-time' }, t.depart_time ? fmt.time(t.depart_time) : ''),
+        tripBadge(day, t),
+        h('span', { style: 'font-size:11.5px;color:var(--text-dim)' },
+          `${plural(t.children_travelling, 'child', 'children')} travelling`,
+          t.children_not_scheduled ? ` · ${t.children_not_scheduled} not on this journey` : ''),
+        h('span', { class: 'th-space' }),
+        t.source === 'extra'
+          ? h('button', { class: 'btn xs danger', onclick: () => remove(t.exception_id) }, 'Remove')
+          : (cancelled && cancelled.contract_id
+            ? h('button', { class: 'btn xs', onclick: () => remove(cancelled.id) }, 'Undo cancellation')
+            : (cancelled ? null : h('button', { class: 'btn xs', onclick: () => post({ type: 'journey_cancelled', ...payloadOf(tripScope(day, t)) }) }, 'Journey did not run')))));
+    }
+    jbox.appendChild(h('div', { class: 'pill-row', style: 'margin-top:9px' },
+      h('button', { class: 'btn xs', onclick: () => Ops.extraJourneyDialog(c, date, refresh, markDirty) }, '+ Extra journey this date only'),
+      App.can('edit') ? h('button', { class: 'btn xs', onclick: () => { m.close(); Sched.weekEditor(c, () => Router.handle()); } }, 'Change the weekly schedule') : null));
+    wrap.appendChild(jbox);
 
     // ---- children ----
     const childBox = h('fieldset', h('legend', 'Children — mark an absence'));
     if (!day.children.length) childBox.appendChild(h('div', { style: 'color:var(--text-faint)' }, 'No children assigned to this contract.'));
     for (const ch of day.children) {
       const exs = day.exceptions.filter(e => e.type === 'child_absence' && e.child_id === ch.id);
+      const permanent = () => {
+        m.close();
+        Sched.timetableEditor({ id: ch.id, name: ch.name }, () => Router.handle(), { date, weekday: day.weekday });
+      };
+      if (!ch.scheduled) {
+        childBox.appendChild(h('div', { class: 'oprow', style: 'padding:7px 0;border-bottom:1px solid var(--border);opacity:.75' },
+          h('div', { style: 'flex:1;min-width:130px' },
+            h('a', { href: '#/children/' + ch.id, target: '_blank' }, ch.name),
+            h('div', { style: 'font-size:11.5px;color:var(--text-faint)' }, 'Normal day off — not travelling today, and not an absence')),
+          h('div', { class: 'pill-row' },
+            App.can('edit') ? h('button', { class: 'btn xs', onclick: permanent }, 'Edit timetable') : null)));
+        continue;
+      }
+      const recorded = exs.length ? h('div', { class: 'pill-row', style: 'margin-top:3px' }, ...exs.map(e =>
+        h('span', { class: 'badge red' }, `Absent ${absenceSpan(day, e)}`,
+          h('button', { class: 'x', style: 'font-size:14px;padding:0 3px', title: 'Undo', onclick: () => remove(e.id) }, '×')))) : null;
+      // The journeys this child is actually on today. A 1pm collection for two
+      // of them should never offer the 3pm run the third one takes.
+      const theirs = day.trips.filter(t => ch.trips[t.seq]);
+      const actions = h('div', { class: 'pill-row' });
+      if (!exs.length) {
+        if (simple || theirs.length === 1) {
+          for (const t of theirs) {
+            const sc = tripScope(day, t);
+            actions.appendChild(h('button', { class: 'btn xs', onclick: () => post({ type: 'child_absence', child_id: ch.id, ...payloadOf(sc) }) },
+              simple ? 'Absent ' + tripShort(day, t) : 'Absent from ' + t.label));
+          }
+        } else {
+          actions.appendChild(scopePicker(day, 'Absent', sc => post({ type: 'child_absence', child_id: ch.id, ...payloadOf(sc) }),
+            { includeDay: false, only: theirs }));
+        }
+        if (theirs.length > 1) {
+          actions.appendChild(h('button', { class: 'btn xs danger', onclick: () => post({ type: 'child_absence', child_id: ch.id, leg: 'DAY' }) }, 'Absent all day'));
+        }
+      }
+      if (App.can('edit')) {
+        actions.appendChild(h('button', {
+          class: 'btn xs', title: 'This child never travels on this weekday',
+          onclick: () => Sched.scopeDialog({
+            title: `${ch.name} — is this a one-off?`,
+            intro: `${ch.name} is not travelling on ${fmt.dateLong(date)}. Is that just today, or has their normal week changed?`,
+            onceLabel: 'Just this date',
+            onceHint: 'Records an absence for today only. Everything else stays as it is.',
+            onceDo: () => post({ type: 'child_absence', child_id: ch.id, leg: 'DAY' }),
+            alwaysLabel: `Every ${Sched.DAY_NAMES[day.weekday]} from now on`,
+            alwaysHint: 'Changes their weekly timetable. Days before the date you choose are left exactly as they were.',
+            alwaysDo: permanent,
+          }),
+        }, 'Not a one-off?'));
+      }
       childBox.appendChild(h('div', { class: 'oprow', style: 'padding:7px 0;border-bottom:1px solid var(--border)' },
         h('div', { style: 'flex:1;min-width:130px' },
           h('a', { href: '#/children/' + ch.id, target: '_blank' }, ch.name),
-          exs.length ? h('div', { class: 'pill-row', style: 'margin-top:3px' }, ...exs.map(e =>
-            h('span', { class: 'badge red' }, `Absent ${e.leg === 'DAY' ? 'all day' : e.leg}`,
-              h('button', { class: 'x', style: 'font-size:14px;padding:0 3px', title: 'Undo', onclick: () => remove(e.id) }, '×')))) : null),
-        h('div', { class: 'pill-row' },
-          ...(exs.length ? [] : [
-            h('button', { class: 'btn xs', onclick: () => post({ type: 'child_absence', leg: 'AM', child_id: ch.id }) }, 'Absent AM'),
-            h('button', { class: 'btn xs', onclick: () => post({ type: 'child_absence', leg: 'PM', child_id: ch.id }) }, 'Absent PM'),
-            h('button', { class: 'btn xs danger', onclick: () => post({ type: 'child_absence', leg: 'DAY', child_id: ch.id }) }, 'Absent all day')]))));
+          ch.start_time || ch.finish_time ? h('div', { style: 'font-size:11.5px;color:var(--text-faint)' }, `${fmt.time(ch.start_time)} – ${fmt.time(ch.finish_time)}`) : null,
+          recorded),
+        actions));
     }
     wrap.appendChild(childBox);
 
     // ---- staff ----
     for (const role of ['driver', 'pa']) {
-      const L = day.legs.AM[role];
+      const L = day.trips[0][role];
       if (L.status === 'not_required') continue;
       const normalName = L.normal_name || 'Not assigned';
       const exs = day.exceptions.filter(e => e.type === 'staff_absence' && e.role === role);
       const box = h('fieldset', h('legend', role === 'driver' ? 'Driver' : 'Passenger assistant'));
+      const perJourney = day.trips.filter(t => t.source !== 'extra').map(t => role === 'driver' ? t.driver_rate : t.pa_rate);
       box.appendChild(h('div', { style: 'margin-bottom:8px' },
         h('strong', normalName),
         h('span', { style: 'color:var(--text-faint);font-size:12px;margin-left:8px' },
-          role === 'driver' ? fmt.money(c.driver_pay_per_day) + '/day' : fmt.money(c.pa_pay_per_day) + '/day')));
+          `${fmt.money(perJourney.reduce((a, b) => a + b, 0))} today across ${plural(perJourney.length, 'journey')}`)));
       if (exs.length) {
         for (const e of exs) {
           box.appendChild(h('div', { class: 'note-box ' + (e.cover_staff_id ? 'warn' : 'danger'), style: 'margin-bottom:8px' },
             h('div', null,
-              h('strong', e.leg === 'DAY' ? 'Absent all day' : `Absent ${e.leg}`), ' — ',
+              h('strong', 'Absent ' + absenceSpan(day, e)), ' — ',
               e.cover_staff_id ? h('span', null, 'covered by ', h('strong', e.cover_name), ' at ', h('strong', fmt.money(e.cover_pay)),
                 e.paid_immediately ? h('span', { class: 'badge green', style: 'margin-left:6px' }, 'Paid immediately') : h('span', { class: 'badge', style: 'margin-left:6px' }, 'Pay via payroll'))
                 : h('strong', { style: 'color:var(--red)' }, 'NO COVER ASSIGNED')),
             e.note ? h('div', { style: 'font-size:12px;margin-top:3px' }, e.note) : null,
             h('div', { class: 'pill-row', style: 'margin-top:6px' },
-              !e.cover_staff_id ? h('button', { class: 'btn xs primary', onclick: () => Ops.coverDialog(c, date, role, e, refresh, () => dirty = true) }, 'Assign cover') : null,
+              !e.cover_staff_id ? h('button', { class: 'btn xs primary', onclick: () => Ops.coverDialog(c, date, role, e, day, refresh, markDirty) }, 'Assign cover') : null,
               h('button', { class: 'btn xs', onclick: () => remove(e.id) }, 'Undo absence'))));
         }
       } else {
-        box.appendChild(h('div', { class: 'pill-row' },
-          h('button', { class: 'btn xs', onclick: () => Ops.absenceDialog(c, date, role, 'AM', refresh, () => dirty = true) }, 'Absent AM'),
-          h('button', { class: 'btn xs', onclick: () => Ops.absenceDialog(c, date, role, 'PM', refresh, () => dirty = true) }, 'Absent PM'),
-          h('button', { class: 'btn xs danger', onclick: () => Ops.absenceDialog(c, date, role, 'DAY', refresh, () => dirty = true) }, 'Absent all day')));
+        const acts = h('div', { class: 'pill-row' });
+        if (simple) {
+          for (const t of day.trips) {
+            const sc = tripScope(day, t);
+            acts.appendChild(h('button', { class: 'btn xs', onclick: () => Ops.absenceDialog(c, date, role, sc, day, refresh, markDirty) }, 'Absent ' + tripShort(day, t)));
+          }
+        } else {
+          acts.appendChild(scopePicker(day, 'Absent', sc => Ops.absenceDialog(c, date, role, sc, day, refresh, markDirty), { includeDay: false }));
+        }
+        acts.appendChild(h('button', { class: 'btn xs danger', onclick: () => Ops.absenceDialog(c, date, role, { ...ALL_DAY }, day, refresh, markDirty) }, 'Absent all day'));
+        box.appendChild(acts);
       }
       wrap.appendChild(box);
     }
 
-    // ---- journey level ----
-    const jbox = h('fieldset', h('legend', 'Journey and contract'));
-    const cancels = day.exceptions.filter(e => ['school_closed', 'contract_cancelled', 'journey_cancelled'].includes(e.type));
+    // ---- contract level ----
+    const cbox = h('fieldset', h('legend', 'Contract and school'));
+    const cancels = day.exceptions.filter(e => ['school_closed', 'contract_cancelled'].includes(e.type));
     if (cancels.length) {
-      jbox.appendChild(h('div', { class: 'pill-row' }, ...cancels.map(e =>
-        h('span', { class: 'badge red' }, `${fmt.titleCase(e.type)} ${e.leg === 'DAY' ? '(all day)' : '(' + e.leg + ')'}`,
+      cbox.appendChild(h('div', { class: 'pill-row' }, ...cancels.map(e =>
+        h('span', { class: 'badge red' }, `${fmt.titleCase(e.type)} (${absenceSpan(day, e)})`,
           e.contract_id ? h('button', { class: 'x', style: 'font-size:14px;padding:0 3px', onclick: () => remove(e.id) }, '×')
             : h('span', { style: 'font-size:10px;margin-left:5px' }, '(school-wide)')))));
     }
-    jbox.appendChild(h('div', { class: 'pill-row', style: 'margin-top:8px' },
-      h('button', { class: 'btn xs', onclick: () => post({ type: 'journey_cancelled', leg: 'AM' }) }, 'AM journey cancelled'),
-      h('button', { class: 'btn xs', onclick: () => post({ type: 'journey_cancelled', leg: 'PM' }) }, 'PM journey cancelled'),
+    cbox.appendChild(h('div', { class: 'pill-row', style: 'margin-top:8px' },
       h('button', { class: 'btn xs', onclick: () => post({ type: 'contract_cancelled', leg: 'DAY' }) }, 'Contract not operating'),
-      h('button', { class: 'btn xs', onclick: () => Ops.schoolClosureDialog(c, date, refresh, () => dirty = true) }, 'School closed'),
-      h('button', { class: 'btn xs', onclick: () => Ops.noteDialog(c, date, refresh, () => dirty = true) }, 'Add note'),
-      App.can('finance') ? h('button', { class: 'btn xs', onclick: () => Ops.payOverrideDialog(c, date, refresh, () => dirty = true) }, 'Pay override') : null));
-    wrap.appendChild(jbox);
+      h('button', { class: 'btn xs', onclick: () => Ops.schoolClosureDialog(c, date, day, refresh, markDirty) }, 'School closed / holiday'),
+      h('button', { class: 'btn xs', onclick: () => Ops.noteDialog(c, date, day, refresh, markDirty) }, 'Add note'),
+      App.can('finance') ? h('button', { class: 'btn xs', onclick: () => Ops.payOverrideDialog(c, date, day, refresh, markDirty) }, 'Pay override') : null));
+    cbox.appendChild(h('div', { style: 'margin-top:8px;font-size:12px;color:var(--text-faint)' },
+      'A school closure stops journeys being generated. It is never counted as a child absence.'));
+    wrap.appendChild(cbox);
 
     // ---- everything recorded on this day ----
     if (day.exceptions.length) {
       wrap.appendChild(h('fieldset', h('legend', 'All exceptions recorded for this day'),
         UI.table([
           { key: 'type', label: 'Type', value: e => fmt.titleCase(e.type) },
-          { key: 'leg', label: 'Leg' },
+          { label: 'Applies to', sortable: false, value: e => absenceSpan(day, e) },
           { label: 'Detail', sortable: false, value: e => [e.child_name, e.staff_name, e.cover_name ? '→ ' + e.cover_name : null, e.cover_pay != null ? fmt.money(e.cover_pay) : null, e.note].filter(Boolean).join(' · ') || '—' },
           { key: 'created_by', label: 'Recorded by' },
           { label: '', sortable: false, value: e => h('button', { class: 'btn xs danger', onclick: () => remove(e.id) }, 'Remove') },
@@ -408,30 +565,48 @@ Ops.dayDialog = async function (contractId, date, onChange) {
   });
 };
 
+/** Turns a scope back into the fields an exception is stored with. */
+function payloadOf(scope) {
+  const out = { leg: scope.leg || 'DAY' };
+  if (scope.trip_seq !== null && scope.trip_seq !== undefined) { out.trip_seq = scope.trip_seq; out.trip_label = scope.trip_label; }
+  return out;
+}
+/** Plain words for the part of a day an exception covers. */
+function absenceSpan(day, e) {
+  if (e.trip_seq) return e.trip_label || `journey ${e.trip_seq}`;
+  if (e.leg === 'DAY' || !e.leg) return 'all day';
+  const t = day && day.trips ? day.trips.find(x => (e.leg === 'AM' ? x.kind === 'outbound' : x.kind === 'return')) : null;
+  return t && !isSimpleDay(day) ? t.label : e.leg;
+}
+
 /* absence + cover in a single step */
-Ops.absenceDialog = function (contract, date, role, leg, refresh, markDirty) {
+Ops.absenceDialog = function (contract, date, role, scope, day, refresh, markDirty) {
   const lookups = App.state.lookups;
   const pool = role === 'driver' ? lookups.drivers : lookups.pas;
   const normalId = role === 'driver' ? contract.driver_id : contract.pa_id;
-  const baseRate = role === 'driver' ? contract.driver_pay_per_day : contract.pa_pay_per_day;
-  const suggested = Math.round((leg === 'DAY' ? baseRate : baseRate / 2) * 100) / 100;
+  const covered = scopeTrips(day, scope);
+  // Cover is worth what the journeys it covers are worth.
+  const suggested = Math.round(covered.reduce((a, t) => a + (role === 'driver' ? t.driver_rate : t.pa_rate), 0) * 100) / 100;
+  const spanText = scope.leg === 'DAY' && scope.trip_seq === undefined ? 'all day' : scope.label;
 
   const form = UI.form([
     { name: 'cover_staff_id', label: 'Cover staff member', type: 'select', placeholder: '— no cover, journey will not run —', options: pool.filter(p => p.id !== normalId).map(p => ({ value: p.id, label: `${p.name}${p.status === 'pool' ? ' (pool)' : ''}` })) },
-    { name: 'cover_pay', label: 'Cover pay (£)', type: 'number', step: '0.01', value: suggested, help: 'Override the normal rate if the cover staff member is paid differently.' },
+    { name: 'cover_pay', label: 'Cover pay (£)', type: 'number', step: '0.01', value: suggested, help: `Suggested from the ${plural(covered.length, 'journey')} being covered. Override if the cover staff member is paid differently.` },
     { name: 'paid_immediately', label: 'Paid immediately (cash/bank today) — exclude from the next payroll', type: 'checkbox', span: 'full' },
     { name: 'note', label: 'Reason / note', span: 'full', placeholder: 'e.g. Sickness, annual leave, hospital appointment' },
   ], {});
 
-  const finder = h('button', { class: 'btn sm', onclick: () => Ops.findCover(contract, date, role, leg, id => { form.controls.cover_staff_id.value = id; }) }, '🔍 Find available staff near this route');
+  const finder = h('button', { class: 'btn sm', onclick: () => Ops.findCover(contract, date, role, scope.leg || 'DAY', id => { form.controls.cover_staff_id.value = id; }) }, '🔍 Find available staff near this route');
 
   const saveBtn = h('button', { class: 'btn primary' }, 'Record absence');
   const dlg = UI.modal({
     title: `${role === 'driver' ? 'Driver' : 'PA'} absent — ${contract.code}`,
     body: h('div', null,
       h('div', { class: 'note-box', style: 'margin-bottom:12px' },
-        h('strong', leg === 'DAY' ? 'Absent all day' : `Absent ${leg} only`), ' on ', h('strong', fmt.dateLong(date)), '. ',
-        `The normal ${role === 'driver' ? 'driver' : 'PA'} will not be paid for this journey.`),
+        h('strong', `Absent ${spanText}`), ' on ', h('strong', fmt.dateLong(date)), '. ',
+        `The normal ${role === 'driver' ? 'driver' : 'PA'} will not be paid for ${covered.length === 1 ? 'that journey' : 'those journeys'}.`,
+        h('div', { style: 'margin-top:4px;color:var(--text-dim);font-size:12px' },
+          covered.map(t => `${t.label}${t.depart_time ? ' ' + fmt.time(t.depart_time) : ''}`).join(' · '))),
       h('div', { style: 'margin-bottom:10px' }, finder),
       form),
     footer: [h('button', { class: 'btn', onclick: () => dlg.close() }, 'Cancel'), saveBtn],
@@ -441,7 +616,7 @@ Ops.absenceDialog = function (contract, date, role, leg, refresh, markDirty) {
     saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
     try {
       await api.post('/api/exceptions', {
-        contract_id: contract.id, date, type: 'staff_absence', leg, role,
+        contract_id: contract.id, date, type: 'staff_absence', role, ...payloadOf(scope),
         cover_staff_id: v.cover_staff_id || null,
         cover_pay: v.cover_staff_id ? v.cover_pay : null,
         paid_immediately: v.cover_staff_id ? v.paid_immediately : 0,
@@ -453,14 +628,14 @@ Ops.absenceDialog = function (contract, date, role, leg, refresh, markDirty) {
 };
 
 /* attach cover to an existing uncovered absence */
-Ops.coverDialog = function (contract, date, role, exception, refresh, markDirty) {
+Ops.coverDialog = function (contract, date, role, exception, day, refresh, markDirty) {
   const lookups = App.state.lookups;
   const pool = role === 'driver' ? lookups.drivers : lookups.pas;
-  const baseRate = role === 'driver' ? contract.driver_pay_per_day : contract.pa_pay_per_day;
-  const suggested = Math.round((exception.leg === 'DAY' ? baseRate : baseRate / 2) * 100) / 100;
+  const covered = scopeTrips(day, exception);
+  const suggested = Math.round(covered.reduce((a, t) => a + (role === 'driver' ? t.driver_rate : t.pa_rate), 0) * 100) / 100;
   const form = UI.form([
     { name: 'cover_staff_id', label: 'Cover staff member', type: 'select', required: true, options: pool.map(p => ({ value: p.id, label: `${p.name}${p.status === 'pool' ? ' (pool)' : ''}` })) },
-    { name: 'cover_pay', label: 'Cover pay (£)', type: 'number', step: '0.01', value: suggested },
+    { name: 'cover_pay', label: 'Cover pay (£)', type: 'number', step: '0.01', value: suggested, help: `Suggested from the ${plural(covered.length, 'journey')} being covered.` },
     { name: 'paid_immediately', label: 'Paid immediately — exclude from the next payroll', type: 'checkbox', span: 'full' },
     { name: 'note', label: 'Note', span: 'full', value: exception.note || '' },
   ], {});
@@ -468,6 +643,8 @@ Ops.coverDialog = function (contract, date, role, exception, refresh, markDirty)
   const dlg = UI.modal({
     title: 'Assign cover — ' + contract.code,
     body: h('div', null,
+      h('div', { class: 'note-box', style: 'margin-bottom:10px' }, `Covering ${absenceSpan(day, exception)}: `,
+        covered.map(t => t.label).join(' · ')),
       h('div', { style: 'margin-bottom:10px' }, h('button', { class: 'btn sm', onclick: () => Ops.findCover(contract, date, role, exception.leg, id => { form.controls.cover_staff_id.value = id; }) }, '🔍 Find available staff near this route')),
       form),
     footer: [h('button', { class: 'btn', onclick: () => dlg.close() }, 'Cancel'), saveBtn],
@@ -478,7 +655,11 @@ Ops.coverDialog = function (contract, date, role, exception, refresh, markDirty)
     saveBtn.disabled = true;
     try {
       await api.del('/api/exceptions/' + exception.id);
-      await api.post('/api/exceptions', { contract_id: contract.id, date, type: 'staff_absence', leg: exception.leg, role, cover_staff_id: v.cover_staff_id, cover_pay: v.cover_pay, paid_immediately: v.paid_immediately, note: v.note });
+      await api.post('/api/exceptions', {
+        contract_id: contract.id, date, type: 'staff_absence', role,
+        leg: exception.leg, trip_seq: exception.trip_seq, trip_label: exception.trip_label,
+        cover_staff_id: v.cover_staff_id, cover_pay: v.cover_pay, paid_immediately: v.paid_immediately, note: v.note,
+      });
       markDirty(); toast('Cover assigned', 'ok'); dlg.close(); refresh();
     } catch (e) { toast(e.message, 'err'); saveBtn.disabled = false; }
   };
@@ -508,33 +689,65 @@ Ops.findCover = async function (contract, date, role, leg, onPick) {
   } catch (e) { dlg.close(); toast(e.message, 'err'); }
 };
 
-Ops.schoolClosureDialog = function (contract, date, refresh, markDirty) {
+/* a journey that runs on one date only */
+Ops.extraJourneyDialog = function (contract, date, refresh, markDirty) {
+  const form = UI.form([
+    { name: 'trip_label', label: 'What is the journey?', required: true, span: 'full', placeholder: 'e.g. 1pm hospital appointment collection' },
+    { name: 'trip_kind', label: 'Type', type: 'select', placeholder: false, options: [{ value: 'other', label: 'Other journey' }, { value: 'outbound', label: 'Out — home to school' }, { value: 'return', label: 'Back — school to home' }] },
+    { name: 'amount', label: 'Extra pay for the driver (£)', type: 'number', step: '0.01', help: 'Paid on top of the normal day. Leave blank if it is already covered.' },
+    { name: 'note', label: 'Note', span: 'full' },
+  ], {});
+  const saveBtn = h('button', { class: 'btn primary' }, 'Add journey');
+  const dlg = UI.modal({
+    title: `Extra journey — ${contract.code} ${fmt.date(date)}`,
+    body: h('div', null,
+      h('div', { class: 'note-box', style: 'margin-bottom:12px' },
+        h('strong', 'This adds a journey to this date only.'),
+        ' If it happens every week, set it on the contract’s weekly schedule instead so it generates by itself.'),
+      form),
+    footer: [h('button', { class: 'btn', onclick: () => dlg.close() }, 'Cancel'), saveBtn],
+  });
+  saveBtn.onclick = async () => {
+    if (!form.validate()) return;
+    const v = form.read();
+    saveBtn.disabled = true;
+    try {
+      await api.post('/api/exceptions', { contract_id: contract.id, date, type: 'extra_journey', leg: 'DAY', ...v });
+      markDirty(); toast('Extra journey added', 'ok'); dlg.close(); refresh();
+    } catch (e) { toast(e.message, 'err'); saveBtn.disabled = false; }
+  };
+};
+
+Ops.schoolClosureDialog = function (contract, date, day, refresh, markDirty) {
+  const choices = scopeChoices(day);
   const form = UI.form([
     { name: 'scope', label: 'Applies to', type: 'select', placeholder: false, options: [{ value: 'school', label: `The whole school (${contract.school_name}) — every contract` }, { value: 'contract', label: `This contract only (${contract.code})` }] },
-    { name: 'leg', label: 'Which journeys', type: 'select', placeholder: false, options: [{ value: 'DAY', label: 'All day' }, { value: 'AM', label: 'AM only' }, { value: 'PM', label: 'PM only' }] },
+    { name: 'which', label: 'Which journeys', type: 'select', placeholder: false, options: choices.map((c, i) => ({ value: i, label: c.label })) },
     { name: 'note', label: 'Reason', span: 'full', value: 'School closed' },
-    { name: 'repeat_days', label: 'Repeat for this many consecutive days', type: 'number', min: 1, max: 30, value: 1, help: 'Use for half-terms and holidays.' },
+    { name: 'repeat_days', label: 'Repeat for this many consecutive days', type: 'number', min: 1, max: 30, value: 1, help: 'Use for half-terms and holidays. No journeys are generated on those days, and no child is marked absent.' },
   ], {});
   const saveBtn = h('button', { class: 'btn primary' }, 'Record closure');
   const dlg = UI.modal({ title: 'School closed — ' + fmt.date(date), body: form, footer: [h('button', { class: 'btn', onclick: () => dlg.close() }, 'Cancel'), saveBtn] });
   saveBtn.onclick = async () => {
     const v = form.read();
+    const chosen = choices[Number(v.which)] || { ...ALL_DAY };
     const dates = []; for (let i = 0; i < Math.max(1, v.repeat_days || 1); i++) dates.push(D.add(date, i));
     saveBtn.disabled = true;
     try {
       await api.post('/api/exceptions', {
-        dates, type: 'school_closed', leg: v.leg, note: v.note,
+        dates, type: 'school_closed', note: v.note, ...payloadOf(chosen),
         school_id: v.scope === 'school' ? contract.school_id : null,
         contract_id: v.scope === 'school' ? null : contract.id,
       });
-      markDirty(); toast(`Closure recorded for ${dates.length} day(s)`, 'ok'); dlg.close(); refresh();
+      markDirty(); toast(`Closure recorded for ${plural(dates.length, 'day')}`, 'ok'); dlg.close(); refresh();
     } catch (e) { toast(e.message, 'err'); saveBtn.disabled = false; }
   };
 };
 
-Ops.noteDialog = function (contract, date, refresh, markDirty) {
+Ops.noteDialog = function (contract, date, day, refresh, markDirty) {
+  const choices = scopeChoices(day);
   const form = UI.form([
-    { name: 'leg', label: 'Applies to', type: 'select', placeholder: false, options: [{ value: 'DAY', label: 'Whole day' }, { value: 'AM', label: 'AM' }, { value: 'PM', label: 'PM' }] },
+    { name: 'which', label: 'Applies to', type: 'select', placeholder: false, options: choices.map((c, i) => ({ value: i, label: c.label })) },
     { name: 'note', label: 'Note', type: 'textarea', span: 'full', required: true, rows: 3 },
   ], {});
   const saveBtn = h('button', { class: 'btn primary' }, 'Save note');
@@ -542,16 +755,18 @@ Ops.noteDialog = function (contract, date, refresh, markDirty) {
   saveBtn.onclick = async () => {
     if (!form.validate()) return;
     const v = form.read();
-    try { await api.post('/api/exceptions', { contract_id: contract.id, date, type: 'note', leg: v.leg, note: v.note }); markDirty(); toast('Note saved', 'ok'); dlg.close(); refresh(); }
+    const chosen = choices[Number(v.which)] || { ...ALL_DAY };
+    try { await api.post('/api/exceptions', { contract_id: contract.id, date, type: 'note', note: v.note, ...payloadOf(chosen) }); markDirty(); toast('Note saved', 'ok'); dlg.close(); refresh(); }
     catch (e) { toast(e.message, 'err'); }
   };
 };
 
-Ops.payOverrideDialog = function (contract, date, refresh, markDirty) {
+Ops.payOverrideDialog = function (contract, date, day, refresh, markDirty) {
+  const choices = scopeChoices(day);
   const form = UI.form([
     { name: 'role', label: 'Who', type: 'select', placeholder: false, options: [{ value: 'driver', label: `Driver (${contract.driver_name || 'unassigned'})` }, { value: 'pa', label: `PA (${contract.pa_name || 'unassigned'})` }] },
-    { name: 'leg', label: 'Applies to', type: 'select', placeholder: false, options: [{ value: 'DAY', label: 'Whole day' }, { value: 'AM', label: 'AM' }, { value: 'PM', label: 'PM' }] },
-    { name: 'amount', label: 'Day rate for this date (£)', type: 'number', step: '0.01', required: true, help: 'Replaces the contract rate for this date only.' },
+    { name: 'which', label: 'Applies to', type: 'select', placeholder: false, options: choices.map((c, i) => ({ value: i, label: c.label })) },
+    { name: 'amount', label: 'Pay for this date (£)', type: 'number', step: '0.01', required: true, help: 'Chosen for the whole day, this replaces the day rate. Chosen for one journey, it replaces that journey’s rate.' },
     { name: 'note', label: 'Reason', span: 'full', placeholder: 'e.g. Extra run, long diversion, bank holiday rate' },
   ], {});
   const saveBtn = h('button', { class: 'btn primary' }, 'Save override');
@@ -559,7 +774,8 @@ Ops.payOverrideDialog = function (contract, date, refresh, markDirty) {
   saveBtn.onclick = async () => {
     if (!form.validate()) return;
     const v = form.read();
-    try { await api.post('/api/exceptions', { contract_id: contract.id, date, type: 'pay_override', ...v }); markDirty(); toast('Override saved', 'ok'); dlg.close(); refresh(); }
+    const chosen = choices[Number(v.which)] || { ...ALL_DAY };
+    try { await api.post('/api/exceptions', { contract_id: contract.id, date, type: 'pay_override', role: v.role, amount: v.amount, note: v.note, ...payloadOf(chosen) }); markDirty(); toast('Override saved', 'ok'); dlg.close(); refresh(); }
     catch (e) { toast(e.message, 'err'); }
   };
 };

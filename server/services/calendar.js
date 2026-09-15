@@ -1,8 +1,11 @@
 'use strict';
 // Journey engine: knows what is SUPPOSED to happen each day and overlays exceptions.
-const { all, get, inClause } = require('../db');
-
-const LEGS = ['AM', 'PM'];
+//
+// A day is a list of trips, not a fixed morning-and-afternoon pair. Most days
+// are still two trips, but a contract can run three on a Friday, or one on a
+// Wednesday, and each trip is tracked and paid in its own right.
+const { all, inClause } = require('../db');
+const sched = require('./schedule');
 
 function toDate(s) { const [y, m, d] = s.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d)); }
 function fmt(d) { return d.toISOString().slice(0, 10); }
@@ -15,14 +18,25 @@ function dateRange(from, to) {
   while (d <= to) { out.push(d); d = addDays(d, 1); }
   return out;
 }
+function round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
+function requireOrg(orgId) { if (!orgId) throw new Error('An organisation id is required'); }
 
-function contractOperatesOn(c, date) {
+/** Is the contract live on this date at all (status and term dates)? */
+function contractLiveOn(c, date) {
   if (c.status !== 'active') return false;
   if (c.start_date && date < c.start_date) return false;
   if (c.end_date && date > c.end_date) return false;
-  const days = String(c.days_of_week || '1,2,3,4,5').split(',').map(s => s.trim()).filter(Boolean).map(Number);
-  return days.includes(dow(date));
+  return true;
 }
+
+/** Whether a contract runs at all on a date. */
+function contractOperatesOn(c, date, schedules) {
+  if (!contractLiveOn(c, date)) return false;
+  const versions = schedules && schedules.get ? schedules.get(c.id) : schedules;
+  return sched.plannedTrips(c, date, dow(date), versions).length > 0;
+}
+
+// ---------------------------------------------------------------- loading
 
 async function loadContracts(orgId, where = '', params = []) {
   requireOrg(orgId);
@@ -40,7 +54,8 @@ async function loadChildrenByContract(orgId, contractIds) {
   requireOrg(orgId);
   const list = inClause(contractIds);
   if (!list) return {};
-  const rows = await all(`SELECT id, first_name, last_name, contract_id, wheelchair, status
+  const rows = await all(`SELECT id, first_name, last_name, contract_id, wheelchair, status,
+      pickup_time, arrival_time, finish_time, dropoff_time
     FROM children WHERE organisation_id = ? AND status = 'active' AND contract_id IN (${list})
     ORDER BY last_name, first_name`, [orgId, ...contractIds]);
   const map = {};
@@ -50,7 +65,8 @@ async function loadChildrenByContract(orgId, contractIds) {
 
 async function loadExceptions(orgId, from, to, contractIds = null) {
   requireOrg(orgId);
-  let sql = `SELECT e.*, cs.first_name || ' ' || cs.last_name AS cover_name, ch.first_name || ' ' || ch.last_name AS child_name,
+  let sql = `SELECT e.*, cs.first_name || ' ' || cs.last_name AS cover_name,
+      ch.first_name || ' ' || ch.last_name AS child_name,
       st.first_name || ' ' || st.last_name AS staff_name
     FROM exceptions e
     LEFT JOIN staff cs ON cs.id = e.cover_staff_id
@@ -67,112 +83,257 @@ async function loadExceptions(orgId, from, to, contractIds = null) {
   return all(sql, params);
 }
 
-function legCovered(exLeg, leg) { return exLeg === 'DAY' || exLeg === leg; }
-function requireOrg(orgId) { if (!orgId) throw new Error('An organisation id is required'); }
+/** Everything one date range needs, in a handful of queries. */
+async function loadContext(orgId, from, to, where = '', params = []) {
+  const contracts = await loadContracts(orgId, where, params);
+  const contractIds = contracts.map(c => c.id);
+  const childMap = await loadChildrenByContract(orgId, contractIds);
+  const childIds = Object.values(childMap).flat().map(c => c.id);
+  const exceptions = await loadExceptions(orgId, from, to);
+  const schedules = await sched.loadSchedules(orgId, contractIds);
+  const timetables = await sched.loadTimetables(orgId, childIds);
+  return { contracts, childMap, exceptions, schedules, timetables };
+}
+
+// ---------------------------------------------------------------- evaluation
+
+/** Does this exception apply to this trip? */
+function appliesToTrip(ex, trip) {
+  if (ex.trip_seq !== null && ex.trip_seq !== undefined) return Number(ex.trip_seq) === trip.seq;
+  if (ex.leg === 'DAY') return true;
+  if (ex.leg === 'AM') return trip.kind === 'outbound';
+  if (ex.leg === 'PM') return trip.kind === 'return';
+  return false;
+}
 
 /**
- * Evaluate one contract on one date. Returns the expected-vs-actual picture for both legs
- * plus who worked and what they should be paid, and the income for the day.
+ * Evaluate one contract on one date: what should have run, what did, who
+ * travelled, who worked and what it is worth.
  */
-function evaluateContractDay(c, date, children, exceptions) {
-  const ex = exceptions.filter(e => e.date === date && (e.contract_id === c.id || (e.contract_id == null && e.type === 'school_closed' && (e.school_id == null || e.school_id === c.school_id))));
-  const result = { contract_id: c.id, code: c.code, date, legs: {}, exceptions: ex, children: children.map(ch => ({ id: ch.id, name: ch.name, AM: 'expected', PM: 'expected' })), notes: [] };
+function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
+  const weekday = dow(date);
+  const schedules = ctx.schedules && ctx.schedules.get ? ctx.schedules.get(c.id) : null;
+  const timetables = ctx.timetables && ctx.timetables.get ? ctx.timetables : new Map();
 
-  for (const leg of LEGS) {
-    const L = { leg, status: 'operated', reason: null, driver: null, pa: null, children_travelling: 0, children_absent: 0 };
-    // cancellations
-    const closed = ex.find(e => e.type === 'school_closed' && legCovered(e.leg, leg));
-    const cancelled = ex.find(e => e.type === 'contract_cancelled' && legCovered(e.leg, leg));
-    const jcancel = ex.find(e => e.type === 'journey_cancelled' && legCovered(e.leg, leg));
-    if (closed) { L.status = 'not_operated'; L.reason = 'School closed'; }
-    else if (cancelled) { L.status = 'not_operated'; L.reason = 'Contract cancelled'; }
-    else if (jcancel) { L.status = 'not_operated'; L.reason = 'Journey cancelled'; }
+  const ex = exceptions.filter(e => e.date === date
+    && (e.contract_id === c.id
+      || (e.contract_id == null && e.type === 'school_closed'
+        && (e.school_id == null || e.school_id === c.school_id))));
 
-    // children
-    for (const ch of result.children) {
-      const abs = ex.find(e => e.type === 'child_absence' && e.child_id === ch.id && legCovered(e.leg, leg));
-      if (L.status === 'not_operated') ch[leg] = 'not_operated';
-      else if (abs) { ch[leg] = 'absent'; L.children_absent++; }
-      else { ch[leg] = 'travelling'; L.children_travelling++; }
+  const live = contractLiveOn(c, date);
+  const planned = live ? sched.plannedTrips(c, date, weekday, schedules) : [];
+
+  // One-off journeys added to this date only.
+  const extras = live ? ex.filter(e => e.type === 'extra_journey').map((e, i) => ({
+    seq: planned.length + i + 1,
+    label: e.trip_label || e.note || 'Additional journey',
+    kind: e.trip_kind || 'other',
+    depart_time: null, arrive_time: null,
+    driver_pay: e.amount != null ? Number(e.amount) : null,
+    pa_pay: null, income: null, child_ids: [],
+    source: 'extra', exception_id: e.id,
+  })) : [];
+  const tripPlan = [...planned, ...extras];
+
+  // Each child's normal week decides whether they are expected at all today.
+  const childStates = children.map(ch => {
+    const day = sched.childDay(ch, c, date, weekday, timetables.get(ch.id));
+    return {
+      id: ch.id, name: ch.name, wheelchair: ch.wheelchair,
+      scheduled: !!day.attends && live,
+      start_time: day.start_time, finish_time: day.finish_time,
+      // "not_scheduled" is a normal day off. It is not an absence.
+      status: day.attends && live ? 'travelling' : 'not_scheduled',
+      trips: {},
+    };
+  });
+  const scheduledChildren = childStates.filter(ch => ch.scheduled);
+
+  const closed = ex.find(e => e.type === 'school_closed');
+  const cancelledWholeDay = ex.find(e => e.type === 'contract_cancelled' && e.leg === 'DAY' && e.trip_seq == null);
+
+  const trips = [];
+  for (const plan of tripPlan) {
+    const t = {
+      seq: plan.seq, label: plan.label, kind: plan.kind,
+      depart_time: plan.depart_time, arrive_time: plan.arrive_time,
+      source: plan.source, exception_id: plan.exception_id || null,
+      status: 'operated', reason: null,
+      children: [], children_travelling: 0, children_absent: 0, children_not_scheduled: 0,
+    };
+
+    const closedHere = closed && appliesToTrip(closed, plan);
+    const cancelled = cancelledWholeDay
+      || ex.find(e => e.type === 'contract_cancelled' && appliesToTrip(e, plan));
+    const journeyCancelled = ex.find(e => e.type === 'journey_cancelled' && appliesToTrip(e, plan));
+    if (closedHere) { t.status = 'not_operated'; t.reason = 'School closed'; }
+    else if (cancelled) { t.status = 'not_operated'; t.reason = 'Contract not operating'; }
+    else if (journeyCancelled) { t.status = 'not_operated'; t.reason = 'Journey cancelled'; }
+
+    // Who is on this trip, of the children expected in today.
+    const riders = sched.tripChildren(plan, scheduledChildren);
+    for (const ch of riders) {
+      const absent = ex.find(e => e.type === 'child_absence' && e.child_id === ch.id && appliesToTrip(e, plan));
+      let status;
+      if (t.status === 'not_operated') status = 'not_operated';
+      else if (absent) { status = 'absent'; t.children_absent++; }
+      else { status = 'travelling'; t.children_travelling++; }
+      ch.trips[plan.seq] = status;
+      t.children.push({ id: ch.id, name: ch.name, status });
     }
-    if (L.status === 'operated' && result.children.length > 0 && L.children_travelling === 0) {
-      L.status = 'not_operated'; L.reason = 'All children absent';
+    t.children_not_scheduled = childStates.length - riders.length;
+
+    // A trip with nobody left to carry does not run, whether that is because
+    // everyone is absent or because nobody was due to travel today. A contract
+    // with no children at all is left alone, so a brand new one still shows its
+    // pattern before anybody is assigned to it.
+    if (t.status === 'operated' && childStates.length > 0 && t.children_travelling === 0) {
+      t.status = 'not_operated';
+      t.reason = riders.length > 0 ? 'All children absent' : 'No children scheduled';
     }
 
-    // staff for each role
-    for (const role of ['driver', 'pa']) {
-      const normalId = role === 'driver' ? c.driver_id : c.pa_id;
-      const rate = role === 'driver' ? c.driver_pay_per_day : c.pa_pay_per_day;
-      const required = role === 'driver' ? true : !!c.requires_pa;
-      const info = { role, required, normal_staff_id: normalId, normal_name: role === 'driver' ? c.driver_name : c.pa_name, absent: false, cover_staff_id: null, cover_name: null, cover_pay: null, paid_immediately: 0, exception_id: null, worked_staff_id: normalId, pay: 0, override: null, status: 'normal' };
-      if (!required && !normalId) { info.status = 'not_required'; L[role] = info; continue; }
-      if (!normalId) info.status = 'unassigned';
-      const absence = ex.find(e => e.type === 'staff_absence' && e.role === role && legCovered(e.leg, leg));
-      const override = ex.find(e => e.type === 'pay_override' && e.role === role && legCovered(e.leg, leg));
-      if (override) info.override = override;
-      if (absence) {
-        info.absent = true; info.exception_id = absence.id; info.status = 'absent';
-        if (absence.cover_staff_id) {
-          info.cover_staff_id = absence.cover_staff_id; info.cover_name = absence.cover_name;
-          info.cover_pay = absence.cover_pay; info.paid_immediately = absence.paid_immediately;
-          info.worked_staff_id = absence.cover_staff_id; info.status = 'covered';
-          info.cover_leg = absence.leg;
-        } else {
-          info.worked_staff_id = null; info.status = 'absent_no_cover';
-          if (L.status === 'operated' && required) { L.status = 'not_operated'; L.reason = `${role === 'driver' ? 'Driver' : 'PA'} absent - no cover`; }
-        }
+    for (const role of ['driver', 'pa']) t[role] = staffForTrip(c, role, plan, ex);
+    if (t.status === 'operated') {
+      if (t.driver.status === 'absent_no_cover') { t.status = 'not_operated'; t.reason = 'Driver absent - no cover'; }
+      else if (t.pa.required && t.pa.status === 'absent_no_cover') { t.status = 'not_operated'; t.reason = 'PA absent - no cover'; }
+      if (t.status === 'not_operated') {
+        for (const cc of t.children) cc.status = 'not_operated';
+        t.children_travelling = 0;
       }
-      // pay for this leg for the NORMAL staff member (cover pay handled as a whole-exception amount)
-      const legShare = c.pay_basis === 'per_day' ? 0.5 : 0.5; // half a day per leg
-      if (!info.absent && info.normal_staff_id) {
-        const dayRate = override ? override.amount : rate;
-        const operatedForPay = c.pay_basis === 'per_day' ? !(closed || cancelled || jcancel) : L.status === 'operated';
-        info.pay = operatedForPay ? round2(dayRate * legShare) : 0;
-      }
-      L[role] = info;
     }
-    result.legs[leg] = L;
+    trips.push(t);
   }
 
-  // income for the day
-  const legsOperated = LEGS.filter(l => result.legs[l].status === 'operated').length;
-  const legsCancelled = LEGS.filter(l => ['School closed', 'Contract cancelled', 'Journey cancelled'].includes(result.legs[l].reason)).length;
-  if (c.income_basis === 'per_day') result.income = round2(c.income_per_day * (2 - legsCancelled) / 2);
-  else result.income = round2(c.income_per_day * legsOperated / 2);
-  result.other_costs = round2((c.other_costs_per_day || 0) * (legsOperated > 0 ? 1 : 0));
-  result.operated = legsOperated > 0;
-  result.notes = ex.filter(e => e.type === 'note');
+  // Money. A trip's own figure wins; otherwise the day rate is divided by the
+  // journeys on a NORMAL day for this contract, which gives what one journey is
+  // worth. A two-journey day is still split in half, exactly as before, and a
+  // third journey on a Friday is paid on top instead of making all three worth
+  // less. Naming a figure on the journey itself overrides all of this.
+  const plannedCount = sched.normalTripCount(c, schedules, date);
+  const dayRan = trips.some(t => t.status === 'operated');
+  for (const t of trips) {
+    const plan = tripPlan.find(p => p.seq === t.seq) || {};
+    const isExtra = t.source === 'extra';
+    const share = isExtra ? 0 : 1 / plannedCount;
+    t.income_value = plan.income != null ? Number(plan.income)
+      : (isExtra ? 0 : round2((c.income_per_day || 0) * share));
+    t.driver_rate = plan.driver_pay != null ? Number(plan.driver_pay)
+      : (isExtra ? 0 : round2((c.driver_pay_per_day || 0) * share));
+    t.pa_rate = plan.pa_pay != null ? Number(plan.pa_pay)
+      : (isExtra ? 0 : round2((c.pa_pay_per_day || 0) * share));
+
+    for (const role of ['driver', 'pa']) {
+      const info = t[role];
+      if (!info || info.status === 'not_required') continue;
+      const rate = role === 'driver' ? t.driver_rate : t.pa_rate;
+      // A pay override naming a trip replaces that trip's rate; one for the
+      // whole day replaces the day rate, so it is shared the same way.
+      const value = info.override
+        ? round2(Number(info.override.amount) * (info.override.trip_seq != null ? 1 : share))
+        : rate;
+      // A fixed day rate is paid whenever the day ran at all, however many of
+      // its journeys did. It is only lost when nothing ran.
+      const operatedForPay = c.pay_basis === 'per_day'
+        ? (dayRan && !isExtra)
+        : t.status === 'operated';
+      info.rate = round2(value);
+      info.pay = (!info.absent && info.normal_staff_id && operatedForPay) ? round2(value) : 0;
+    }
+  }
+
+  const operatedTrips = trips.filter(t => t.status === 'operated');
+  const income = round2(
+    c.income_basis === 'per_day'
+      ? ((closed || cancelledWholeDay || !planned.length) ? 0 : (c.income_per_day || 0))
+      : operatedTrips.reduce((a, t) => a + t.income_value, 0));
+
+  const result = {
+    contract_id: c.id, code: c.code, date, weekday,
+    trips,
+    planned_trips: planned.length,
+    operated_trips: operatedTrips.length,
+    children: childStates,
+    exceptions: ex,
+    notes: ex.filter(e => e.type === 'note'),
+    income,
+    other_costs: round2((c.other_costs_per_day || 0) * (operatedTrips.length > 0 ? 1 : 0)),
+    operated: operatedTrips.length > 0,
+  };
   result.summary = summarise(result);
   return result;
 }
 
-function summarise(r) {
-  const s = [];
-  for (const leg of LEGS) {
-    const L = r.legs[leg];
-    // The leg reason already names an uncovered absence, so do not repeat it below.
-    if (L.status !== 'operated') s.push(`${leg}: ${L.reason}`);
-    if (L.driver.status === 'covered') s.push(`${leg}: Driver cover ${L.driver.cover_name}`);
-    else if (L.driver.status === 'absent_no_cover' && !/Driver absent/.test(L.reason || '')) s.push(`${leg}: Driver absent (no cover)`);
-    if (L.pa.status === 'covered') s.push(`${leg}: PA cover ${L.pa.cover_name}`);
-    else if (L.pa.status === 'absent_no_cover' && !/PA absent/.test(L.reason || '')) s.push(`${leg}: PA absent (no cover)`);
-    if (L.children_absent) s.push(`${leg}: ${L.children_absent} child${L.children_absent > 1 ? 'ren' : ''} absent`);
+/** Who is meant to work one trip, and whether anyone covered them. */
+function staffForTrip(c, role, plan, ex) {
+  const normalId = role === 'driver' ? c.driver_id : c.pa_id;
+  const normalName = role === 'driver' ? c.driver_name : c.pa_name;
+  const required = role === 'driver' ? true : !!c.requires_pa;
+  const info = {
+    role, required, normal_staff_id: normalId, normal_name: normalName,
+    absent: false, cover_staff_id: null, cover_name: null, cover_pay: null,
+    paid_immediately: 0, exception_id: null, worked_staff_id: normalId,
+    pay: 0, rate: 0, override: null, status: 'normal',
+  };
+  if (!required && !normalId) { info.status = 'not_required'; return info; }
+  if (!normalId) info.status = 'unassigned';
+
+  const absence = ex.find(e => e.type === 'staff_absence' && e.role === role && appliesToTrip(e, plan));
+  const override = ex.find(e => e.type === 'pay_override' && e.role === role && appliesToTrip(e, plan));
+  if (override) info.override = override;
+  if (absence) {
+    info.absent = true;
+    info.exception_id = absence.id;
+    info.status = 'absent';
+    if (absence.cover_staff_id) {
+      info.cover_staff_id = absence.cover_staff_id;
+      info.cover_name = absence.cover_name;
+      info.cover_pay = absence.cover_pay;
+      info.paid_immediately = absence.paid_immediately;
+      info.worked_staff_id = absence.cover_staff_id;
+      info.status = 'covered';
+    } else {
+      info.worked_staff_id = null;
+      info.status = 'absent_no_cover';
+    }
   }
-  // Collapse identical AM and PM messages into one "All day" line.
+  return info;
+}
+
+function summarise(r) {
+  const twoTrips = r.trips.filter(t => t.source !== 'extra').length <= 2;
+  const label = t => (t.source === 'extra' ? 'Extra' : twoTrips ? (t.kind === 'outbound' ? 'AM' : 'PM') : `Trip ${t.seq}`);
+  const lines = [];
+  for (const t of r.trips) {
+    if (t.source === 'extra') { lines.push(`Extra journey: ${t.label}`); continue; }
+    if (t.status !== 'operated') lines.push(`${label(t)}: ${t.reason}`);
+    if (t.driver.status === 'covered') lines.push(`${label(t)}: Driver cover ${t.driver.cover_name}`);
+    else if (t.driver.status === 'absent_no_cover' && !/Driver absent/.test(t.reason || '')) lines.push(`${label(t)}: Driver absent (no cover)`);
+    if (t.pa.status === 'covered') lines.push(`${label(t)}: PA cover ${t.pa.cover_name}`);
+    else if (t.pa.status === 'absent_no_cover' && !/PA absent/.test(t.reason || '')) lines.push(`${label(t)}: PA absent (no cover)`);
+    if (t.children_absent) lines.push(`${label(t)}: ${t.children_absent} child${t.children_absent > 1 ? 'ren' : ''} absent`);
+  }
+  const off = r.children.filter(c => !c.scheduled).length;
+  if (off && off === r.children.length && r.trips.length) lines.push('No children scheduled today');
+
+  // Fold an identical message on both trips of a two-trip day into one line.
   const out = [];
   const seen = new Set();
-  for (const msg of s) {
-    const body = msg.slice(4);
-    const other = (msg.startsWith('AM:') ? 'PM: ' : 'AM: ') + body;
-    if (seen.has(other)) { out[out.indexOf(other)] = 'All day: ' + body; continue; }
-    seen.add(msg); out.push(msg);
+  for (const msg of lines) {
+    const body = msg.replace(/^(AM|PM|Trip \d+): /, '');
+    if (twoTrips) {
+      const twin = out.find(o => o !== msg && o.replace(/^(AM|PM|Trip \d+): /, '') === body && /^(AM|PM): /.test(o));
+      if (twin && /^(AM|PM): /.test(msg)) { out[out.indexOf(twin)] = 'All day: ' + body; continue; }
+    }
+    if (seen.has(msg)) continue;
+    seen.add(msg);
+    out.push(msg);
   }
   return out;
 }
 
-function round2(n) { return Math.round((Number(n) || 0) * 100) / 100; }
+// ---------------------------------------------------------------- views
 
-/** Build the calendar grid for a date range. */
+/** The calendar grid for a date range. */
 async function buildCalendar(orgId, from, to, filter = {}) {
   requireOrg(orgId);
   let where = " AND c.status IN ('active','suspended')";
@@ -180,49 +341,64 @@ async function buildCalendar(orgId, from, to, filter = {}) {
   if (filter.contract_id) { where += ' AND c.id = ?'; params.push(filter.contract_id); }
   if (filter.school_id) { where += ' AND c.school_id = ?'; params.push(filter.school_id); }
   if (filter.staff_id) { where += ' AND (c.driver_id = ? OR c.pa_id = ?)'; params.push(filter.staff_id, filter.staff_id); }
-  const contracts = await loadContracts(orgId, where, params);
-  const childMap = await loadChildrenByContract(orgId, contracts.map(c => c.id));
-  const exceptions = await loadExceptions(orgId, from, to);
+
+  const ctx = await loadContext(orgId, from, to, where, params);
   const dates = dateRange(from, to);
   const rows = [];
-  for (const c of contracts) {
+
+  for (const c of ctx.contracts) {
+    if (filter.staff_id) {
+      const isNormal = c.driver_id === filter.staff_id || c.pa_id === filter.staff_id;
+      const isCover = ctx.exceptions.some(e => e.contract_id === c.id && e.cover_staff_id === filter.staff_id);
+      if (!isNormal && !isCover) continue;
+    }
     const days = {};
     let any = false;
     for (const d of dates) {
-      if (!contractOperatesOn(c, d)) { days[d] = null; continue; }
+      const day = evaluateContractDay(c, d, ctx.childMap[c.id] || [], ctx.exceptions, ctx);
+      if (!day.trips.length) { days[d] = null; continue; }
       any = true;
-      days[d] = evaluateContractDay(c, d, childMap[c.id] || [], exceptions);
-    }
-    // include cover staff appearing on this contract for the staff filter
-    if (filter.staff_id) {
-      const isNormal = c.driver_id === filter.staff_id || c.pa_id === filter.staff_id;
-      const isCover = exceptions.some(e => e.contract_id === c.id && e.cover_staff_id === filter.staff_id);
-      if (!isNormal && !isCover) continue;
+      days[d] = day;
     }
     if (!any && filter.hide_inactive) continue;
-    rows.push({ contract: c, children: childMap[c.id] || [], days });
+    rows.push({ contract: c, children: ctx.childMap[c.id] || [], days });
   }
-  // cover-only contracts when filtering by staff (staff is not normal but covers)
+
+  // A contract someone only covered still belongs in their calendar.
   if (filter.staff_id) {
-    const coverContractIds = [...new Set(exceptions.filter(e => e.cover_staff_id === filter.staff_id && e.contract_id).map(e => e.contract_id))];
+    const coverContractIds = [...new Set(ctx.exceptions
+      .filter(e => e.cover_staff_id === filter.staff_id && e.contract_id)
+      .map(e => e.contract_id))];
     for (const cid of coverContractIds) {
       if (rows.some(r => r.contract.id === cid)) continue;
-      const c = (await loadContracts(orgId, ' AND c.id = ?', [cid]))[0];
+      const extra = await loadContext(orgId, from, to, ' AND c.id = ?', [cid]);
+      const c = extra.contracts[0];
       if (!c) continue;
-      const extra = childMap[c.id] || (await loadChildrenByContract(orgId, [c.id]))[c.id] || [];
+      const kids = extra.childMap[c.id] || [];
       const days = {};
-      for (const d of dates) days[d] = contractOperatesOn(c, d) ? evaluateContractDay(c, d, extra, exceptions) : null;
-      rows.push({ contract: c, children: childMap[c.id] || [], days, cover_only: true });
+      for (const d of dates) {
+        const day = evaluateContractDay(c, d, kids, ctx.exceptions, extra);
+        days[d] = day.trips.length ? day : null;
+      }
+      rows.push({ contract: c, children: kids, days, cover_only: true });
     }
   }
   return { from, to, dates, rows };
 }
 
-/** Everything happening on one date (used by dashboard + day view). */
+/** Everything happening on one date. */
 async function dayOverview(orgId, date) {
   const cal = await buildCalendar(orgId, date, date);
-  const items = cal.rows.map(r => r.days[date]).filter(Boolean);
-  return { date, items, contracts: cal.rows.map(r => r.contract) };
+  return {
+    date,
+    items: cal.rows.map(r => r.days[date]).filter(Boolean),
+    contracts: cal.rows.map(r => r.contract),
+  };
 }
 
-module.exports = { LEGS, toDate, fmt, addDays, dow, today, dateRange, contractOperatesOn, loadContracts, loadChildrenByContract, loadExceptions, evaluateContractDay, buildCalendar, dayOverview, round2 };
+module.exports = {
+  toDate, fmt, addDays, dow, today, dateRange, round2,
+  contractLiveOn, contractOperatesOn,
+  loadContracts, loadChildrenByContract, loadExceptions, loadContext,
+  evaluateContractDay, appliesToTrip, buildCalendar, dayOverview,
+};

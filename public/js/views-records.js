@@ -65,9 +65,20 @@ App.views.contractDetail = async function ({ params }) {
     UI.stat({ label: 'Children', value: c.child_count, hint: 'Travelling on this route', href: '#/children?contract=' + c.id }),
     UI.stat({ label: 'Driver', value: c.driver_name || 'None', hint: c.driver_id ? 'Compliance: ' + fmt.titleCase(c.driver_compliance || '—') : 'Assign a driver', tone: c.driver_id ? (c.driver_compliance === 'red' ? 'red' : '') : 'red', href: c.driver_id ? '#/staff/' + c.driver_id : '#/pool?type=driver' }),
     UI.stat({ label: 'Passenger assistant', value: c.requires_pa ? (c.pa_name || 'None') : 'Not required', hint: c.pa_id ? 'Compliance: ' + fmt.titleCase(c.pa_compliance || '—') : (c.requires_pa ? 'Assign a PA' : ''), tone: c.requires_pa && !c.pa_id ? 'red' : '', href: c.pa_id ? '#/staff/' + c.pa_id : '#/pool?type=pa' }),
-    UI.stat({ label: 'Operating days', value: fmt.days(c.days_of_week), hint: `${fmt.time(c.am_pickup_time)} – ${fmt.time(c.pm_dropoff_time)}` }));
+    UI.stat({
+      label: 'Journeys per week',
+      value: c.week.days.reduce((a, d) => a + d.trip_count, 0),
+      hint: c.week.configured
+        ? c.week.days.filter(d => d.trip_count).map(d => `${Sched.DAY_SHORT[d.weekday]} ${d.trip_count}`).join(' · ')
+        : `${fmt.days(c.days_of_week)} · standard week`,
+      onclick: App.can('edit') ? () => Sched.weekEditor(c, reload) : null,
+    }));
 
   const tabs = [];
+  tabs.push({
+    id: 'schedule', label: 'Weekly schedule',
+    render: () => Sched.weekPanel(c, c.week, reload),
+  });
   tabs.push({
     id: 'overview', label: 'Overview',
     render: () => h('div', { class: 'grid cols-2' },
@@ -147,7 +158,7 @@ App.views.contractDetail = async function ({ params }) {
     render: () => UI.cardTight(null, UI.table([
       { key: 'date', label: 'Date', value: e => h('a', { href: '#/day/' + e.date }, fmt.date(e.date)), nowrap: true },
       { key: 'type', label: 'Type', value: e => fmt.titleCase(e.type) },
-      { key: 'leg', label: 'Leg' },
+      { key: 'leg', label: 'Journeys', value: e => journeyText(e) },
       { label: 'Detail', sortable: false, value: e => [e.child_name, e.staff_name, e.cover_name ? '→ cover: ' + e.cover_name : null, e.cover_pay != null ? fmt.money(e.cover_pay) : null, e.paid_immediately ? 'PAID IMMEDIATELY' : null, e.note].filter(Boolean).join(' · ') || '—' },
       { key: 'created_by', label: 'Recorded by' },
       { label: '', sortable: false, value: e => App.can('calendar') ? h('button', { class: 'btn xs', onclick: () => Ops.dayDialog(c.id, e.date, reload) }, 'Open day') : null },
@@ -157,6 +168,8 @@ App.views.contractDetail = async function ({ params }) {
   tabs.push({ id: 'documents', label: 'Documents', count: c.documents.length, render: () => UI.cardTight(null, UI.documentsPanel('contract', c.id, c.documents, reload)) });
   if (App.can('audit') || App.can('*')) tabs.push({ id: 'history', label: 'History', render: () => UI.cardTight(null, UI.historyPanel(c.history)) });
 
+  const order = ['overview', 'schedule', 'children', 'finance', 'exceptions', 'documents', 'history'];
+  tabs.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
   return h('div', null, head, stats, h('div', { style: 'height:14px' }), UI.tabs(tabs));
 };
 function bl(label, amount, cls) {
@@ -180,9 +193,10 @@ Rec.contractEditor = async function (c) {
     { name: 'vehicle_id', label: 'Vehicle', type: 'select', options: L.vehicles.map(x => ({ value: x.id, label: `${x.registration} (${x.seats || '?'} seats${x.wheelchair_accessible ? ', WAV' : ''})` })) },
     { name: 'requires_pa', label: 'This contract requires a PA', type: 'checkbox', span: 'full' },
     { type: 'section', label: 'Schedule' },
-    { name: 'days_of_week', label: 'Operating days', type: 'days', help: 'Journeys are generated automatically for these days between the start and end dates.' },
+    { name: 'days_of_week', label: 'Operating days', type: 'days', help: 'Journeys are generated automatically for these days between the start and end dates. Use the Weekly schedule tab when a day needs more or fewer journeys than one out and one back.' },
     { name: 'start_date', label: 'Start date', type: 'date' },
     { name: 'end_date', label: 'End date', type: 'date' },
+    { type: 'section', label: 'Standard times — used unless the weekly schedule says otherwise' },
     { name: 'am_pickup_time', label: 'AM pick-up time', type: 'time' },
     { name: 'am_arrival_time', label: 'AM school arrival', type: 'time' },
     { name: 'pm_finish_time', label: 'PM school finish', type: 'time' },
@@ -258,7 +272,14 @@ App.views.childDetail = async function ({ params }) {
     UI.stat({ label: 'School', value: c.school_name || 'Not set', hint: c.school_postcode || '', href: c.school_id ? '#/schools/' + c.school_id : '#/schools' }),
     UI.stat({ label: 'Contract / route', value: c.contract_code || 'Unassigned', hint: c.route_info || '', href: c.contract_id ? '#/contracts/' + c.contract_id : '#/contracts', tone: c.contract_id ? '' : 'amber' }),
     UI.stat({ label: 'Driver', value: c.driver_name || 'None', hint: c.driver_phone || '', href: c.driver_id ? '#/staff/' + c.driver_id : '#/contracts', tone: c.driver_id ? '' : 'red' }),
-    UI.stat({ label: 'Passenger assistant', value: c.pa_name || 'None', hint: c.pa_phone || '', href: c.pa_id ? '#/staff/' + c.pa_id : '#/contracts' }));
+    UI.stat({ label: 'Passenger assistant', value: c.pa_name || 'None', hint: c.pa_phone || '', href: c.pa_id ? '#/staff/' + c.pa_id : '#/contracts' }),
+    UI.stat({
+      label: 'Travels', value: plural(c.timetable.attending_days, 'day') + ' a week',
+      hint: c.timetable.days.filter(d => !d.attends).length
+        ? 'Off ' + c.timetable.days.filter(d => !d.attends).map(d => Sched.DAY_SHORT[d.weekday]).join(', ')
+        : (c.timetable.configured ? `${fmt.time(c.timetable.start_time)} – ${fmt.time(c.timetable.finish_time)}` : 'Whenever the contract runs'),
+      onclick: App.can('edit') ? () => Sched.timetableEditor(c, reload) : null,
+    }));
 
   const flags = h('div', { class: 'pill-row', style: 'margin:12px 0' },
     c.wheelchair ? h('span', { class: 'badge blue' }, '♿ Wheelchair user') : null,
@@ -268,6 +289,10 @@ App.views.childDetail = async function ({ params }) {
     c.behaviour ? h('span', { class: 'badge amber' }, 'Behaviour plan') : null);
 
   const tabs = [
+    {
+      id: 'timetable', label: 'Weekly timetable',
+      render: () => Sched.timetablePanel(c, c.timetable, reload),
+    },
     {
       id: 'profile', label: 'Profile',
       render: () => h('div', { class: 'grid cols-2' },
@@ -312,7 +337,7 @@ App.views.childDetail = async function ({ params }) {
       id: 'absences', label: 'Absence history', count: c.absences.length,
       render: () => UI.cardTight(null, UI.table([
         { key: 'date', label: 'Date', value: a => h('a', { href: '#/day/' + a.date }, fmt.dateLong(a.date)), nowrap: true },
-        { key: 'leg', label: 'Journeys missed', value: a => a.leg === 'DAY' ? 'All day' : a.leg + ' only' },
+        { key: 'leg', label: 'Journeys missed', value: a => a.trip_seq ? (a.trip_label || `Journey ${a.trip_seq}`) : (a.leg === 'DAY' ? 'All day' : a.leg + ' only') },
         { key: 'contract_code', label: 'Contract' },
         { key: 'note', label: 'Reason', value: a => a.note || '—' },
         { key: 'created_by', label: 'Recorded by' },
@@ -322,6 +347,8 @@ App.views.childDetail = async function ({ params }) {
   ];
   if (App.can('audit') || App.can('*')) tabs.push({ id: 'history', label: 'History', render: () => UI.cardTight(null, UI.historyPanel(c.history)) });
 
+  const order = ['profile', 'timetable', 'needs', 'absences', 'documents', 'history'];
+  tabs.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
   return h('div', null, head, transport, flags, UI.tabs(tabs));
 };
 
@@ -511,7 +538,7 @@ App.views.staffDetail = async function ({ params }) {
         UI.cardTight('Own absences', UI.table([
           { key: 'date', label: 'Date', value: a => h('a', { href: '#/day/' + a.date }, fmt.dateLong(a.date)), nowrap: true },
           { key: 'contract_code', label: 'Contract' },
-          { key: 'leg', label: 'Journeys', value: a => a.leg === 'DAY' ? 'All day' : a.leg },
+          { key: 'leg', label: 'Journeys', value: a => journeyText(a) },
           { key: 'cover_name', label: 'Covered by', value: a => a.cover_name || h('span', { class: 'badge red' }, 'No cover') },
           { key: 'note', label: 'Reason' },
         ], s.absences, { sortKey: 'date', sortDir: -1, empty: 'No absences recorded' })),
@@ -520,7 +547,7 @@ App.views.staffDetail = async function ({ params }) {
           { key: 'date', label: 'Date', value: a => h('a', { href: '#/day/' + a.date }, fmt.dateLong(a.date)), nowrap: true },
           { key: 'contract_code', label: 'Contract' },
           { key: 'role', label: 'Role', value: a => fmt.titleCase(a.role) },
-          { key: 'leg', label: 'Journeys', value: a => a.leg === 'DAY' ? 'All day' : a.leg },
+          { key: 'leg', label: 'Journeys', value: a => journeyText(a) },
           ...(App.can('finance') ? [{ key: 'cover_pay', label: 'Cover pay', num: true, value: a => fmt.money(a.cover_pay) }] : []),
           { key: 'paid_immediately', label: 'Paid immediately', value: a => a.paid_immediately ? h('span', { class: 'badge green' }, 'Yes — excluded from payroll') : h('span', { class: 'badge' }, 'Via payroll') },
         ], s.recent_cover, { sortKey: 'date', sortDir: -1, empty: 'Has not covered any journeys' })),

@@ -17,9 +17,8 @@ async function profitability(orgId, opts) {
   if (opts.contract_id) { where += ' AND c.id = ?'; params.push(opts.contract_id); }
   if (opts.school_id) { where += ' AND c.school_id = ?'; params.push(opts.school_id); }
   if (opts.council_id) { where += ' AND c.council_id = ?'; params.push(opts.council_id); }
-  const contracts = await cal.loadContracts(orgId, where, params);
-  const childMap = await cal.loadChildrenByContract(orgId, contracts.map(c => c.id));
-  const exceptions = await cal.loadExceptions(orgId, from, to);
+  const ctx = await cal.loadContext(orgId, from, to, where, params);
+  const { contracts, childMap, exceptions } = ctx;
   const dates = cal.dateRange(from, to);
   const costMap = await wages.staffCostForRange(orgId, from, to, opts.contract_id || null);
 
@@ -32,14 +31,14 @@ async function profitability(orgId, opts) {
     let income = 0, otherCosts = 0, daysOperated = 0, journeys = 0, scheduled = 0;
     const series = [];
     for (const d of dates) {
-      if (!cal.contractOperatesOn(c, d)) continue;
-      scheduled += 2;
-      const day = cal.evaluateContractDay(c, d, childMap[c.id] || [], exceptions);
-      const legs = cal.LEGS.filter(l => day.legs[l].status === 'operated').length;
-      income += day.income; otherCosts += day.other_costs;
-      journeys += legs;
+      const day = cal.evaluateContractDay(c, d, childMap[c.id] || [], exceptions, ctx);
+      if (!day.trips.length) continue;
+      scheduled += day.planned_trips;
+      income += day.income;
+      otherCosts += day.other_costs;
+      journeys += day.operated_trips;
       if (day.operated) daysOperated++;
-      series.push({ date: d, income: day.income, journeys: legs });
+      series.push({ date: d, income: day.income, journeys: day.operated_trips });
     }
     const staffCost = costMap[c.id] || { driver: 0, pa: 0, total: 0 };
     const adhoc = expenseMap[c.id] || 0;
@@ -93,27 +92,33 @@ function groupBy(rows, keyFn, labelFn) {
 
 /** Forward-looking expected weekly/annual run-rate used on the dashboard. */
 async function expectedDaily(orgId, date) {
-  const contracts = await cal.loadContracts(orgId, " AND c.status = 'active'");
-  const childMap = await cal.loadChildrenByContract(orgId, contracts.map(c => c.id));
-  const exceptions = await cal.loadExceptions(orgId, date, date);
-  let income = 0, driverCost = 0, paCost = 0, other = 0, operating = 0;
-  for (const c of contracts) {
-    if (!cal.contractOperatesOn(c, date)) continue;
+  const ctx = await cal.loadContext(orgId, date, date, " AND c.status = 'active'");
+  let income = 0, driverCost = 0, paCost = 0, other = 0, operating = 0, trips = 0;
+  for (const c of ctx.contracts) {
+    const day = cal.evaluateContractDay(c, date, ctx.childMap[c.id] || [], ctx.exceptions, ctx);
+    if (!day.trips.length) continue;
     operating++;
-    const day = cal.evaluateContractDay(c, date, childMap[c.id] || [], exceptions);
-    income += day.income; other += day.other_costs;
-    for (const leg of cal.LEGS) {
-      const L = day.legs[leg];
-      if (L.driver && L.driver.pay) driverCost += L.driver.pay;
-      if (L.pa && L.pa.pay) paCost += L.pa.pay;
+    trips += day.operated_trips;
+    income += day.income;
+    other += day.other_costs;
+    for (const t of day.trips) {
+      if (t.driver && t.driver.pay) driverCost += t.driver.pay;
+      if (t.pa && t.pa.pay) paCost += t.pa.pay;
     }
     for (const ce of day.exceptions.filter(e => e.type === 'staff_absence' && e.cover_staff_id)) {
-      const base = ce.cover_pay != null ? ce.cover_pay : (ce.role === 'driver' ? c.driver_pay_per_day : c.pa_pay_per_day) * (ce.leg === 'DAY' ? 1 : 0.5);
+      const covered = day.trips.filter(t => cal.appliesToTrip(ce, t));
+      const standard = covered.reduce((a, t) => a + (ce.role === 'driver' ? t.driver_rate : t.pa_rate), 0);
+      const base = ce.cover_pay != null ? Number(ce.cover_pay) : standard;
       if (ce.role === 'driver') driverCost += base; else paCost += base;
     }
   }
   const cost = round2(driverCost + paCost + other);
-  return { date, contracts_operating: operating, income: round2(income), driver_cost: round2(driverCost), pa_cost: round2(paCost), other_costs: round2(other), total_cost: cost, gross_profit: round2(income - cost), margin: income > 0 ? round2((income - cost) / income * 100) : 0 };
+  return {
+    date, contracts_operating: operating, journeys: trips,
+    income: round2(income), driver_cost: round2(driverCost), pa_cost: round2(paCost),
+    other_costs: round2(other), total_cost: cost, gross_profit: round2(income - cost),
+    margin: income > 0 ? round2((income - cost) / income * 100) : 0,
+  };
 }
 
 module.exports = { profitability, expectedDaily, aggregate };

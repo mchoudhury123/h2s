@@ -14,7 +14,8 @@
     "test:auth": "node --experimental-sqlite --no-warnings scripts/check-auth.js",
     "test:serverless": "node --experimental-sqlite --no-warnings scripts/check-serverless.js",
     "test:browser": "node --experimental-sqlite --no-warnings scripts/smoke.js",
-    "test:workflow": "node --experimental-sqlite --no-warnings scripts/check-workflow.js"
+    "test:workflow": "node --experimental-sqlite --no-warnings scripts/check-workflow.js",
+    "test:schedules": "node --experimental-sqlite --no-warnings scripts/check-schedules.js"
   },
   "engines": {
     "node": ">=20.9"

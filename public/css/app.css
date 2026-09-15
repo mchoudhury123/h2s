@@ -335,6 +335,66 @@ table.cal td.off { background: repeating-linear-gradient(45deg, transparent, tra
 @keyframes spin { to { transform: rotate(360deg); } }
 .loading { padding: 40px; text-align: center; color: var(--text-faint); }
 
+/* ---------- weekly schedules and timetables ---------- */
+.weekgrid { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.weekrow { display: flex; align-items: baseline; gap: 10px; padding: 7px 11px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.weekrow:last-child { border-bottom: 0; }
+.weekrow.none { background: var(--surface-2); color: var(--text-faint); }
+.weekrow .wd { font-weight: 800; font-size: 11px; letter-spacing: .06em; width: 38px; flex: none; color: var(--text-dim); }
+.weekrow .wn { font-weight: 650; min-width: 96px; flex: none; }
+.weekrow.none .wn { font-weight: 500; }
+.weekrow .wt { color: var(--text-dim); font-size: 12.5px; display: flex; flex-wrap: wrap; gap: 5px; }
+.weekrow .wtrip em { font-style: normal; color: var(--brand); }
+.weekrow .wsep { margin-left: 5px; color: var(--text-faint); }
+
+.schedule-day { border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 10px; }
+.schedule-day.empty { background: var(--surface-2); }
+.sd-head { display: flex; align-items: center; gap: 12px; padding: 8px 11px; flex-wrap: wrap; }
+.sd-head .sd-name { font-weight: 700; min-width: 86px; }
+.sd-head .sd-count { color: var(--text-dim); font-size: 12.5px; min-width: 78px; }
+.schedule-trips { border-top: 1px solid var(--border); }
+.sd-trip { display: flex; gap: 9px; padding: 9px 11px; border-bottom: 1px solid var(--border); }
+.sd-trip:last-child { border-bottom: 0; }
+.sd-num { width: 20px; height: 20px; flex: none; border-radius: 50%; background: var(--brand-soft); color: var(--brand); font-size: 11px; font-weight: 800; display: flex; align-items: center; justify-content: center; margin-top: 15px; }
+.sd-main { flex: 1; min-width: 0; }
+.sd-line { display: flex; gap: 9px; flex-wrap: wrap; align-items: flex-end; }
+.sd-line.sub { margin-top: 6px; align-items: center; font-size: 12px; color: var(--text-dim); }
+.sd-space { flex: 1; }
+.sd-field { display: flex; flex-direction: column; gap: 3px; min-width: 110px; }
+.sd-field.grow { flex: 1; min-width: 150px; }
+.sd-field.full { flex-basis: 100%; }
+.sd-field label { font-size: 11px; color: var(--text-dim); font-weight: 600; }
+.sd-detail { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 9px; padding: 9px; background: var(--surface-2); border-radius: 5px; }
+.sd-versions { margin-bottom: 12px; font-size: 12.5px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.sd-who { font-weight: 600; }
+
+.tt-modes { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.tt-modes label { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; cursor: pointer; }
+.tt-row { display: flex; align-items: center; gap: 12px; padding: 7px 10px; border: 1px solid var(--border); border-bottom: 0; font-size: 13px; }
+.tt-row:first-of-type { border-radius: var(--radius) var(--radius) 0 0; }
+.tt-row:last-child { border-bottom: 1px solid var(--border); border-radius: 0 0 var(--radius) var(--radius); }
+.tt-row.off { background: var(--surface-2); }
+.tt-day { display: flex; align-items: center; gap: 7px; min-width: 130px; cursor: pointer; font-weight: 600; }
+.tt-row.off .tt-day { font-weight: 500; color: var(--text-faint); }
+.tt-times { display: flex; align-items: center; gap: 5px; color: var(--text-dim); }
+.tt-off { font-size: 11px; font-weight: 800; letter-spacing: .05em; color: var(--text-faint); }
+
+.scope-choices { display: flex; flex-direction: column; gap: 9px; }
+button.scope { display: flex; flex-direction: column; gap: 3px; text-align: left; padding: 11px 13px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface); cursor: pointer; font: inherit; }
+button.scope:hover { border-color: var(--brand); background: var(--brand-soft); }
+button.scope strong { font-size: 13.5px; }
+button.scope span { font-size: 12px; color: var(--text-dim); }
+
+/* a calendar cell with more than two journeys stays readable */
+.cell.many .leg { font-size: 10px; padding: 0 3px; }
+.cell .leg .lt { flex: none; }
+.trip-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; padding: 7px 0; border-bottom: 1px solid var(--border); }
+.trip-head:last-child { border-bottom: 0; }
+.trip-head .th-num { width: 20px; height: 20px; flex: none; border-radius: 50%; background: var(--brand-soft); color: var(--brand); font-size: 11px; font-weight: 800; display: flex; align-items: center; justify-content: center; }
+.trip-head .th-name { font-weight: 650; min-width: 130px; }
+.trip-head .th-time { color: var(--text-dim); font-size: 12px; min-width: 52px; }
+.trip-head .th-space { flex: 1; }
+
 /* responsive */
 @media (max-width: 900px) {
   #app { grid-template-columns: 1fr; }
