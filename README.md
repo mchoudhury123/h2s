@@ -131,7 +131,7 @@ Three things had to change for this to work, and all three are done:
 
 - **Sessions live in the database.** Each request may be served by a different instance, so an in-memory session table would sign people out at random.
 - **Uploaded documents are stored in the database**, up to 8 MB each. A serverless filesystem is read-only and thrown away between requests. One backup now covers the records and their paperwork together.
-- **Migrations run once per instance**, on the first request it serves, rather than at boot.
+- **Migrations run once per instance**, on the first request it serves, rather than at boot. A schema fingerprint in the database lets current installations skip repeated table and column checks; changes to schema or migration code trigger the full upgrade automatically.
 
 `npm run test:serverless` proves all of this without deploying. It runs the entry point in a real process, kills it, starts another, and checks the session still works, that an uploaded file comes back from a different instance, and that nothing was written to disk.
 
@@ -139,6 +139,7 @@ Three things had to change for this to work, and all three are done:
 
 ```
 npm test                 # 112 business-rule tests
+npm run test:performance  # schema checks, dropdown queries/cache and button responsiveness
 npm run test:isolation   # 92 checks that one firm cannot reach another's data
 npm run test:auth        # registration, sign-in and separation, in a browser
 npm run test:serverless  # sessions and uploads across instance restarts

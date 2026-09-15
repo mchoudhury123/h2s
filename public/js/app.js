@@ -100,16 +100,22 @@ App.enter = async function () {
   await App.loadMe();
   App.renderShell();
   if (!location.hash || location.hash === '#/login') location.hash = '#/';
-  Router.handle();
+  else Router.handle();
+  // Warm form dropdowns while the page renders; forms can retry if this fails.
+  UI.lookups().catch(() => {});
 };
 
-App.signedOut = function () {
+App.signedOut = function (message) {
+  UI.invalidateLookups();
+  Router._ticket++;
+  UI.closeAll();
   App.state.user = null;
-  App.renderLogin('Your session has ended. Please sign in again.');
+  App.renderLogin(message || 'Your session has ended. Please sign in again.');
 };
 
 App.loadMe = async function () {
   const me = await api.get('/api/me');
+  if (App.state.user?.id !== me.user.id) UI.invalidateLookups();
   App.state.user = me.user;
   App.state.organisation = me.organisation;
   App.state.settings = me.settings;
@@ -163,7 +169,7 @@ App.renderShell = function () {
       h('div', { class: 'role' }, App.state.settings.company_name || u.organisation_name),
       h('div', { class: 'acts' },
         h('a', { href: '#', onclick: e => { e.preventDefault(); App.toggleTheme(); } }, 'Theme'),
-        h('a', { href: '#', onclick: async e => { e.preventDefault(); await api.post('/api/logout'); App.state.user = null; App.renderLogin('You have been signed out.'); } }, 'Sign out'))));
+        h('a', { href: '#', onclick: async e => { e.preventDefault(); await api.post('/api/logout'); App.signedOut('You have been signed out.'); } }, 'Sign out'))));
 
   const searchInput = h('input', { type: 'search', placeholder: 'Search children, schools, contracts, drivers, PAs, postcodes…', id: 'usearch', autocomplete: 'off' });
   const resultsBox = h('div', { class: 'results', hidden: true, id: 'sresults' });

@@ -14,7 +14,19 @@ function h(tag, attrs, ...children) {
     if (v === null || v === undefined || v === false) continue;
     if (k === 'class') el.className = v;
     else if (k === 'html') el.innerHTML = v;
-    else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), v);
+    else if (k.startsWith('on') && typeof v === 'function') {
+      if (tag === 'button' && k.toLowerCase() === 'onclick') {
+        let pending = false;
+        el.addEventListener('click', event => {
+          if (pending) return;
+          const result = v.call(el, event);
+          if (!result || typeof result.then !== 'function') return;
+          pending = true; el.disabled = true; el.setAttribute('aria-busy', 'true');
+          Promise.resolve(result).catch(error => window.toast(error.message || 'Action failed', 'err'))
+            .finally(() => { pending = false; el.disabled = false; el.removeAttribute('aria-busy'); });
+        });
+      } else el.addEventListener(k.slice(2).toLowerCase(), v);
+    }
     else if (k === 'dataset') Object.assign(el.dataset, v);
     else if (k === 'value') el.value = v;
     else if (v === true) el.setAttribute(k, '');
@@ -35,6 +47,7 @@ window.h = h;
 /* ---------- api ---------- */
 const api = window.api = {
   async request(method, path, body, isForm) {
+    if (method !== 'GET') window.UI?.invalidateLookups();
     const opts = { method, headers: {}, credentials: 'same-origin' };
     if (body !== undefined && body !== null) {
       if (isForm) opts.body = body;
@@ -49,6 +62,7 @@ const api = window.api = {
     }
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Request failed');
+    if (method !== 'GET') window.UI?.invalidateLookups();
     return data;
   },
   get(p, q) { return api.request('GET', q ? p + '?' + new URLSearchParams(clean(q)) : p); },

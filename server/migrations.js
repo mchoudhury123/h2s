@@ -6,6 +6,7 @@
 // Every step checks what is actually there first, so running twice is harmless.
 
 const schema = require('./schema');
+const crypto = require('crypto');
 
 /** Adds organisation_id to a table that predates multi-tenancy, and fills it in. */
 async function addOrgColumn(driver, table, orgId) {
@@ -155,11 +156,12 @@ async function widenExceptionTypes(driver, log) {
     log(`  exceptions: rebuilt to allow one-off extra journeys (${rows.length} kept)`);
   } catch (e) {
     log(`  exceptions: could not widen the type list (${e.message})`);
+    throw e;
   }
 }
 
 /** Runs any pending upgrades, then makes sure every table and index exists. */
-async function run(driver, log = () => {}) {
+async function applyMigrations(driver, log) {
   await upgradeToMultiTenant(driver, log);
   // Uploaded files moved from a local folder into the database, so they survive
   // on a host with no writable disk.
@@ -171,6 +173,24 @@ async function run(driver, log = () => {}) {
   await addColumn(driver, 'exceptions', 'trip_kind', 'TEXT', log);
   await widenExceptionTypes(driver, log);
   for (const stmt of schema.statements(driver.dialect)) await driver.exec(stmt);
+}
+
+// Persist the exact schema/migration fingerprint so new serverless instances
+// need only two reads, rather than repeating every inspection and CREATE.
+// Changes to either the schema or an upgrade automatically invalidate it.
+async function run(driver, log = () => {}) {
+  const fingerprint = crypto.createHash('sha256').update(JSON.stringify([
+    schema.statements(driver.dialect),
+    ...[addOrgColumn, upgradeToMultiTenant, addColumn, widenExceptionTypes, applyMigrations].map(String),
+  ])).digest('hex');
+  if (await driver.tableExists('h2s_schema_version')) {
+    const current = await driver.get('SELECT fingerprint FROM h2s_schema_version WHERE id = 1');
+    if (current?.fingerprint === fingerprint) return;
+  }
+  await applyMigrations(driver, log);
+  await driver.exec('CREATE TABLE IF NOT EXISTS h2s_schema_version (id INTEGER PRIMARY KEY, fingerprint TEXT NOT NULL)');
+  await driver.run(`INSERT INTO h2s_schema_version (id, fingerprint) VALUES (1, ?)
+    ON CONFLICT (id) DO UPDATE SET fingerprint = excluded.fingerprint`, [fingerprint]);
 }
 
 module.exports = { run, upgradeToMultiTenant };

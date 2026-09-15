@@ -408,7 +408,27 @@ UI.dateRange = function (from, to, onChange) {
 };
 
 /* ---------- lookups cache ---------- */
+UI._lookupVersion = 0;
+UI._lookupRequest = null;
+UI._lookupTime = 0;
+UI.invalidateLookups = function () {
+  App.state.lookups = null;
+  UI._lookupVersion++;
+  UI._lookupRequest = null;
+};
 UI.lookups = async function (force) {
-  if (!App.state.lookups || force) App.state.lookups = await api.get('/api/lookups');
-  return App.state.lookups;
+  if (force) UI.invalidateLookups();
+  if (App.state.lookups && Date.now() - UI._lookupTime < 30000) return App.state.lookups;
+  if (UI._lookupRequest) return UI._lookupRequest;
+  const version = UI._lookupVersion;
+  const request = api.get('/api/lookups').then(data => {
+    // A save or account change may have overtaken this request. Its caller
+    // must receive fresh dropdowns too, not only avoid caching the old ones.
+    if (version !== UI._lookupVersion) return UI.lookups();
+    App.state.lookups = data;
+    UI._lookupTime = Date.now();
+    return data;
+  }).finally(() => { if (UI._lookupRequest === request) UI._lookupRequest = null; });
+  UI._lookupRequest = request;
+  return request;
 };

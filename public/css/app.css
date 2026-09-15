@@ -154,6 +154,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .btn.sm { padding: 4px 9px; font-size: 12px; }
 .btn.xs { padding: 2px 7px; font-size: 11.5px; }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn[aria-busy="true"] { cursor: progress; }
 .btn-group { display: inline-flex; }
 .btn-group .btn { border-radius: 0; margin-left: -1px; }
 .btn-group .btn:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }

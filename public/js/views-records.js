@@ -219,7 +219,7 @@ Rec.contractEditor = async function (c) {
     fields, values: c || { status: 'active', requires_pa: 1, days_of_week: '1,2,3,4,5', income_basis: 'per_journey', pay_basis: 'per_journey' },
     onSave: async v => {
       const saved = c ? await api.put('/api/contracts/' + c.id, v) : await api.post('/api/contracts', v);
-      await UI.lookups(true);
+      UI.invalidateLookups();
       toast(c ? 'Contract updated — changes flow through to children, calendar and wages' : 'Contract created', 'ok');
       if (c) Router.handle(); else Router.go('/contracts/' + saved.id);
     },
@@ -395,7 +395,7 @@ Rec.childEditor = async function (c, defaults) {
     fields, values: c || { status: 'active', ...(defaults || {}) },
     onSave: async v => {
       const saved = c ? await api.put('/api/children/' + c.id, v) : await api.post('/api/children', v);
-      await UI.lookups(true);
+      UI.invalidateLookups();
       toast(c ? 'Child updated' : 'Child added', 'ok');
       if (c) Router.handle(); else Router.go('/children/' + saved.id);
     },
@@ -611,7 +611,7 @@ Rec.staffEditor = function (s, type) {
     onSave: async v => {
       v.type = t;
       const saved = s ? await api.put('/api/staff/' + s.id, v) : await api.post('/api/staff', v);
-      await UI.lookups(true);
+      UI.invalidateLookups();
       toast(s ? 'Staff record updated' : 'Staff member added', 'ok');
       if (s) Router.handle(); else Router.go('/staff/' + saved.id);
     },
@@ -635,7 +635,7 @@ Rec.vehicleEditor = function (v, driverId) {
     onSave: async val => {
       val.driver_id = driverId;
       if (v) await api.put('/api/vehicles/' + v.id, val); else await api.post('/api/vehicles', val);
-      await UI.lookups(true);
+      UI.invalidateLookups();
       toast('Vehicle saved', 'ok'); Router.handle();
     },
   });
@@ -738,7 +738,7 @@ Rec.schoolEditor = function (s) {
     values: s || {},
     onSave: async v => {
       const saved = s ? await api.put('/api/schools/' + s.id, v) : await api.post('/api/schools', v);
-      await UI.lookups(true); toast('School saved', 'ok');
+      UI.invalidateLookups(); toast('School saved', 'ok');
       if (s) Router.handle(); else Router.go('/schools/' + saved.id);
     },
     extraFooter: s && App.can('edit') ? h('button', { class: 'btn danger left', onclick: () => UI.confirmDelete(`Delete ${s.name}?`, async () => { await api.del('/api/schools/' + s.id); App.state.lookups = null; toast('Deleted', 'ok'); Router.go('/schools'); }) }, 'Delete') : null,
@@ -793,7 +793,7 @@ Rec.councilEditor = function (c) {
     values: c || {},
     onSave: async v => {
       const saved = c ? await api.put('/api/councils/' + c.id, v) : await api.post('/api/councils', v);
-      await UI.lookups(true); toast('Saved', 'ok');
+      UI.invalidateLookups(); toast('Saved', 'ok');
       if (c) Router.handle(); else Router.go('/councils/' + saved.id);
     },
   });

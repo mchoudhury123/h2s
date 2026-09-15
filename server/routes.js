@@ -1459,16 +1459,7 @@ route('GET', '/api/audit', async ctx => H.json(ctx.res,
 // Lookups for dropdowns, one call so forms stay fast
 // =====================================================================
 route('GET', '/api/lookups', async ctx => {
-  const org = ctx.org;
-  H.json(ctx.res, {
-    schools: await all('SELECT id, name, postcode FROM schools WHERE organisation_id = ? AND active = 1 ORDER BY name', [org]),
-    councils: await all('SELECT id, name FROM councils WHERE organisation_id = ? AND active = 1 ORDER BY name', [org]),
-    contracts: await all('SELECT id, code, name, school_id, status FROM contracts WHERE organisation_id = ? ORDER BY code', [org]),
-    drivers: await all("SELECT id, first_name || ' ' || last_name AS name, status, postcode FROM staff WHERE organisation_id = ? AND type = 'driver' ORDER BY last_name", [org]),
-    pas: await all("SELECT id, first_name || ' ' || last_name AS name, status, postcode FROM staff WHERE organisation_id = ? AND type = 'pa' ORDER BY last_name", [org]),
-    vehicles: await all('SELECT id, registration, seats, wheelchair_accessible, driver_id FROM vehicles WHERE organisation_id = ? AND active = 1 ORDER BY registration', [org]),
-    children: await all("SELECT id, first_name || ' ' || last_name AS name, contract_id, school_id FROM children WHERE organisation_id = ? AND status = 'active' ORDER BY last_name", [org]),
-  });
+  H.json(ctx.res, await require('./services/lookups').lookups(ctx.org));
 });
 
 // =====================================================================
