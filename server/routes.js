@@ -7,7 +7,6 @@
 // their own firm, so there are no roles or permission levels.
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 const { all, get, run, transaction, getSetting, setSetting, insert, update } = require('./db');
 const H = require('./http');
 const auth = require('./services/auth');
@@ -20,8 +19,10 @@ const search = require('./services/search');
 const dash = require('./services/dashboard');
 const reports = require('./reports');
 
+// Uploaded files are kept in the database. This folder is only read, for files
+// stored by an older self-hosted version, and does not need to exist.
 const UPLOAD_DIR = path.join(__dirname, '..', 'uploads');
-if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 
 // ---------- column whitelists ----------
 const COLS = {
@@ -110,7 +111,7 @@ openRoute('POST', '/api/login', async ctx => {
 });
 
 openRoute('POST', '/api/logout', async ctx => {
-  if (ctx.token) auth.logout(ctx.token);
+  await auth.logout(ctx.token);
   ctx.res.setHeader('Set-Cookie', 'h2s=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax');
   H.json(ctx.res, { ok: true });
 });
@@ -308,7 +309,12 @@ crud('staff', 'staff', {
       ORDER BY c.code, ch.last_name`, [org, id, id]);
     row.compliance = await compliance.staffCompliance(org, id, row.type);
     row.documents = await documentsFor(org, 'staff', id);
-    row.vehicle_documents = await all(`SELECT d.*, v.registration FROM documents d
+    row.vehicle_documents = await all(`SELECT d.id, d.entity_type, d.entity_id, d.doc_type, d.reference,
+        d.file_name, d.stored_name, d.mime_type, d.size, d.upload_date, d.issue_date, d.expiry_date,
+        d.status, d.notes, d.uploaded_by,
+        CASE WHEN d.file_data IS NULL THEN 0 ELSE 1 END AS has_file,
+        v.registration
+      FROM documents d
       JOIN vehicles v ON v.id = d.entity_id
       WHERE d.organisation_id = ? AND d.entity_type = 'vehicle' AND v.driver_id = ? ORDER BY d.expiry_date`, [org, id]);
     row.recent_cover = await all(`SELECT e.*, c.code AS contract_code FROM exceptions e
@@ -585,8 +591,13 @@ function nextMonthStart(d) {
 // Documents
 // =====================================================================
 async function documentsFor(org, type, id) {
+  // The file bytes are deliberately left out: a listing only needs the details.
   const rows = await all(
-    'SELECT * FROM documents WHERE organisation_id = ? AND entity_type = ? AND entity_id = ? ORDER BY doc_type, expiry_date DESC',
+    `SELECT id, organisation_id, entity_type, entity_id, doc_type, reference, file_name, stored_name,
+       mime_type, size, upload_date, issue_date, expiry_date, status, notes, uploaded_by, created_at,
+       CASE WHEN file_data IS NULL THEN 0 ELSE 1 END AS has_file
+     FROM documents WHERE organisation_id = ? AND entity_type = ? AND entity_id = ?
+     ORDER BY doc_type, expiry_date DESC`,
     [org, type, id]);
   const amber = await compliance.amberDays(org);
   const ref = cal.today();
@@ -601,13 +612,25 @@ async function deleteDocumentsFor(org, entityType, entityId, tx) {
   const q = tx || { all, run };
   const docs = await q.all('SELECT id, stored_name FROM documents WHERE organisation_id = ? AND entity_type = ? AND entity_id = ?',
     [org, entityType, entityId]);
-  for (const d of docs) {
-    if (d.stored_name) { try { fs.unlinkSync(path.join(UPLOAD_DIR, d.stored_name)); } catch (_) {} }
-  }
+  // Tidy up any file left on disk by an older self-hosted version.
+  for (const d of docs) if (d.stored_name) unlinkQuietly(d.stored_name);
   await q.run('DELETE FROM documents WHERE organisation_id = ? AND entity_type = ? AND entity_id = ?', [org, entityType, entityId]);
 }
 
+/** Removes a legacy on-disk file. A read-only or missing folder is not an error. */
+function unlinkQuietly(storedName) {
+  try { fs.unlinkSync(path.join(UPLOAD_DIR, storedName)); } catch (_) { /* already gone, or read-only disk */ }
+}
+
 const DOC_PARENT = { child: 'children', staff: 'staff', contract: 'contracts', vehicle: 'vehicles', school: 'schools' };
+
+/** One document's details, without the file bytes. */
+function documentSummary(org, id) {
+  return get(`SELECT id, entity_type, entity_id, doc_type, reference, file_name, mime_type, size,
+      upload_date, issue_date, expiry_date, status, notes, uploaded_by,
+      CASE WHEN file_data IS NULL THEN 0 ELSE 1 END AS has_file
+    FROM documents WHERE id = ? AND organisation_id = ?`, [id, org]);
+}
 
 route('GET', '/api/documents', async ctx => {
   if (ctx.query.entity_type && ctx.query.entity_id) {
@@ -624,24 +647,27 @@ route('POST', '/api/documents', async ctx => {
   // The record the document is attached to must belong to this firm.
   if (!(await owned(DOC_PARENT[entityType], entityId, ctx.org))) return H.error(ctx.res, 'Record not found', 404);
 
-  let stored = null, fileName = null, mime = null, size = null;
+  let fileName = null, mime = null, size = null, fileData = null;
   const file = (ctx.files || [])[0];
   if (file && file.data && file.data.length) {
-    const ext = path.extname(file.filename).slice(0, 10).replace(/[^\w.]/g, '');
-    stored = crypto.randomBytes(12).toString('hex') + ext;
-    fs.writeFileSync(path.join(UPLOAD_DIR, stored), file.data);
-    fileName = file.filename; mime = file.mime; size = file.data.length;
+    if (file.data.length > MAX_UPLOAD_BYTES) {
+      return H.error(ctx.res, `That file is ${(file.data.length / 1048576).toFixed(1)} MB. The limit is 8 MB.`);
+    }
+    fileName = file.filename;
+    mime = file.mime;
+    size = file.data.length;
+    fileData = file.data.toString('base64');
   }
   const id = await insert('documents', {
     entity_type: entityType, entity_id: entityId, doc_type: f.doc_type || 'Other', reference: f.reference,
-    file_name: fileName, stored_name: stored, mime_type: mime, size,
+    file_name: fileName, mime_type: mime, size, file_data: fileData,
     issue_date: f.issue_date, expiry_date: f.expiry_date, status: f.status || 'valid', notes: f.notes,
     uploaded_by: ctx.user.name,
-  }, ['entity_type', 'entity_id', 'doc_type', 'reference', 'file_name', 'stored_name', 'mime_type', 'size',
+  }, ['entity_type', 'entity_id', 'doc_type', 'reference', 'file_name', 'mime_type', 'size', 'file_data',
     'issue_date', 'expiry_date', 'status', 'notes', 'uploaded_by'], null, ctx.org);
   await audit.logAction(ctx.user, entityType === 'staff' ? 'staff' : entityType + 's', entityId, null, 'document',
     `Added document ${f.doc_type}${f.expiry_date ? ' expiring ' + f.expiry_date : ''}`);
-  H.json(ctx.res, await owned('documents', id, ctx.org), 201);
+  H.json(ctx.res, await documentSummary(ctx.org, id), 201);
 });
 
 route('PUT', '/api/documents/:id', async ctx => {
@@ -651,14 +677,15 @@ route('PUT', '/api/documents/:id', async ctx => {
   await update('documents', id, ctx.body, ['doc_type', 'reference', 'issue_date', 'expiry_date', 'status', 'notes'], null, ctx.org);
   await audit.logAction(ctx.user, before.entity_type === 'staff' ? 'staff' : before.entity_type + 's', before.entity_id, null,
     'document', `Updated document ${before.doc_type}`);
-  H.json(ctx.res, await owned('documents', id, ctx.org));
+  H.json(ctx.res, await documentSummary(ctx.org, id));
 });
 
 route('DELETE', '/api/documents/:id', async ctx => {
   const id = Number(ctx.params.id);
-  const doc = await owned('documents', id, ctx.org);
+  const doc = await get('SELECT entity_type, entity_id, doc_type, stored_name FROM documents WHERE id = ? AND organisation_id = ?',
+    [id, ctx.org]);
   if (!doc) return H.error(ctx.res, 'Document not found', 404);
-  if (doc.stored_name) { try { fs.unlinkSync(path.join(UPLOAD_DIR, doc.stored_name)); } catch (_) {} }
+  if (doc.stored_name) unlinkQuietly(doc.stored_name);
   await run('DELETE FROM documents WHERE id = ? AND organisation_id = ?', [id, ctx.org]);
   await audit.logAction(ctx.user, doc.entity_type === 'staff' ? 'staff' : doc.entity_type + 's', doc.entity_id, null,
     'document', `Deleted document ${doc.doc_type}`);
@@ -667,14 +694,26 @@ route('DELETE', '/api/documents/:id', async ctx => {
 
 route('GET', '/api/documents/:id/file', async ctx => {
   const doc = await owned('documents', Number(ctx.params.id), ctx.org);
-  if (!doc || !doc.stored_name) return H.error(ctx.res, 'No file attached', 404);
-  const full = path.join(UPLOAD_DIR, doc.stored_name);
-  if (!fs.existsSync(full)) return H.error(ctx.res, 'File missing from store', 404);
-  ctx.res.writeHead(200, {
+  if (!doc) return H.error(ctx.res, 'Document not found', 404);
+  const headers = {
     'Content-Type': doc.mime_type || 'application/octet-stream',
     'Content-Disposition': `inline; filename="${(doc.file_name || 'document').replace(/"/g, '')}"`,
-  });
-  fs.createReadStream(full).pipe(ctx.res);
+    'Cache-Control': 'private, no-store',
+  };
+  if (doc.file_data) {
+    const buf = Buffer.from(doc.file_data, 'base64');
+    ctx.res.writeHead(200, { ...headers, 'Content-Length': buf.length });
+    return ctx.res.end(buf);
+  }
+  // Older self-hosted installations kept the file on disk.
+  if (doc.stored_name) {
+    const full = path.join(UPLOAD_DIR, doc.stored_name);
+    if (fs.existsSync(full)) {
+      ctx.res.writeHead(200, headers);
+      return fs.createReadStream(full).pipe(ctx.res);
+    }
+  }
+  H.error(ctx.res, 'No file attached', 404);
 });
 
 // =====================================================================
@@ -1092,12 +1131,15 @@ route('PUT', '/api/users/:id', async ctx => {
     const bad = auth.checkPassword(b.password);
     if (bad) return H.error(ctx.res, bad, 400);
     await run('UPDATE users SET password_hash = ? WHERE id = ? AND organisation_id = ?', [auth.hash(b.password), id, ctx.org]);
+    // A new password ends that account's other sessions. Your own stays alive,
+    // so changing your password does not sign you out mid-task.
+    await auth.endSessionsFor(id, id === ctx.user.id ? ctx.token : null);
   }
   if (b.name !== undefined) await run('UPDATE users SET name = ? WHERE id = ? AND organisation_id = ?', [String(b.name).trim(), id, ctx.org]);
   if (b.active !== undefined) {
     if (!Number(b.active) && id === ctx.user.id) return H.error(ctx.res, 'You cannot disable your own account', 400);
     await run('UPDATE users SET active = ? WHERE id = ? AND organisation_id = ?', [b.active ? 1 : 0, id, ctx.org]);
-    if (!Number(b.active)) auth.endSessionsFor(id);
+    if (!Number(b.active)) await auth.endSessionsFor(id);
   }
   await audit.logAction(ctx.user, 'user', id, u.name, 'update', `Updated ${u.email}`);
   H.json(ctx.res, await get('SELECT id, email, name, active FROM users WHERE id = ? AND organisation_id = ?', [id, ctx.org]));
@@ -1111,7 +1153,7 @@ route('DELETE', '/api/users/:id', async ctx => {
   const remaining = Number((await get('SELECT COUNT(*) AS n FROM users WHERE organisation_id = ? AND active = 1', [ctx.org])).n);
   if (remaining <= 1) return H.error(ctx.res, 'A business must keep at least one active account', 400);
   await run('DELETE FROM users WHERE id = ? AND organisation_id = ?', [id, ctx.org]);
-  auth.endSessionsFor(id);
+  await auth.endSessionsFor(id);
   await audit.logAction(ctx.user, 'user', id, u.name, 'delete', `Removed ${u.email} from the team`);
   H.json(ctx.res, { ok: true });
 });

@@ -105,9 +105,21 @@ async function upgradeToMultiTenant(driver, log) {
   return true;
 }
 
+/** Adds a column to a table that predates it. Safe to run repeatedly. */
+async function addColumn(driver, table, column, definition, log) {
+  if (!(await driver.tableExists(table))) return;
+  const cols = await driver.columns(table);
+  if (cols.includes(column)) return;
+  await driver.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  log(`  ${table}: added ${column}`);
+}
+
 /** Runs any pending upgrades, then makes sure every table and index exists. */
 async function run(driver, log = () => {}) {
   await upgradeToMultiTenant(driver, log);
+  // Uploaded files moved from a local folder into the database, so they survive
+  // on a host with no writable disk.
+  await addColumn(driver, 'documents', 'file_data', 'TEXT', log);
   for (const stmt of schema.statements(driver.dialect)) await driver.exec(stmt);
 }
 

@@ -4,6 +4,11 @@
 const { Pool, types } = require('pg');
 const schema = require('../schema');
 
+/** True on a host that runs each request in a short-lived instance. */
+function isServerless() {
+  return !!(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.NETLIFY);
+}
+
 // COUNT(*) and other bigint results arrive as strings by default. The application
 // treats them as numbers, so parse them here rather than at every call site.
 types.setTypeParser(20, v => (v === null ? null : Number(v)));   // int8
@@ -46,9 +51,13 @@ function create({ connectionString, schema: schemaName } = {}) {
     // Supabase requires TLS. Its certificate chain is not in Node's default store,
     // so verification is relaxed here; the connection is still encrypted.
     ssl: /supabase|amazonaws|render|neon/i.test(url) ? { rejectUnauthorized: false } : undefined,
-    max: Number(process.env.PGPOOL_MAX || 8),
-    idleTimeoutMillis: 30000,
+    // A serverless instance handles one request at a time, so a single
+    // connection is right there; a long-running server benefits from more.
+    max: Number(process.env.PGPOOL_MAX || (isServerless() ? 1 : 8)),
+    idleTimeoutMillis: isServerless() ? 10000 : 30000,
     connectionTimeoutMillis: 15000,
+    // pgbouncer in transaction mode cannot keep named prepared statements.
+    statement_timeout: Number(process.env.PGSTATEMENT_TIMEOUT || 20000),
     options: targetSchema ? `-c search_path=${targetSchema}` : undefined,
   });
   pool.on('error', err => console.error('Postgres pool error:', err.message));

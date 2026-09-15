@@ -436,7 +436,7 @@ App.views.staffDetail = async function ({ params }) {
       { key: 'doc_type', label: 'Required document' },
       { key: 'status', label: 'Status', value: i => h('span', { class: 'badge ' + i.status }, i.status === 'green' ? 'Valid' : i.status === 'amber' ? 'Expiring' : 'Action required') },
       { key: 'reason', label: 'Detail' },
-      { label: '', sortable: false, value: i => i.document ? (i.document.stored_name ? h('a', { class: 'btn xs', href: `/api/documents/${i.document.id}/file`, target: '_blank' }, 'View file') : null)
+      { label: '', sortable: false, value: i => i.document ? (hasFile(i.document) ? h('a', { class: 'btn xs', href: `/api/documents/${i.document.id}/file`, target: '_blank' }, 'View file') : null)
         : (App.can('documents') ? h('button', { class: 'btn xs primary', onclick: () => UI.documentEditor('staff', s.id, null, reload) }, 'Add') : null) },
     ], s.compliance.items, { empty: 'No required documents configured' }),
     h('span', { style: 'font-size:12px;color:var(--text-faint)' }, `Amber warning ${s.compliance.amber_days} days before expiry`));

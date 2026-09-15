@@ -28,6 +28,13 @@ function readBody(req, maxBytes = 25 * 1024 * 1024) {
 
 async function parseBody(req) {
   const ct = req.headers['content-type'] || '';
+  // Some serverless hosts parse the body before the handler runs, leaving the
+  // stream empty. Use what they produced rather than reading nothing.
+  if (req.body !== undefined && req.body !== null) {
+    if (Buffer.isBuffer(req.body)) return fromBuffer(req.body, ct);
+    if (typeof req.body === 'string') return fromBuffer(Buffer.from(req.body), ct);
+    if (typeof req.body === 'object') return { fields: req.body, files: [] };
+  }
   const buf = await readBody(req);
   if (!buf.length) return { fields: {}, files: [] };
   if (ct.includes('application/json')) {
@@ -38,6 +45,20 @@ async function parseBody(req) {
   if (ct.includes('application/x-www-form-urlencoded')) {
     const params = new URLSearchParams(buf.toString('utf8'));
     return { fields: Object.fromEntries(params), files: [] };
+  }
+  return { fields: {}, files: [], raw: buf };
+}
+
+/** Same decoding, for a body the host has already read into memory. */
+function fromBuffer(buf, ct) {
+  if (!buf.length) return { fields: {}, files: [] };
+  if (ct.includes('application/json')) {
+    try { return { fields: JSON.parse(buf.toString('utf8')), files: [] }; }
+    catch (e) { throw new Error('Invalid JSON body'); }
+  }
+  if (ct.includes('multipart/form-data')) return parseMultipart(buf, ct);
+  if (ct.includes('application/x-www-form-urlencoded')) {
+    return { fields: Object.fromEntries(new URLSearchParams(buf.toString('utf8'))), files: [] };
   }
   return { fields: {}, files: [], raw: buf };
 }

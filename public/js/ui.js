@@ -1,6 +1,10 @@
 /* ui: modal, forms, tables, and shared building blocks */
 'use strict';
 const UI = window.UI = {};
+/** A document has a file whether it is held in the database or, on an older
+ *  self-hosted installation, still on disk. */
+function hasFile(d) { return !!(d && (d.has_file || d.stored_name)); }
+window.hasFile = hasFile;
 UI.openModals = new Set();
 UI.closeAll = function () { for (const close of [...UI.openModals]) close(); };
 
@@ -282,7 +286,9 @@ UI.documentsPanel = function (entityType, entityId, docs, onChange) {
     { key: 'issue_date', label: 'Issued', value: d => fmt.date(d.issue_date), nowrap: true },
     { key: 'expiry_date', label: 'Expires', value: d => d.expiry_date ? h('span', null, fmt.date(d.expiry_date), d.days_left !== null && d.days_left <= 60 ? h('span', { class: 'badge ' + (d.days_left < 0 ? 'red' : 'amber'), style: 'margin-left:6px' }, d.days_left < 0 ? `${-d.days_left}d ago` : `${d.days_left}d`) : null) : 'No expiry', nowrap: true },
     { key: 'status', label: 'Status', value: d => h('span', { class: 'badge ' + (d.status === 'valid' ? '' : 'red') }, fmt.titleCase(d.status)) },
-    { key: 'file_name', label: 'File', value: d => d.stored_name ? h('a', { href: `/api/documents/${d.id}/file`, target: '_blank' }, d.file_name || 'View') : h('span', { style: 'color:var(--text-faint)' }, 'No file') },
+    { key: 'file_name', label: 'File', value: d => hasFile(d)
+      ? h('a', { href: `/api/documents/${d.id}/file`, target: '_blank' }, d.file_name || 'View')
+      : h('span', { style: 'color:var(--text-faint)' }, 'No file') },
     {
       label: '', sortable: false, value: d => canEdit ? h('div', { class: 'pill-row' },
         h('button', { class: 'btn xs', onclick: () => UI.documentEditor(entityType, entityId, d, onChange) }, 'Edit'),

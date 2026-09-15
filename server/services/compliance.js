@@ -66,7 +66,10 @@ async function staffCompliance(orgId, staffId, type) {
   const amber = await amberDays(orgId);
   const ref = today();
   const docs = await all(
-    `SELECT * FROM documents
+    `SELECT id, organisation_id, entity_type, entity_id, doc_type, reference, file_name, stored_name,
+       mime_type, size, upload_date, issue_date, expiry_date, status, notes, uploaded_by,
+       CASE WHEN file_data IS NULL THEN 0 ELSE 1 END AS has_file
+     FROM documents
      WHERE organisation_id = ?
        AND ((entity_type = 'staff' AND entity_id = ?)
          OR (entity_type = 'vehicle' AND entity_id IN
@@ -90,10 +93,18 @@ async function complianceForMany(orgId, staffRows) {
   const list = inClause(ids);
 
   const staffDocs = await all(
-    `SELECT * FROM documents WHERE organisation_id = ? AND entity_type = 'staff' AND entity_id IN (${list})`,
+    `SELECT id, organisation_id, entity_type, entity_id, doc_type, reference, file_name, stored_name,
+       mime_type, size, upload_date, issue_date, expiry_date, status, notes, uploaded_by,
+       CASE WHEN file_data IS NULL THEN 0 ELSE 1 END AS has_file
+     FROM documents WHERE organisation_id = ? AND entity_type = 'staff' AND entity_id IN (${list})`,
     [orgId, ...ids]);
   const vehicleDocs = await all(
-    `SELECT d.*, v.driver_id FROM documents d
+    `SELECT d.id, d.organisation_id, d.entity_type, d.entity_id, d.doc_type, d.reference, d.file_name,
+       d.stored_name, d.mime_type, d.size, d.upload_date, d.issue_date, d.expiry_date, d.status,
+       d.notes, d.uploaded_by,
+       CASE WHEN d.file_data IS NULL THEN 0 ELSE 1 END AS has_file,
+       v.driver_id
+     FROM documents d
      JOIN vehicles v ON v.id = d.entity_id
      WHERE d.organisation_id = ? AND d.entity_type = 'vehicle' AND v.active = 1 AND v.driver_id IN (${list})`,
     [orgId, ...ids]);
@@ -113,7 +124,10 @@ async function expiringDocuments(orgId, days, includeExpired = true) {
   const window = days === undefined ? await amberDays(orgId) : days;
   const ref = today();
   const limit = addDays(ref, window);
-  const rows = await all(`SELECT d.*,
+  const rows = await all(`SELECT d.id, d.organisation_id, d.entity_type, d.entity_id, d.doc_type,
+      d.reference, d.file_name, d.stored_name, d.mime_type, d.size, d.upload_date, d.issue_date,
+      d.expiry_date, d.status, d.notes, d.uploaded_by,
+      CASE WHEN d.file_data IS NULL THEN 0 ELSE 1 END AS has_file,
       CASE d.entity_type
         WHEN 'staff' THEN (SELECT first_name || ' ' || last_name FROM staff WHERE id = d.entity_id AND organisation_id = d.organisation_id)
         WHEN 'vehicle' THEN (SELECT v.registration || ' (' || COALESCE((SELECT first_name || ' ' || last_name FROM staff WHERE id = v.driver_id), 'no driver') || ')' FROM vehicles v WHERE v.id = d.entity_id)

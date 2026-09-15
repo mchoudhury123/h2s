@@ -90,14 +90,44 @@ npm start                     # now running on Supabase
 
 Two things worth knowing about Supabase connections. The direct host, `db.<project>.supabase.co`, resolves over IPv6 only; on an IPv4 network use the Session pooler string that Supabase lists on the same page. And every query is now a network round trip rather than a local file read, so the dashboard and wage pages are slower than on SQLite. The queries that would have run once per staff member are batched for exactly this reason.
 
+### Hosting it on Vercel
+
+The repository is ready to deploy as it is. Vercel serves `public/` as static files and runs `api/index.js` for everything under `/api/`, which is the same request handler the local server uses.
+
+Set one environment variable in **Project Settings then Environment Variables**, for Production, Preview and Development:
+
+| Name | Value |
+|---|---|
+| `DATABASE_URL` | your Supabase **Transaction pooler** connection string, port 6543 |
+
+Use the Transaction pooler rather than the direct connection. A serverless function is created and destroyed around each request, so it needs a pooler that expects short-lived connections. Supabase shows it under **Project Settings then Database then Connection string**.
+
+Two optional ones:
+
+| Name | Value | Why |
+|---|---|---|
+| `H2S_SECURE_COOKIE` | `1` | Marks the session cookie Secure. Set this once you are on HTTPS, which Vercel gives you. |
+| `PGPOOL_MAX` | a number | Connections per instance. Defaults to 1 on a serverless host, which is correct. |
+
+Do not set `PORT`; the host provides it.
+
+Three things had to change for this to work, and all three are done:
+
+- **Sessions live in the database.** Each request may be served by a different instance, so an in-memory session table would sign people out at random.
+- **Uploaded documents are stored in the database**, up to 8 MB each. A serverless filesystem is read-only and thrown away between requests. One backup now covers the records and their paperwork together.
+- **Migrations run once per instance**, on the first request it serves, rather than at boot.
+
+`npm run test:serverless` proves all of this without deploying. It runs the entry point in a real process, kills it, starts another, and checks the session still works, that an uploaded file comes back from a different instance, and that nothing was written to disk.
+
 ### Tests
 
 ```
-npm test                # 63 business-rule tests
-npm run test:isolation  # 77 checks that one firm cannot reach another's data
-npm run test:auth       # registration, sign-in and separation, in a browser
-npm run test:browser    # every page in a real browser, fails on any console error
-npm run test:workflow   # create records through the forms, through to payroll
+npm test                 # 63 business-rule tests
+npm run test:isolation   # 77 checks that one firm cannot reach another's data
+npm run test:auth        # registration, sign-in and separation, in a browser
+npm run test:serverless  # sessions and uploads across instance restarts
+npm run test:browser     # every page in a real browser, fails on any console error
+npm run test:workflow    # create records through the forms, through to payroll
 ```
 
 The browser suites expect Chrome at the default Windows location and the server already running.
@@ -252,7 +282,12 @@ Every important change is written to an audit log recording what changed, the pr
 ## Layout
 
 ```
+api/
+  index.js              serverless entry point (Vercel and similar)
+vercel.json             routes /api/* to that function
 server/
+  app.js                the request handler, with no server attached
+  server.js             wraps it in a long-running server for local use
   db.js                 one async interface over whichever database is in use,
                         plus the guards that keep firms apart
   schema.js             the table definitions, rendered per database
@@ -308,6 +343,6 @@ Queries are written once with `?` placeholders and a few portable spellings (`st
 
 This runs as-is for a single office. Before putting it on the open internet you would want HTTPS in front of it, a stronger session store than the in-memory one, and rate limiting on sign-in.
 
-On Supabase, the database is backed up by Supabase itself, but `uploads/` is still a local folder on whichever machine runs the server, so that needs its own backup.
+On Supabase, the database is backed up by Supabase itself, and uploaded documents live in it too, so one backup covers everything. The `uploads/` folder is only read now, for files kept by an older self-hosted version.
 
 Two things to know before several firms rely on it. Postgres Row Level Security is not used: the application enforces the separation between firms, which is why the connection string must stay private and why the isolation suite matters. And nothing verifies an email address at registration or offers a password reset, so a forgotten password currently needs someone with database access to set a new one.

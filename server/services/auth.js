@@ -83,7 +83,15 @@ async function register({ email, business_name, password, name }) {
 }
 
 // ---------- sessions ----------
-const sessions = new Map(); // token -> { user, expires }
+// Sessions live in the database rather than in memory, so the CRM works on a
+// serverless host where consecutive requests hit different instances, and so
+// signing someone out takes effect everywhere at once.
+function sessionExpiry() {
+  return new Date(Date.now() + SESSION_MS).toISOString().slice(0, 19).replace('T', ' ');
+}
+function nowStamp() {
+  return new Date().toISOString().slice(0, 19).replace('T', ' ');
+}
 
 async function login(email, password) {
   const u = await get(
@@ -98,22 +106,52 @@ async function login(email, password) {
     id: u.id, email: u.email, name: u.name,
     organisation_id: u.organisation_id, organisation_name: u.organisation_name,
   };
-  sessions.set(token, { user, expires: Date.now() + SESSION_MS });
+  await run('/* cross-org: a new session for the account just authenticated */ INSERT INTO sessions (token, user_id, expires_at) VALUES (?,?,?)',
+    [token, u.id, sessionExpiry()]);
   await run('/* cross-org: the account was just authenticated by id */ UPDATE users SET last_login = ? WHERE id = ?',
-    [new Date().toISOString().slice(0, 19).replace('T', ' '), u.id]);
+    [nowStamp(), u.id]);
+  // Tidy up anything long expired. Cheap, and keeps the table from growing.
+  await run('/* cross-org: housekeeping across all sessions */ DELETE FROM sessions WHERE expires_at < ?', [nowStamp()]);
   return { token, user };
 }
-function logout(token) { sessions.delete(token); }
-function userFor(token) {
-  const s = sessions.get(token);
-  if (!s) return null;
-  if (s.expires < Date.now()) { sessions.delete(token); return null; }
-  s.expires = Date.now() + SESSION_MS;
-  return s.user;
+
+async function logout(token) {
+  if (token) await run('/* cross-org: a session is identified by its own token */ DELETE FROM sessions WHERE token = ?', [token]);
 }
-/** Ends every session belonging to a user, used when an account is disabled or deleted. */
-function endSessionsFor(userId) {
-  for (const [token, s] of sessions) if (s.user.id === userId) sessions.delete(token);
+
+/** Resolves a session token to the signed-in person, or null. */
+async function userFor(token) {
+  if (!token || typeof token !== 'string' || token.length < 20) return null;
+  const row = await get(
+    `/* cross-org: the token identifies the account, which then fixes the firm */
+     SELECT s.token, s.expires_at, u.id, u.email, u.name, u.organisation_id, o.name AS organisation_name
+     FROM sessions s
+     JOIN users u ON u.id = s.user_id
+     JOIN organisations o ON o.id = u.organisation_id
+     WHERE s.token = ? AND u.active = 1 AND o.active = 1`, [token]);
+  if (!row) return null;
+  if (row.expires_at < nowStamp()) {
+    await run('/* cross-org: removing one expired session by its token */ DELETE FROM sessions WHERE token = ?', [token]);
+    return null;
+  }
+  return {
+    id: row.id, email: row.email, name: row.name,
+    organisation_id: row.organisation_id, organisation_name: row.organisation_name,
+  };
+}
+
+/**
+ * Ends every session belonging to a user, when an account is disabled, deleted
+ * or given a new password. `keepToken` spares the session doing the asking, so
+ * changing your own password does not sign you out mid-task.
+ */
+async function endSessionsFor(userId, keepToken) {
+  if (keepToken) {
+    await run('/* cross-org: sessions are ended by the account they belong to */ DELETE FROM sessions WHERE user_id = ? AND token != ?',
+      [userId, keepToken]);
+  } else {
+    await run('/* cross-org: sessions are ended by the account they belong to */ DELETE FROM sessions WHERE user_id = ?', [userId]);
+  }
 }
 
 // ---------- colleagues within one firm ----------
@@ -138,5 +176,5 @@ async function listUsers(orgId) {
 
 module.exports = {
   hash, verify, register, login, logout, userFor, endSessionsFor,
-  addUser, listUsers, checkEmail, checkPassword, checkBusinessName, MIN_PASSWORD, sessions,
+  addUser, listUsers, checkEmail, checkPassword, checkBusinessName, MIN_PASSWORD,
 };

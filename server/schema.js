@@ -38,6 +38,14 @@ const TABLES = [
   // An email address identifies one person in one firm, so it is unique across
   // the whole system rather than within an organisation.
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(LOWER(email))`,
+  // Sign-in sessions live in the database, not in memory, so the CRM works on a
+  // serverless host where each request may be served by a different instance.
+  `CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    user_id {{INT}} NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT {{NOW}}
+  )`,
   `CREATE TABLE IF NOT EXISTS settings (
     organisation_id ${ORG},
     key TEXT NOT NULL,
@@ -136,6 +144,10 @@ const TABLES = [
     doc_type TEXT NOT NULL,
     reference TEXT,
     file_name TEXT, stored_name TEXT, mime_type TEXT, size {{INT}},
+    -- The file itself, base64 encoded. Kept in the database so uploads survive
+    -- on a host with no writable disk, and so one backup covers everything.
+    -- stored_name is only used by older self-hosted installations.
+    file_data TEXT,
     upload_date TEXT NOT NULL DEFAULT {{TODAY}},
     issue_date TEXT, expiry_date TEXT,
     status TEXT NOT NULL DEFAULT 'valid' CHECK (status IN ('valid','invalid','superseded')),
@@ -220,6 +232,7 @@ const TABLES = [
 ];
 
 const INDEXES = [
+  `CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)`,
   `CREATE INDEX IF NOT EXISTS idx_documents_entity ON documents(organisation_id, entity_type, entity_id)`,
   `CREATE INDEX IF NOT EXISTS idx_exceptions_date ON exceptions(organisation_id, date)`,
   `CREATE INDEX IF NOT EXISTS idx_exceptions_contract ON exceptions(contract_id, date)`,
@@ -266,6 +279,8 @@ const TABLE_ORDER = ['organisations', 'settings', 'users', 'councils', 'schools'
   'expenses', 'audit_log'];
 
 // Every table holding one firm's data. Each must be filtered by organisation_id.
+// "sessions" is deliberately outside this: a session is looked up by its token
+// before any organisation is known, and the user it names then fixes the firm.
 const TENANT_TABLES = TABLE_ORDER.filter(t => t !== 'organisations');
 
 // Tables whose id comes from a sequence that must be resynchronised after a bulk copy.
