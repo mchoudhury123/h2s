@@ -121,16 +121,36 @@ function fail(...lines) {
   process.exit(1);
 }
 
+function connectionHint(message, url) {
+  const lines = [];
+  const direct = /db\.[a-z0-9]+\.supabase\.co/i.test(url || '');
+  const pooler = /pooler\.supabase\.com/i.test(url || '');
+  if (/ENOTFOUND|ETIMEDOUT|ECONNREFUSED|ENETUNREACH/.test(message)) {
+    if (/tenant or user not found|tenant\/user/i.test(message)) {
+      lines.push('The pooler did not recognise that project. Two things to check:',
+        '  - the region in the host name (aws-0-REGION.pooler.supabase.com) must match your project',
+        '  - the user must be postgres.PROJECT-REF, not plain postgres',
+        'Copy the Session pooler string straight from Supabase rather than editing it by hand.');
+    } else if (direct) {
+      lines.push('The direct Supabase host resolves over IPv6 only, and it could not be reached from here.',
+        'Use the Session pooler string instead: Supabase lists it under',
+        'Project Settings > Database > Connection string > Session pooler.');
+    } else {
+      lines.push('The database host could not be reached. Check the host name in DATABASE_URL.');
+    }
+  }
+  if (/password authentication failed/i.test(message)) {
+    lines.push('The password in DATABASE_URL was rejected. Reset it under Project Settings > Database.');
+  }
+  if (/self.signed|certificate/i.test(message)) {
+    lines.push('TLS negotiation failed. Leave sslmode out of the URL; the driver handles TLS itself.');
+  }
+  return lines;
+}
+
 main().catch(e => {
-  console.error('\nCopy failed:', e.message);
-  if (/ENOTFOUND|ETIMEDOUT|ECONNREFUSED|ENETUNREACH/.test(e.message)) {
-    console.error('\nThe database host could not be reached. Supabase direct connections');
-    console.error('(db.<project>.supabase.co) are IPv6 only. On an IPv4 network use the');
-    console.error('Session pooler string instead, which Supabase lists on the same page.');
-  }
-  if (/password authentication failed/i.test(e.message)) {
-    console.error('\nThe password in DATABASE_URL was rejected. Reset it under');
-    console.error('Project Settings > Database > Database password.');
-  }
+  console.error('\nCopy failed:', e.message.split('\n')[0]);
+  const hints = connectionHint(e.message, process.env.DATABASE_URL);
+  if (hints.length) console.error('\n' + hints.join('\n'));
   process.exit(1);
 });
