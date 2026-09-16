@@ -195,6 +195,9 @@ async function applyMigrations(driver, log) {
   // on a host with no writable disk.
   await addColumn(driver, 'documents', 'file_data', 'TEXT', log);
   await addColumn(driver, 'documents', 'vehicle_registration', 'TEXT', log);
+  for (const [column, definition] of [['second_file_name', 'TEXT'], ['second_mime_type', 'TEXT'], ['second_size', driver.dialect === 'postgres' ? 'BIGINT' : 'INTEGER'], ['second_file_data', 'TEXT']]) {
+    await addColumn(driver, 'documents', column, definition, log);
+  }
   await widenDocumentStatuses(driver, log);
   // An exception can now name the individual journey it applies to, for days
   // that run more than an outward and a return trip.

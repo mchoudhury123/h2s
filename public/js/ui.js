@@ -327,7 +327,8 @@ UI.documentsPanel = function (entityType, entityId, docs, onChange) {
     { key: 'expiry_date', label: 'Expires', value: d => d.expiry_date ? h('span', null, fmt.date(d.expiry_date), d.days_left !== null && d.days_left <= 60 ? h('span', { class: 'badge ' + (d.days_left < 0 ? 'red' : 'amber'), style: 'margin-left:6px' }, d.days_left < 0 ? `${-d.days_left}d ago` : `${d.days_left}d`) : null) : 'No expiry', nowrap: true },
     { key: 'status', label: 'Status', value: d => h('span', { class: 'badge ' + (d.status === 'valid' ? '' : d.status === 'needs_review' ? 'amber' : 'red') }, d.status === 'needs_review' ? 'Needs review' : fmt.titleCase(d.status)) },
     { key: 'file_name', label: 'File', value: d => hasFile(d)
-      ? h('a', { href: `/api/documents/${d.id}/file`, target: '_blank' }, d.file_name || 'View')
+      ? h('div', { class: 'pill-row' }, h('a', { href: `/api/documents/${d.id}/file`, target: '_blank' }, d.file_name || 'View'),
+        d.has_second_file ? h('a', { href: `/api/documents/${d.id}/file?part=2`, target: '_blank' }, d.second_file_name || 'View second file') : null)
       : h('span', { style: 'color:var(--text-faint)' }, 'No file') },
     {
       label: '', sortable: false, value: d => canEdit ? h('div', { class: 'pill-row' },
@@ -342,8 +343,15 @@ UI.documentsPanel = function (entityType, entityId, docs, onChange) {
 };
 
 UI.documentUpload = function (form, entityType, getType, existingDoc, onStateChange, onMultiple) {
-  let selectedFile = null, reading = false, version = 0, autoResult = null;
+  let selectedFile = null, selectedSecondFile = null, reading = false, version = 0, autoResult = null;
+  const paired = () => ['DBS', 'Driver Badge'].includes(getType());
   const input = h('input', { type: 'file', name: 'file' });
+  const secondInput = h('input', { type: 'file', name: 'second_file' });
+  const removeSecond = h('input', { type: 'checkbox' });
+  const secondSelection = h('div', { role: 'status', 'aria-live': 'polite' });
+  const secondArea = h('div', { hidden: true }, h('label', null, 'Second file (optional)'), secondInput, secondSelection,
+    existingDoc?.has_second_file ? h('label', null, removeSecond, ' Remove existing second file (' + existingDoc.second_file_name + ')') : null,
+    h('button', { class: 'btn xs', type: 'button', onclick: () => { secondInput.value = ''; chooseSecond(null); } }, 'Clear selected second file'));
   const label = h('label');
   const help = h('div', { class: 'help' });
   const selection = h('div', { role: 'status', 'aria-live': 'polite' }, 'No file selected');
@@ -364,11 +372,26 @@ UI.documentUpload = function (form, entityType, getType, existingDoc, onStateCha
   };
   const chooseFiles = files => {
     if (files.length > 1) {
+      if (paired()) {
+        if (files.length > 2 || Array.from(files).reduce((size, file) => size + file.size, 0) > 8 * 1024 * 1024) { toast('Choose 1 or 2 files, up to 8 MB combined.', 'err'); return; }
+        choose(files[0]); chooseSecond(files[1]); return;
+      }
       if (onMultiple && getType() === 'Safeguarding Training') return onMultiple(Array.from(files));
       toast('Please choose one file per certificate.', 'err'); return;
     }
     choose(files[0]);
   };
+  const chooseSecond = file => {
+    if (file && file.size + (selectedFile?.size || existingDoc?.size || 0) > 8 * 1024 * 1024) { toast('The combined upload limit is 8 MB.', 'err'); return; }
+    selectedSecondFile = file || null; version++; autoResult = null;
+    removeSecond.checked = false;
+    form.controls.status.value = 'needs_review';
+    secondSelection.textContent = file ? file.name + ' — ready to upload when saved' : '';
+    feedback.textContent = 'Files changed. Run Auto input again or check the details against both files.';
+    autoBtn.disabled = !(selectedFile || selectedSecondFile) || reading; onStateChange();
+  };
+  secondInput.onchange = () => chooseSecond(secondInput.files[0]);
+  removeSecond.onchange = () => { version++; autoResult = null; form.controls.status.value = 'needs_review'; feedback.textContent = 'Files changed. Check the details before marking this document Valid.'; };
   input.onchange = () => chooseFiles(input.files);
   const zone = h('div', { class: 'document-drop-zone' },
     h('div', null, 'Drag and drop a file here, or choose a file'), input, selection,
@@ -379,12 +402,15 @@ UI.documentUpload = function (form, entityType, getType, existingDoc, onStateCha
   const refresh = () => {
     const type = getType(), selfie = type === 'Selfie picture', safeguarding = type === 'Safeguarding Training';
     input.accept = selfie ? 'image/*' : '';
-    input.multiple = !!onMultiple && safeguarding;
+    input.multiple = paired() || (!!onMultiple && safeguarding);
+    secondArea.hidden = !paired();
+    if (!paired() && selectedSecondFile) { selectedSecondFile = null; version++; autoResult = null; }
+    autoBtn.disabled = reading || !(selectedFile || selectedSecondFile || (paired() && existingDoc && hasFile(existingDoc)));
     label.textContent = selfie ? 'Selfie image (required)' : existingDoc && existingDoc.file_name
       ? 'Replace file (currently: ' + existingDoc.file_name + ')' : safeguarding ? 'Attach certificate file' : 'Attach file (optional)';
     help.textContent = selfie ? 'Upload a clear selfie of the person for verification, up to 8 MB.'
       : safeguarding && onMultiple ? 'Select or drop up to 3 separate certificates. Each has its own dates and reference. Up to 8 MB per file, 8 MB total when saving together.'
-      : 'PDF, image or Office document, up to 8 MB.';
+      : paired() ? 'Choose or drop 1 or 2 files for this document. They share the same dates and reference. Up to 8 MB combined.' : 'PDF, image or Office document, up to 8 MB.';
     const reference = form.controls.reference.closest('.field').querySelector('label');
     reference.textContent = type === 'Driver Badge' ? 'Driver Licence No'
       : type === 'Driving Licence' ? 'Driving Licence number (5)' : 'Reference / number';
@@ -393,14 +419,18 @@ UI.documentUpload = function (form, entityType, getType, existingDoc, onStateCha
     if (form.controls.vehicle_registration) form.controls.vehicle_registration.closest('.field').hidden = !['Vehicle Licence', 'Vehicle Insurance'].includes(type) && !form.controls.vehicle_registration.value;
   };
   autoBtn.onclick = async () => {
-    if (!selectedFile || reading) return;
+    if (!(selectedFile || selectedSecondFile || (paired() && existingDoc && hasFile(existingDoc))) || reading) return;
     const currentVersion = version, before = form.read(), typeBefore = getType();
     reading = true; autoBtn.disabled = true; onStateChange();
     autoBtn.textContent = 'Reading document…';
     feedback.textContent = 'Reading the document. This can take up to 45 seconds.';
     try {
       const fd = new FormData();
-      fd.append('file', selectedFile); fd.append('entity_type', entityType); fd.append('doc_type', typeBefore);
+      if (selectedFile) fd.append('file', selectedFile);
+      if (paired() && selectedSecondFile) fd.append('second_file', selectedSecondFile);
+      if (paired() && existingDoc) fd.append('document_id', existingDoc.id);
+      if (removeSecond.checked) fd.append('remove_second_file', '1');
+      fd.append('entity_type', entityType); fd.append('doc_type', typeBefore);
       const result = await api.form('/api/documents/auto-input', fd);
       if (currentVersion !== version || getType() !== typeBefore) return;
       const conflicts = [];
@@ -427,7 +457,7 @@ UI.documentUpload = function (form, entityType, getType, existingDoc, onStateCha
       form.controls.status.value = 'needs_review'; autoResult = { issues: [error.message] };
       feedback.textContent = 'Auto input needs attention: ' + error.message;
     } finally {
-      reading = false; autoBtn.disabled = !selectedFile; autoBtn.textContent = 'Auto input'; onStateChange();
+      reading = false; refresh(); autoBtn.textContent = 'Auto input'; onStateChange();
     }
   };
   const read = () => {
@@ -435,9 +465,10 @@ UI.documentUpload = function (form, entityType, getType, existingDoc, onStateCha
     if (autoResult) values.notes = [values.notes, '[Auto input: ' + (values.status === 'needs_review' ? 'Review required' : 'Reviewed by user') + ']', ...autoResult.issues].filter(Boolean).join('\n');
     return values;
   };
-  return { node: h('div', { class: 'field', style: 'margin-top:12px' }, label, zone, help,
+  return { node: h('div', { class: 'field', style: 'margin-top:12px' }, label, zone, help, secondArea,
     h('div', { style: 'margin-top:10px' }, autoBtn), feedback), choose, refresh, read,
-    get file() { return selectedFile; }, get reading() { return reading; } };
+    get file() { return selectedFile; }, get secondFile() { return paired() ? selectedSecondFile : null; },
+    get removeSecondFile() { return removeSecond.checked; }, get reading() { return reading; } };
 };
 
 UI.documentEditor = function (entityType, entityId, doc, onChange) {
@@ -500,7 +531,8 @@ UI.documentEditor = function (entityType, entityId, doc, onChange) {
       : !(doc && hasFile(doc) && String(doc.mime_type || '').startsWith('image/')))) {
       toast('Please upload an image for the selfie picture.', 'err'); return;
     }
-    if (active.reduce((size, slot) => size + (slot.upload.file?.size || 0), 0) > 8 * 1024 * 1024) {
+    if (firstUpload.secondFile && !firstUpload.file && !(doc && hasFile(doc))) { toast('Attach the first file before adding a second file.', 'err'); return; }
+    if (active.reduce((size, slot) => size + (slot.upload.file?.size || 0) + (slot.upload.secondFile?.size || 0), 0) > 8 * 1024 * 1024) {
       toast('The combined upload limit is 8 MB. Upload larger certificates separately.', 'err'); return;
     }
     saving = true; stateChanged(); saveBtn.textContent = 'Saving…';
@@ -513,12 +545,20 @@ UI.documentEditor = function (entityType, entityId, doc, onChange) {
         await api.form('/api/documents/batch', fd);
       } else {
         const values = firstUpload.read();
-        if (doc && !firstUpload.file) await api.put('/api/documents/' + doc.id, values);
+        if (doc && ['DBS', 'Driver Badge'].includes(type)) {
+          const fd = new FormData();
+          for (const name in values) fd.append(name, values[name] ?? '');
+          if (firstUpload.file) fd.append('file', firstUpload.file);
+          if (firstUpload.secondFile) fd.append('second_file', firstUpload.secondFile);
+          if (firstUpload.removeSecondFile) fd.append('remove_second_file', '1');
+          await api.request('PUT', '/api/documents/' + doc.id, fd, true);
+        } else if (doc && !firstUpload.file) await api.put('/api/documents/' + doc.id, values);
         else {
           const fd = new FormData();
           fd.append('entity_type', entityType); fd.append('entity_id', entityId);
           for (const name in values) fd.append(name, values[name] ?? '');
           if (firstUpload.file) fd.append('file', firstUpload.file);
+          if (firstUpload.secondFile) fd.append('second_file', firstUpload.secondFile);
           await api.form('/api/documents', fd);
           if (doc) await api.del('/api/documents/' + doc.id);
         }

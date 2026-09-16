@@ -605,6 +605,8 @@ async function documentsFor(org, type, id) {
   const rows = await all(
     `SELECT id, organisation_id, entity_type, entity_id, doc_type, reference, vehicle_registration, file_name, stored_name,
        mime_type, size, upload_date, issue_date, expiry_date, status, notes, uploaded_by, created_at,
+       second_file_name, second_mime_type, second_size,
+       CASE WHEN second_file_data IS NULL THEN 0 ELSE 1 END AS has_second_file,
        CASE WHEN file_data IS NULL THEN 0 ELSE 1 END AS has_file
      FROM documents WHERE organisation_id = ? AND entity_type = ? AND entity_id = ?
      ORDER BY doc_type, expiry_date DESC`,
@@ -637,7 +639,8 @@ const DOC_PARENT = { child: 'children', staff: 'staff', contract: 'contracts', v
 /** One document's details, without the file bytes. */
 function documentSummary(org, id) {
   return get(`SELECT id, entity_type, entity_id, doc_type, reference, vehicle_registration, file_name, mime_type, size,
-      upload_date, issue_date, expiry_date, status, notes, uploaded_by,
+      upload_date, issue_date, expiry_date, status, notes, uploaded_by, second_file_name, second_mime_type, second_size,
+      CASE WHEN second_file_data IS NULL THEN 0 ELSE 1 END AS has_second_file,
       CASE WHEN file_data IS NULL THEN 0 ELSE 1 END AS has_file
     FROM documents WHERE id = ? AND organisation_id = ?`, [id, org]);
 }
@@ -650,13 +653,28 @@ route('GET', '/api/documents', async ctx => {
 });
 
 route('POST', '/api/documents/auto-input', async ctx => {
-  const file = (ctx.files || [])[0];
+  const files = [...(ctx.files || [])];
+  if (ctx.body.document_id && ['DBS', 'Driver Badge'].includes(ctx.body.doc_type)) {
+    const existing = await owned('documents', Number(ctx.body.document_id), ctx.org);
+    if (!existing) return H.error(ctx.res, 'Document not found', 404);
+    if (!files.some(file => file.field === 'file')) {
+      const data = existing.file_data ? Buffer.from(existing.file_data, 'base64')
+        : existing.stored_name && fs.existsSync(path.join(UPLOAD_DIR, existing.stored_name)) ? fs.readFileSync(path.join(UPLOAD_DIR, existing.stored_name)) : null;
+      if (data) files.unshift({ field: 'file', filename: existing.file_name, mime: existing.mime_type, data });
+    }
+    if (!files.some(file => file.field === 'second_file') && ctx.body.remove_second_file !== '1' && existing.second_file_data) {
+      files.push({ field: 'second_file', filename: existing.second_file_name, mime: existing.second_mime_type, data: Buffer.from(existing.second_file_data, 'base64') });
+    }
+  }
+  const file = files[0];
   if (!file?.data?.length) return H.error(ctx.res, 'Choose or drop a document before using Auto input.');
   if (file.data.length > MAX_UPLOAD_BYTES) return H.error(ctx.res, 'The file limit is 8 MB.');
+  if (files.length > (['DBS', 'Driver Badge'].includes(ctx.body.doc_type) ? 2 : 1)) return H.error(ctx.res, 'This document type does not support that many files.');
+  if (files.some(file => !file.data?.length) || files.reduce((size, file) => size + file.data.length, 0) > MAX_UPLOAD_BYTES) return H.error(ctx.res, 'The combined upload limit is 8 MB.');
   const types = compliance.DOC_TYPES[ctx.body.entity_type];
   if (!types) return H.error(ctx.res, 'A valid document record type is required.');
   try {
-    H.json(ctx.res, await require('./services/document-input').readDocument(file, types, ctx.body.doc_type));
+    H.json(ctx.res, await require('./services/document-input').readDocument(files, types, ctx.body.doc_type));
   } catch (error) { H.error(ctx.res, error.message, 422); }
 });
 
@@ -708,7 +726,9 @@ route('POST', '/api/documents', async ctx => {
   if (f.doc_type === 'Selfie picture' && (!file?.data?.length || !String(file.mime || '').startsWith('image/'))) {
     return H.error(ctx.res, 'Please upload an image for the selfie picture.');
   }
-  if ((ctx.files || []).length > 1) return H.error(ctx.res, 'Use the separate certificate fields for multiple safeguarding uploads.');
+  const secondFile = (ctx.files || [])[1];
+  if ((ctx.files || []).length > (['DBS', 'Driver Badge'].includes(f.doc_type) ? 2 : 1)) return H.error(ctx.res, 'DBS and Driver Badge allow up to 2 files. Use the separate fields for safeguarding certificates.');
+  if ((ctx.files || []).some(file => !file.data?.length) || (ctx.files || []).reduce((total, file) => total + file.data.length, 0) > MAX_UPLOAD_BYTES) return H.error(ctx.res, 'The combined upload limit is 8 MB.');
   if (f.doc_type === 'Safeguarding Training' && !file?.data?.length) return H.error(ctx.res, 'Attach a file for the safeguarding certificate.');
   if (file && file.data && file.data.length) {
     if (file.data.length > MAX_UPLOAD_BYTES) {
@@ -723,9 +743,12 @@ route('POST', '/api/documents', async ctx => {
     entity_type: entityType, entity_id: entityId, doc_type: f.doc_type || 'Other', reference: f.reference,
     vehicle_registration: f.vehicle_registration,
     file_name: fileName, mime_type: mime, size, file_data: fileData,
+    second_file_name: secondFile?.filename, second_mime_type: secondFile?.mime, second_size: secondFile?.data.length,
+    second_file_data: secondFile?.data.toString('base64'),
     issue_date: f.issue_date, expiry_date: f.expiry_date, status: f.status || 'valid', notes: f.notes,
     uploaded_by: ctx.user.name,
   }, ['entity_type', 'entity_id', 'doc_type', 'reference', 'vehicle_registration', 'file_name', 'mime_type', 'size', 'file_data',
+    'second_file_name', 'second_mime_type', 'second_size', 'second_file_data',
     'issue_date', 'expiry_date', 'status', 'notes', 'uploaded_by'], null, ctx.org);
   await audit.logAction(ctx.user, entityType === 'staff' ? 'staff' : entityType + 's', entityId, null, 'document',
     `Added document ${f.doc_type}${f.expiry_date ? ' expiring ' + f.expiry_date : ''}`);
@@ -736,11 +759,28 @@ route('PUT', '/api/documents/:id', async ctx => {
   const id = Number(ctx.params.id);
   const before = await owned('documents', id, ctx.org);
   if (!before) return H.error(ctx.res, 'Document not found', 404);
+  const type = ctx.body.doc_type || before.doc_type, paired = ['DBS', 'Driver Badge'].includes(type);
+  const files = ctx.files || [], firstFile = files.find(file => file.field === 'file'), secondFile = files.find(file => file.field === 'second_file');
+  if (files.length > (paired ? 2 : 1) || files.some(file => !['file', 'second_file'].includes(file.field) || !file.data?.length) || (secondFile && !paired)) return H.error(ctx.res, 'This document type does not support those files.');
+  const removeSecond = !paired || String(ctx.body.remove_second_file) === '1';
+  if ((firstFile?.data.length || before.size || 0) + (secondFile?.data.length || (removeSecond ? 0 : before.second_size || 0)) > MAX_UPLOAD_BYTES) return H.error(ctx.res, 'The combined upload limit is 8 MB.');
+  const patch = { ...ctx.body };
+  const columns = ['doc_type', 'reference', 'vehicle_registration', 'issue_date', 'expiry_date', 'status', 'notes'];
+  if (firstFile) {
+    Object.assign(patch, { file_name: firstFile.filename, mime_type: firstFile.mime, size: firstFile.data.length, file_data: firstFile.data.toString('base64'), stored_name: null });
+    columns.push('file_name', 'mime_type', 'size', 'file_data', 'stored_name');
+  }
+  if (secondFile || removeSecond) {
+    Object.assign(patch, { second_file_name: secondFile?.filename || null, second_mime_type: secondFile?.mime || null,
+      second_size: secondFile?.data.length || null, second_file_data: secondFile?.data.toString('base64') || null });
+    columns.push('second_file_name', 'second_mime_type', 'second_size', 'second_file_data');
+  }
+  if (secondFile && !(firstFile || before.file_data || before.stored_name)) return H.error(ctx.res, 'Attach the first file before adding a second file.');
   if ((ctx.body.doc_type || before.doc_type) === 'Selfie picture' &&
-      (!(before.file_data || before.stored_name) || !String(before.mime_type || '').startsWith('image/'))) {
+      (!(firstFile || before.file_data || before.stored_name) || !String(firstFile?.mime || before.mime_type || '').startsWith('image/'))) {
     return H.error(ctx.res, 'Please upload an image for the selfie picture.');
   }
-  await update('documents', id, ctx.body, ['doc_type', 'reference', 'vehicle_registration', 'issue_date', 'expiry_date', 'status', 'notes'], null, ctx.org);
+  await update('documents', id, patch, columns, null, ctx.org);
   await audit.logAction(ctx.user, before.entity_type === 'staff' ? 'staff' : before.entity_type + 's', before.entity_id, null,
     'document', `Updated document ${before.doc_type}`);
   H.json(ctx.res, await documentSummary(ctx.org, id));
@@ -761,6 +801,10 @@ route('DELETE', '/api/documents/:id', async ctx => {
 route('GET', '/api/documents/:id/file', async ctx => {
   const doc = await owned('documents', Number(ctx.params.id), ctx.org);
   if (!doc) return H.error(ctx.res, 'Document not found', 404);
+  if (ctx.query.part === '2') {
+    if (!doc.second_file_data) return H.error(ctx.res, 'No second file attached', 404);
+    doc.file_data = doc.second_file_data; doc.file_name = doc.second_file_name; doc.mime_type = doc.second_mime_type; doc.stored_name = null;
+  }
   const headers = {
     'Content-Type': doc.mime_type || 'application/octet-stream',
     'Content-Disposition': `inline; filename="${(doc.file_name || 'document').replace(/"/g, '')}"`,

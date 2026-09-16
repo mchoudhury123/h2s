@@ -111,7 +111,7 @@ function extractFields(text, types, selectedType, warnings = []) {
 
 function readDocument(file, types, selectedType) {
   return new Promise((resolve, reject) => {
-    const worker = new Worker(require.resolve('./document-reader'), { workerData: { file, types, selectedType } });
+    const worker = new Worker(require.resolve('./document-reader'), { workerData: { files: Array.isArray(file) ? file : [file], types, selectedType } });
     const timer = setTimeout(() => { worker.terminate(); reject(new Error('Document reading timed out. Try a smaller or clearer file, or enter the details manually.')); }, 45000);
     worker.once('message', result => { clearTimeout(timer); worker.terminate(); result.error ? reject(new Error(result.error)) : resolve(result); });
     worker.once('error', error => { clearTimeout(timer); reject(error); });

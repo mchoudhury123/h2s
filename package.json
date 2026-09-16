@@ -11,6 +11,7 @@
     "db:push": "node --experimental-sqlite --no-warnings scripts/db-push.js",
     "test": "node --experimental-sqlite --no-warnings scripts/test-rules.js",
     "test:documents": "node --experimental-sqlite --no-warnings scripts/test-document-input.js",
+    "test:attachments": "node --experimental-sqlite --no-warnings scripts/test-document-attachments.js",
     "test:cancellations": "node --experimental-sqlite --no-warnings scripts/test-cancelled-runs.js",
     "test:performance": "node --experimental-sqlite --no-warnings scripts/check-performance.js && node --no-warnings scripts/check-ui-performance.js",
     "test:isolation": "node --experimental-sqlite --no-warnings scripts/test-isolation.js",

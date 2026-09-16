@@ -2,8 +2,7 @@
 const { workerData, parentPort } = require('worker_threads');
 const { extractFields } = require('./document-input');
 
-async function read() {
-  const { file, types, selectedType } = workerData;
+async function read(file) {
   const buffer = Buffer.from(file.data);
   const warnings = [];
   let text = '', ocr;
@@ -49,8 +48,12 @@ async function read() {
       text = (await require('mammoth').extractRawText({ buffer })).value;
     } else if (/\.txt$/i.test(file.filename)) text = buffer.toString('utf8');
     else throw new Error('Auto input supports PDF, JPG, PNG, WebP, TIFF, BMP, DOCX and text files. Convert this file to PDF or enter its details manually.');
-    return extractFields(text, types, selectedType, warnings);
+    return { text, warnings };
   } finally { if (ocr) await ocr.terminate(); }
 }
 
-read().then(result => parentPort.postMessage(result)).catch(error => parentPort.postMessage({ error: /password/i.test(error.message) ? 'This PDF is password protected. Upload an unlocked copy.' : error.message }));
+(async () => {
+  const results = [];
+  for (const file of workerData.files) results.push(await read(file));
+  return extractFields(results.map(result => result.text).join('\n'), workerData.types, workerData.selectedType, results.flatMap(result => result.warnings));
+})().then(result => parentPort.postMessage(result)).catch(error => parentPort.postMessage({ error: /password/i.test(error.message) ? 'This PDF is password protected. Upload an unlocked copy.' : error.message }));

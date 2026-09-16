@@ -217,6 +217,7 @@ const TABLES = [
     -- on a host with no writable disk, and so one backup covers everything.
     -- stored_name is only used by older self-hosted installations.
     file_data TEXT,
+    second_file_name TEXT, second_mime_type TEXT, second_size {{INT}}, second_file_data TEXT,
     upload_date TEXT NOT NULL DEFAULT {{TODAY}},
     issue_date TEXT, expiry_date TEXT,
     status TEXT NOT NULL DEFAULT 'valid' CHECK (status IN ('valid','invalid','superseded','needs_review')),
