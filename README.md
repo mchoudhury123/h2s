@@ -138,7 +138,7 @@ Three things had to change for this to work, and all three are done:
 ### Tests
 
 ```
-npm test                 # 112 business-rule tests
+npm test                 # 176 business-rule tests
 npm run test:performance  # schema checks, dropdown queries/cache and button responsiveness
 npm run test:isolation   # 92 checks that one firm cannot reach another's data
 npm run test:auth        # registration, sign-in and separation, in a browser

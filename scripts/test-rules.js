@@ -112,6 +112,21 @@ async function main() {
   is(ahmed.totals.already_paid, 75, 'the immediate payment is recognised');
   is(ahmed.totals.amount_due, 0, 'nothing further is due — no duplicate payment');
   is(ahmed.lines.filter(l => l.kind === 'already_paid').length, 1, 'the deduction appears as its own traceable line');
+  is(ahmed.lines.find(l => l.kind === 'already_paid').contract_code, 'TEST 1', 'the payment names the contract it was for');
+
+  section('4b. A wage view of one contract only deducts payments for that contract');
+  const otherContractId = await insert('contracts', {
+    code: 'TEST 2', school_id: schoolId, status: 'active', start_date: '2026-09-01', days_of_week: '1,2,3,4,5',
+    income_per_day: 80, driver_pay_per_day: 50, pa_pay_per_day: 0, requires_pa: 0,
+  }, ['code', 'school_id', 'status', 'start_date', 'days_of_week', 'income_per_day', 'driver_pay_per_day', 'pa_pay_per_day', 'requires_pa'], null, orgId);
+  const byOther = await wages.calculateWages(orgId, { ...WEEK, contract_id: otherContractId, include_zero: true });
+  is(byOther.results.some(r => r.staff.name === 'Ahmed Cover'), false, 'Ahmed does not appear under a contract he never worked');
+  is(byOther.results.every(r => r.totals.amount_due >= 0), true, 'nobody is shown owing money on that contract');
+  const byOwn = await wages.calculateWages(orgId, { ...WEEK, contract_id: contractId, include_zero: true });
+  const ahmedOwn = byOwn.results.find(r => r.staff.name === 'Ahmed Cover');
+  is(ahmedOwn.totals.already_paid, 75, 'under the contract he covered, the payment is still deducted');
+  is(ahmedOwn.totals.amount_due, 0, 'and nothing further is due there');
+  await run('DELETE FROM contracts WHERE organisation_id = ? AND id = ?', [orgId, otherContractId]);
 
   // ---------- 5. absence with no cover ----------
   section('5. Staff absence with no cover stops the journey');

@@ -104,19 +104,30 @@ async function calculateWages(orgId, opts) {
     }
   }
 
-  // Payments already made in the period, so nothing is paid twice.
-  const paidRows = await all(`SELECT p.*, s.first_name || ' ' || s.last_name AS staff_name
-    FROM payments p JOIN staff s ON s.id = p.staff_id
+  // Payments already made in the period, so nothing is paid twice. A payment
+  // for cover belongs to the contract that was covered. A payroll payment
+  // covers everything the person did, so it belongs to no single contract.
+  const paidRows = await all(`SELECT p.*, s.first_name || ' ' || s.last_name AS staff_name,
+      e.contract_id AS paid_contract_id, c.code AS paid_contract_code
+    FROM payments p
+    JOIN staff s ON s.id = p.staff_id
+    LEFT JOIN exceptions e ON e.id = p.exception_id AND e.organisation_id = p.organisation_id
+    LEFT JOIN contracts c ON c.id = e.contract_id AND c.organisation_id = p.organisation_id
     WHERE p.organisation_id = ? AND p.work_date >= ? AND p.work_date <= ?`, [orgId, from, to]);
   for (const p of paidRows) {
+    // A view of one contract only deducts payments for work on that contract.
+    // Deducting the rest would show someone owing money for a route they
+    // were never paid on.
+    if (opts.contract_id && p.paid_contract_id !== opts.contract_id) continue;
     const e = entry(p.staff_id);
     if (!e) continue;
     const label = p.source === 'cover_immediate' ? 'Cover paid immediately'
       : p.source === 'payroll' ? 'Paid through payroll'
         : (p.note || 'Payment already made');
     e.lines.push({
-      kind: 'already_paid', date: p.work_date, leg: null, contract_id: null, contract_code: null,
-      description: `${label} on ${ukDate(p.paid_date)}${p.reference ? ' (ref ' + p.reference + ')' : ''}`,
+      kind: 'already_paid', date: p.work_date, leg: null,
+      contract_id: p.paid_contract_id || null, contract_code: p.paid_contract_code || null,
+      description: `${label} on ${ukDate(p.paid_date)}${p.paid_contract_code ? ' for ' + p.paid_contract_code : ''}${p.reference ? ' (ref ' + p.reference + ')' : ''}`,
       rate: null, amount: -round2(p.amount), payment_id: p.id, source: p.source,
     });
   }
