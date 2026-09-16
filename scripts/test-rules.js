@@ -139,7 +139,7 @@ async function main() {
   is(AM(await day('2026-09-11')).status, 'not_operated', 'AM does not run');
   is(PM(await day('2026-09-11')).reason, 'School closed', 'PM reason is the closure');
   is((await wagesFor('John Normal')).totals.amount_due, 240, 'no pay for a closed day');
-  is((await finance.profitability(orgId, { ...WEEK, contract_id: contractId })).rows[0].income, 400, 'income drops to 4 days');
+  is((await finance.profitability(orgId, { ...WEEK, contract_id: contractId })).rows[0].income, 500, 'school closure retains council income');
   await run('DELETE FROM exceptions WHERE organisation_id = ? AND id = ?', [orgId, closureId]);
 
   // ---------- 8. pay override ----------
@@ -160,12 +160,46 @@ async function main() {
   is(p.journeys_scheduled, 10, '10 journeys scheduled');
 
   section('9b. Profitability reacts to a cancelled journey');
-  const cancelId = await addEx({ date: '2026-09-07', type: 'journey_cancelled', leg: 'AM', contract_id: contractId });
+  const cancelId = await addEx({ date: '2026-09-07', type: 'journey_cancelled', leg: 'AM', contract_id: contractId, note: 'Illness' });
   p = (await finance.profitability(orgId, { ...WEEK, contract_id: contractId })).rows[0];
-  is(p.income, 450, 'income loses half a day');
+  is(p.income, 500, 'cancelled run retains full council income');
   is(p.driver_cost, 270, 'driver cost loses half a day');
+  is(p.pa_cost, 180, 'PA is not paid for the cancelled run');
+  is(p.gross_profit, 0, 'saved staff costs increase profit without reducing council income');
   is(p.journeys_operated, 9, 'nine journeys operated out of ten scheduled');
+  is((await wagesFor('John Normal')).totals.amount_due, 270, 'cancelled AM run is excluded from payroll');
+  const cancelledDay = await day('2026-09-07');
+  is(AM(cancelledDay).driver.pay, 0, 'cancelled run has zero driver pay');
+  is(AM(cancelledDay).driver.rate, 30, 'original driver rate remains visible');
+  is(PM(cancelledDay).driver.pay, 30, 'other run is still paid');
+  is(AM(cancelledDay).reason, 'Journey cancelled — Illness', 'cancellation reason is retained');
+  const cancellationDashboard = await require('../server/services/dashboard').dashboard(orgId, '2026-09-07');
+  is(cancellationDashboard.today.cancellations, { count: 1, council_income: 50, driver_pay_saved: 30 }, 'dashboard shows cancelled run, retained council income and saved pay');
+  is(cancellationDashboard.today.cancelled_runs[0].label, AM(cancelledDay).label, 'dashboard identifies the cancelled run');
+  is(cancellationDashboard.finance.today.income, 100, 'dashboard retains council income');
+  is(cancellationDashboard.finance.today.driver_cost, 30, 'dashboard removes cancelled driver pay');
+  is(cancellationDashboard.finance.today.gross_profit, 40, 'dashboard profit reflects the saved costs');
+  await run("UPDATE contracts SET pay_basis = 'per_day', income_basis = 'per_day' WHERE organisation_id = ? AND id = ?", [orgId, contractId]);
+  const fixedCancelledDay = await day('2026-09-07');
+  is(AM(fixedCancelledDay).driver.pay, 0, 'fixed day pay does not pay an explicitly cancelled run');
+  is(PM(fixedCancelledDay).driver.pay, 30, 'fixed day pay retains the remaining run share');
+  is(fixedCancelledDay.income, 100, 'fixed day council income is retained');
+  is((await wagesFor('John Normal')).totals.amount_due, 270, 'fixed day payroll deducts cancelled run share');
+  const wholeDayCancellation = await addEx({ date: '2026-09-08', type: 'contract_cancelled', leg: 'DAY', contract_id: contractId, note: 'School closure' });
+  const fullyCancelled = await day('2026-09-08');
+  is(fullyCancelled.cancelled_trips, 2, 'full day cancellation counts each run');
+  is(fullyCancelled.income, 100, 'fully cancelled day retains fixed council income');
+  is(fullyCancelled.trips.reduce((total, trip) => total + trip.driver.pay, 0), 0, 'fully cancelled day has no driver pay');
+  is(fullyCancelled.other_costs, 0, 'cancelled full day has no operating costs');
+  await run('DELETE FROM exceptions WHERE organisation_id = ? AND id = ?', [orgId, wholeDayCancellation]);
+  await run("UPDATE contracts SET pay_basis = 'per_journey', income_basis = 'per_journey' WHERE organisation_id = ? AND id = ?", [orgId, contractId]);
+  const cancelledCover = await addEx({ date: '2026-09-07', type: 'staff_absence', leg: 'DAY', contract_id: contractId, role: 'driver', cover_staff_id: coverId, cover_pay: 70 });
+  is((await wagesFor('Ahmed Cover')).totals.amount_due, 35, 'cover pay loses the cancelled half of the agreed day rate');
+  is((await finance.expectedDaily(orgId, '2026-09-07')).driver_cost, 35, 'dashboard cover cost matches payroll after cancellation');
+  await run('DELETE FROM exceptions WHERE organisation_id = ? AND id = ?', [orgId, cancelledCover]);
   await run('DELETE FROM exceptions WHERE organisation_id = ? AND id = ?', [orgId, cancelId]);
+  is((await wagesFor('John Normal')).totals.amount_due, 300, 'undoing cancellation restores driver pay');
+  is((await finance.expectedDaily(orgId, '2026-09-07')).gross_profit, -10, 'undoing cancellation restores normal profit');
 
   // ---------- 10. compliance traffic lights ----------
   section('10. Compliance traffic lights are calculated, never stored');
@@ -332,6 +366,14 @@ async function main() {
   const lateFriday = await day('2026-09-18');
   is(trip(lateFriday, 3).driver_rate, 45, 'the named rate wins over the share of the day rate');
   is(trip(lateFriday, 3).income_value, 80, 'the named income wins too');
+  const cancelledLateRun = await addEx({ date: '2026-09-18', type: 'journey_cancelled', leg: 'PM', contract_id: contractId, trip_seq: 3, note: 'Vehicle breakdown' });
+  const lateCancelled = await day('2026-09-18');
+  is(trip(lateCancelled, 3).driver.pay, 0, 'named journey pay is zero after cancellation');
+  is(trip(lateCancelled, 3).driver_rate, 45, 'cancelled journey preserves its named driver rate');
+  is(trip(lateCancelled, 3).council_income, 80, 'cancelled journey retains its named council income');
+  is(lateCancelled.income, 180, 'custom journey income remains included in daily council revenue');
+  is(trip(lateCancelled, 2).status, 'operated', 'cancelling a numbered journey leaves another PM journey running');
+  await run('DELETE FROM exceptions WHERE organisation_id = ? AND id = ?', [orgId, cancelledLateRun]);
   is((await wagesFor('John Normal', { from: '2026-09-14', to: '2026-09-18' })).totals.amount_due, 345, 'the week pays five days plus the 45 swimming run');
 
   section('14d. An effective date never rewrites what already happened');
@@ -420,7 +462,7 @@ async function main() {
   const holiday = await addEx({ date: '2026-09-11', type: 'school_closed', leg: 'DAY', contract_id: contractId, note: 'Teacher training' });
   const closedFri = await day('2026-09-11');
   is(closedFri.trips.every(t => t.status === 'not_operated'), true, 'no journey runs');
-  is(closedFri.trips.every(t => t.reason === 'School closed'), true, 'the reason is the closure');
+  is(closedFri.trips.every(t => t.reason === 'School closed — Teacher training'), true, 'the closure reason is shown on each cancelled run');
   is(closedFri.children.every(c => c.scheduled), true, 'the children were still expected in — they are not absent');
   is(closedFri.trips.reduce((a, t) => a + t.children_absent, 0), 0, 'nobody is marked absent');
   is((await wagesFor('John Normal')).totals.amount_due, 240, 'and the day is not paid');

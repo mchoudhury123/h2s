@@ -29,15 +29,31 @@ async function dashboard(orgId, date) {
   const coversToday = [];
   for (const item of day.items) {
     for (const ex of item.exceptions.filter(e => e.type === 'staff_absence')) {
-      const rec = { contract_id: item.contract_id, code: item.code, role: ex.role, leg: ex.leg, staff_name: ex.staff_name, cover_name: ex.cover_name, cover_pay: ex.cover_pay, paid_immediately: !!ex.paid_immediately };
+      const rec = { contract_id: item.contract_id, code: item.code, role: ex.role, leg: ex.leg, staff_name: ex.staff_name, cover_name: ex.cover_name, cover_pay: ex.cover_pay, paid_immediately: !!ex.paid_immediately,
+        needs_cover: item.trips.some(trip => cal.appliesToTrip(ex, trip) && !trip.cancelled) };
       absencesToday.push(rec);
-      if (ex.cover_staff_id) coversToday.push(rec);
+      if (ex.cover_staff_id && item.trips.some(trip => cal.appliesToTrip(ex, trip) && trip.status === 'operated')) coversToday.push(rec);
     }
   }
   const childAbsencesToday = day.items.reduce((a, i) => a + i.exceptions.filter(e => e.type === 'child_absence').length, 0);
   const journeysToday = day.items.reduce((a, i) => a + i.planned_trips, 0);
   const journeysOperatingToday = day.items.reduce((a, i) => a + i.operated_trips, 0);
   const notOperatingToday = day.items.filter(i => !i.operated);
+  const cancelledRunsToday = day.items.flatMap(item => item.trips.filter(trip => trip.cancelled).map(trip => {
+    let saved = trip.driver.normal_staff_id && !trip.driver.absent ? trip.driver.rate : 0;
+    if (trip.driver.cover_staff_id) {
+      const absence = item.exceptions.find(exception => exception.id === trip.driver.exception_id);
+      const covered = item.trips.filter(run => cal.appliesToTrip(absence, run));
+      const standard = covered.reduce((total, run) => total + run.driver_rate, 0);
+      saved = absence.cover_pay != null ? Number(absence.cover_pay) * (standard > 0 ? trip.driver_rate / standard : 1 / covered.length) : trip.driver_rate;
+    }
+    return {
+      contract_id: item.contract_id, code: item.code, date: today, trip_seq: trip.seq,
+      label: trip.label, depart_time: trip.depart_time, reason: trip.reason,
+      driver_name: trip.driver.cover_name || trip.driver.normal_name,
+      council_income: trip.council_income, driver_pay_saved: cal.round2(saved),
+    };
+  }));
 
   // Staffing gaps. Pending contracts count too: they need staffing before their start date.
   const noDriver = await all(`SELECT c.id, c.code, c.name, c.status, c.start_date, s.name AS school_name
@@ -85,7 +101,7 @@ async function dashboard(orgId, date) {
   for (const c of noPa) alerts.push({ level: c.status === 'active' ? 'red' : 'amber', category: 'Staffing', text: `${c.code} requires a PA but none is assigned${c.status === 'pending' ? ` (starts ${c.start_date ? compliance.ukDate(c.start_date) : 'soon'})` : ''}`, href: `#/contracts/${c.id}` });
   for (const s of statuses.red) alerts.push({ level: 'red', category: 'Compliance', text: `${s.name} (${s.type.toUpperCase()}) — ${s.problems[0] || 'compliance failure'}`, href: `#/staff/${s.id}` });
   for (const d of expiring.filter(e => e.status === 'amber')) alerts.push({ level: 'amber', category: 'Document', text: `${d.entity_label}: ${d.doc_type} expires ${compliance.ukDate(d.expiry_date)} (${d.days_left} ${d.days_left === 1 ? 'day' : 'days'})`, href: linkForDoc(d) });
-  for (const a of absencesToday.filter(a => !a.cover_name)) alerts.push({ level: 'red', category: 'Cover needed', text: `${a.code}: ${a.role === 'driver' ? 'Driver' : 'PA'} ${a.staff_name || ''} absent ${a.leg} with no cover`, href: `#/calendar?contract=${a.contract_id}&date=${today}` });
+  for (const a of absencesToday.filter(a => a.needs_cover && !a.cover_name)) alerts.push({ level: 'red', category: 'Cover needed', text: `${a.code}: ${a.role === 'driver' ? 'Driver' : 'PA'} ${a.staff_name || ''} absent ${a.leg} with no cover`, href: `#/calendar?contract=${a.contract_id}&date=${today}` });
   for (const c of endingSoon) alerts.push({ level: 'amber', category: 'Contract', text: `${c.code} ends ${compliance.ukDate(c.end_date)}`, href: `#/contracts/${c.id}` });
   for (const c of noVehicle) alerts.push({ level: 'amber', category: 'Vehicle', text: `${c.code} has no vehicle recorded`, href: `#/contracts/${c.id}` });
   alerts.sort((a, b) => (a.level === b.level ? 0 : a.level === 'red' ? -1 : 1));
@@ -97,6 +113,12 @@ async function dashboard(orgId, date) {
       operating: operatingToday,
       journeys: journeysToday,
       journeys_operating: journeysOperatingToday,
+      cancelled_runs: cancelledRunsToday,
+      cancellations: {
+        count: cancelledRunsToday.length,
+        council_income: cal.round2(cancelledRunsToday.reduce((total, run) => total + run.council_income, 0)),
+        driver_pay_saved: cal.round2(cancelledRunsToday.reduce((total, run) => total + run.driver_pay_saved, 0)),
+      },
       not_operating: notOperatingToday.map(i => ({ contract_id: i.contract_id, code: i.code, reasons: i.summary })),
       staff_absences: absencesToday,
       covers: coversToday,

@@ -149,7 +149,6 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
   });
   const scheduledChildren = childStates.filter(ch => ch.scheduled);
 
-  const closed = ex.find(e => e.type === 'school_closed');
   const cancelledWholeDay = ex.find(e => e.type === 'contract_cancelled' && e.leg === 'DAY' && e.trip_seq == null);
 
   const trips = [];
@@ -162,13 +161,17 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
       children: [], children_travelling: 0, children_absent: 0, children_not_scheduled: 0,
     };
 
-    const closedHere = closed && appliesToTrip(closed, plan);
+    const closedHere = ex.find(e => e.type === 'school_closed' && appliesToTrip(e, plan));
     const cancelled = cancelledWholeDay
       || ex.find(e => e.type === 'contract_cancelled' && appliesToTrip(e, plan));
     const journeyCancelled = ex.find(e => e.type === 'journey_cancelled' && appliesToTrip(e, plan));
+    const cancellation = closedHere || cancelled || journeyCancelled;
+    t.cancelled = !!cancellation;
+    t.cancellation_exception_id = cancellation ? cancellation.id : null;
     if (closedHere) { t.status = 'not_operated'; t.reason = 'School closed'; }
     else if (cancelled) { t.status = 'not_operated'; t.reason = 'Contract not operating'; }
     else if (journeyCancelled) { t.status = 'not_operated'; t.reason = 'Journey cancelled'; }
+    if (cancellation && cancellation.note) t.reason += ' — ' + cancellation.note;
 
     // Who is on this trip, of the children expected in today.
     const riders = sched.tripChildren(plan, scheduledChildren);
@@ -231,11 +234,11 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
       const value = info.override
         ? round2(Number(info.override.amount) * (info.override.trip_seq != null ? 1 : share))
         : rate;
-      // A fixed day rate is paid whenever the day ran at all, however many of
-      // its journeys did. It is only lost when nothing ran.
-      const operatedForPay = c.pay_basis === 'per_day'
+      // Fixed day pay still covers normal non-operating trips when part of the
+      // day ran. An explicitly cancelled run is always unpaid.
+      const operatedForPay = !t.cancelled && (c.pay_basis === 'per_day'
         ? (dayRan && !isExtra)
-        : t.status === 'operated';
+        : t.status === 'operated');
       info.rate = round2(value);
       info.pay = (!info.absent && info.normal_staff_id && operatedForPay) ? round2(value) : 0;
     }
@@ -244,14 +247,26 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
   const operatedTrips = trips.filter(t => t.status === 'operated');
   const income = round2(
     c.income_basis === 'per_day'
-      ? ((closed || cancelledWholeDay || !planned.length) ? 0 : (c.income_per_day || 0))
-      : operatedTrips.reduce((a, t) => a + t.income_value, 0));
+      ? (!planned.length ? 0 : (c.income_per_day || 0))
+      : trips.filter(t => t.status === 'operated' || t.cancelled).reduce((a, t) => a + t.income_value, 0));
+  // Allocate a fixed council day rate once across its scheduled runs. Use
+  // cumulative rounding so the run amounts add up exactly to the day income.
+  const normalTrips = trips.filter(t => t.source !== 'extra');
+  let councilTotal = 0, normalIndex = 0;
+  for (const t of trips) {
+    if (c.income_basis === 'per_day') {
+      if (t.source === 'extra') { t.council_income = 0; continue; }
+      const cumulative = round2(income * (++normalIndex / normalTrips.length));
+      t.council_income = round2(cumulative - councilTotal); councilTotal = cumulative;
+    } else t.council_income = t.status === 'operated' || t.cancelled ? t.income_value : 0;
+  }
 
   const result = {
     contract_id: c.id, code: c.code, date, weekday,
     trips,
     planned_trips: planned.length,
     operated_trips: operatedTrips.length,
+    cancelled_trips: trips.filter(t => t.cancelled).length,
     children: childStates,
     exceptions: ex,
     notes: ex.filter(e => e.type === 'note'),
@@ -297,6 +312,19 @@ function staffForTrip(c, role, plan, ex) {
     }
   }
   return info;
+}
+
+/** Cover for cancelled runs is unpaid, including a cancelled part of a day. */
+function coverAmount(day, exception) {
+  const covered = day.trips.filter(t => appliesToTrip(exception, t));
+  if (!covered.some(t => t.status === 'operated')) return 0;
+  const rate = t => exception.role === 'driver' ? t.driver_rate : t.pa_rate;
+  const standard = covered.reduce((sum, t) => sum + rate(t), 0);
+  const payable = covered.filter(t => !t.cancelled);
+  if (exception.cover_pay == null) return round2(payable.reduce((sum, t) => sum + rate(t), 0));
+  const proportion = standard > 0 ? payable.reduce((sum, t) => sum + rate(t), 0) / standard
+    : covered.length ? payable.length / covered.length : 0;
+  return round2(Number(exception.cover_pay) * proportion);
 }
 
 function summarise(r) {
@@ -400,5 +428,5 @@ module.exports = {
   toDate, fmt, addDays, dow, today, dateRange, round2,
   contractLiveOn, contractOperatesOn,
   loadContracts, loadChildrenByContract, loadExceptions, loadContext,
-  evaluateContractDay, appliesToTrip, buildCalendar, dayOverview,
+  evaluateContractDay, appliesToTrip, coverAmount, buildCalendar, dayOverview,
 };

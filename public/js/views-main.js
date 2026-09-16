@@ -7,6 +7,7 @@ const Ops = window.Ops = {};
    ========================================================= */
 App.views.dashboard = async function () {
   const d = await api.get('/api/dashboard');
+  const coverNeeded = d.today.staff_absences.filter(absence => absence.needs_cover && !absence.cover_name).length;
   App.state.alertCount = d.alerts.filter(a => a.level === 'red').length;
   App.refreshNavCounts(d);
   const wrap = h('div');
@@ -31,7 +32,8 @@ App.views.dashboard = async function () {
   wrap.appendChild(h('div', { class: 'stats' },
     UI.stat({ label: 'Contracts today', value: d.today.operating, hint: d.today.not_operating.length ? `${d.today.not_operating.length} not running` : 'All running', href: '#/day/' + d.date, tone: d.today.not_operating.length ? 'amber' : '' }),
     UI.stat({ label: 'Journeys today', value: d.today.journeys, hint: d.today.journeys === d.today.journeys_operating ? 'All running' : `${d.today.journeys_operating} running`, href: '#/day/' + d.date, tone: d.today.journeys > d.today.journeys_operating ? 'amber' : '' }),
-    UI.stat({ label: 'Staff absences today', value: d.today.staff_absences.length, hint: d.today.covers.length ? `${d.today.covers.length} covered` : (d.today.staff_absences.length ? 'Cover needed' : 'None'), href: '#/day/' + d.date, tone: d.today.staff_absences.length > d.today.covers.length ? 'red' : (d.today.staff_absences.length ? 'amber' : '') }),
+    UI.stat({ label: 'Runs cancelled today', value: d.today.cancellations.count, hint: 'Council income retained', href: '#/day/' + d.date, tone: d.today.cancellations.count ? 'amber' : '' }),
+    UI.stat({ label: 'Staff absences today', value: d.today.staff_absences.length, hint: coverNeeded ? `${coverNeeded} need cover` : d.today.covers.length ? `${d.today.covers.length} covered` : (d.today.staff_absences.length ? 'Runs cancelled; no cover needed' : 'None'), href: '#/day/' + d.date, tone: coverNeeded ? 'red' : (d.today.staff_absences.length ? 'amber' : '') }),
     UI.stat({ label: 'Cover staff in use', value: d.today.covers.length, hint: 'Today', href: '#/day/' + d.date, tone: d.today.covers.length ? 'amber' : '' }),
     UI.stat({ label: 'Child absences today', value: d.today.child_absences, href: '#/day/' + d.date }),
     UI.stat({ label: 'Contracts missing staff', value: d.gaps.no_driver.length + d.gaps.no_pa.length, hint: `${d.gaps.no_driver.length} no driver · ${d.gaps.no_pa.length} no PA`, href: '#/contracts?gap=1', tone: (d.gaps.no_driver.length + d.gaps.no_pa.length) ? 'red' : 'green' }),
@@ -53,6 +55,22 @@ App.views.dashboard = async function () {
           UI.stat({ label: 'This month income', value: fmt.money0(f.month.income), hint: `Profit ${fmt.money0(f.month.gross_profit)} · ${fmt.pct(f.month.margin)}`, href: `#/finance?from=${f.month.from}&to=${f.month.to}` }),
           UI.stat({ label: 'Month staff cost', value: fmt.money0(f.month.driver_cost + f.month.pa_cost), hint: 'Calculated from journeys actually operated', href: '#/wages' })))));
   }
+
+  wrap.appendChild(h('div', { style: 'height:14px' }));
+  wrap.appendChild(UI.cardTight(`Runs cancelled today (${d.today.cancellations.count})`,
+    d.today.cancelled_runs.length ? h('div', null,
+      d.finance ? h('div', { class: 'stats', style: 'padding:14px' },
+        UI.stat({ label: 'Council income retained', value: fmt.money(d.today.cancellations.council_income) }),
+        UI.stat({ label: 'Driver pay saved', value: fmt.money(d.today.cancellations.driver_pay_saved), tone: 'green' })) : null,
+      UI.table([
+        { key: 'code', label: 'Contract', value: run => h('a', { href: '#/contracts/' + run.contract_id }, run.code) },
+        { key: 'label', label: 'Run' },
+        { key: 'driver_name', label: 'Driver' },
+        { key: 'reason', label: 'Reason' },
+        ...(d.finance ? [{ key: 'council_income', label: 'Council income', value: run => fmt.money(run.council_income) },
+          { key: 'driver_pay_saved', label: 'Driver pay saved', value: run => fmt.money(run.driver_pay_saved) }] : []),
+        { label: '', sortable: false, value: run => h('button', { class: 'btn xs', onclick: () => Ops.dayDialog(run.contract_id, d.date, () => Router.handle()) }, 'Manage run') },
+      ], d.today.cancelled_runs)) : UI.empty('No runs cancelled today.')));
 
   // --- alerts + today's operations side by side ---
   wrap.appendChild(h('div', { style: 'height:14px' }));
@@ -407,11 +425,11 @@ Ops.dayDialog = async function (contractId, date, onChange) {
           `${plural(t.children_travelling, 'child', 'children')} travelling`,
           t.children_not_scheduled ? ` · ${t.children_not_scheduled} not on this journey` : ''),
         h('span', { class: 'th-space' }),
-        t.source === 'extra'
-          ? h('button', { class: 'btn xs danger', onclick: () => remove(t.exception_id) }, 'Remove')
-          : (cancelled && cancelled.contract_id
+        h('div', { class: 'pill-row' },
+          (cancelled && cancelled.contract_id
             ? h('button', { class: 'btn xs', onclick: () => remove(cancelled.id) }, 'Undo cancellation')
-            : (cancelled ? null : h('button', { class: 'btn xs', onclick: () => post({ type: 'journey_cancelled', ...payloadOf(tripScope(day, t)) }) }, 'Journey did not run')))));
+            : (cancelled ? null : h('button', { class: 'btn xs danger', onclick: () => Ops.cancelRunDialog(c, date, day, tripScope(day, t), refresh, markDirty) }, 'Run cancelled'))),
+          t.source === 'extra' ? h('button', { class: 'btn xs', onclick: () => remove(t.exception_id) }, 'Remove extra journey') : null)));
     }
     jbox.appendChild(h('div', { class: 'pill-row', style: 'margin-top:9px' },
       h('button', { class: 'btn xs', onclick: () => Ops.extraJourneyDialog(c, date, refresh, markDirty) }, '+ Extra journey this date only'),
@@ -533,12 +551,12 @@ Ops.dayDialog = async function (contractId, date, onChange) {
             : h('span', { style: 'font-size:10px;margin-left:5px' }, '(school-wide)')))));
     }
     cbox.appendChild(h('div', { class: 'pill-row', style: 'margin-top:8px' },
-      h('button', { class: 'btn xs', onclick: () => post({ type: 'contract_cancelled', leg: 'DAY' }) }, 'Contract not operating'),
+      h('button', { class: 'btn xs danger', onclick: () => Ops.cancelRunDialog(c, date, day, ALL_DAY, refresh, markDirty) }, 'Cancel runs'),
       h('button', { class: 'btn xs', onclick: () => Ops.schoolClosureDialog(c, date, day, refresh, markDirty) }, 'School closed / holiday'),
       h('button', { class: 'btn xs', onclick: () => Ops.noteDialog(c, date, day, refresh, markDirty) }, 'Add note'),
       App.can('finance') ? h('button', { class: 'btn xs', onclick: () => Ops.payOverrideDialog(c, date, day, refresh, markDirty) }, 'Pay override') : null));
     cbox.appendChild(h('div', { style: 'margin-top:8px;font-size:12px;color:var(--text-faint)' },
-      'A school closure stops journeys being generated. It is never counted as a child absence.'));
+      'Cancelled runs and school closures retain council income. Staff are not paid for the cancelled runs.'));
     wrap.appendChild(cbox);
 
     // ---- everything recorded on this day ----
@@ -718,13 +736,39 @@ Ops.extraJourneyDialog = function (contract, date, refresh, markDirty) {
   };
 };
 
+Ops.cancelRunDialog = function (contract, date, day, scope, refresh, markDirty) {
+  const choices = scopeChoices(day);
+  const initial = choices.findIndex(choice => choice.trip_seq === scope.trip_seq && choice.leg === scope.leg);
+  const form = UI.form([
+    { name: 'which', label: 'Which runs', type: 'select', placeholder: false, options: choices.map((choice, index) => ({ value: index, label: choice.label })) },
+    { name: 'reason', label: 'Reason', type: 'select', placeholder: false, options: ['School closure', 'Illness', 'Child absent', 'Vehicle breakdown', 'Weather', 'Other'] },
+    { name: 'note', label: 'Additional details', type: 'textarea', span: 'full', rows: 3 },
+  ], { which: initial < 0 ? 0 : initial });
+  const saveBtn = h('button', { class: 'btn danger' }, 'Mark run cancelled');
+  const dlg = UI.modal({ title: `Cancel run — ${contract.code} ${fmt.date(date)}`,
+    body: h('div', null, h('div', { class: 'note-box', style: 'margin-bottom:12px' },
+      'Council contract income is retained. The driver and PA will not be paid for the selected runs, so the saved staff cost increases profit.'), form),
+    footer: [h('button', { class: 'btn', onclick: () => dlg.close() }, 'Back'), saveBtn] });
+  saveBtn.onclick = async () => {
+    if (!form.validate()) return;
+    const values = form.read(), chosen = choices[Number(values.which)] || ALL_DAY;
+    if (values.reason === 'Other' && !values.note.trim()) { toast('Enter a reason in Additional details.', 'err'); return; }
+    saveBtn.disabled = true;
+    try {
+      await api.post('/api/exceptions', { contract_id: contract.id, date, type: 'journey_cancelled',
+        ...payloadOf(chosen), note: [values.reason, values.note.trim()].filter(Boolean).join(': ') });
+      markDirty(); toast('Run cancelled — council income retained', 'ok'); dlg.close(); await refresh();
+    } catch (error) { toast(error.message, 'err'); saveBtn.disabled = false; }
+  };
+};
+
 Ops.schoolClosureDialog = function (contract, date, day, refresh, markDirty) {
   const choices = scopeChoices(day);
   const form = UI.form([
     { name: 'scope', label: 'Applies to', type: 'select', placeholder: false, options: [{ value: 'school', label: `The whole school (${contract.school_name}) — every contract` }, { value: 'contract', label: `This contract only (${contract.code})` }] },
     { name: 'which', label: 'Which journeys', type: 'select', placeholder: false, options: choices.map((c, i) => ({ value: i, label: c.label })) },
     { name: 'note', label: 'Reason', span: 'full', value: 'School closed' },
-    { name: 'repeat_days', label: 'Repeat for this many consecutive days', type: 'number', min: 1, max: 30, value: 1, help: 'Use for half-terms and holidays. No journeys are generated on those days, and no child is marked absent.' },
+    { name: 'repeat_days', label: 'Repeat for this many consecutive days', type: 'number', min: 1, max: 30, value: 1, help: 'Use for half-terms and holidays. Council income is retained, cancelled runs have no staff pay, and no child is marked absent.' },
   ], {});
   const saveBtn = h('button', { class: 'btn primary' }, 'Record closure');
   const dlg = UI.modal({ title: 'School closed — ' + fmt.date(date), body: form, footer: [h('button', { class: 'btn', onclick: () => dlg.close() }, 'Cancel'), saveBtn] });

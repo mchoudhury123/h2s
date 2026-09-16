@@ -1,5 +1,5 @@
 'use strict';
-// Profitability: income from operated journeys minus real staff cost minus other direct costs.
+// Profitability: council income from operated and cancelled runs minus real costs.
 const { all } = require('../db');
 const cal = require('./calendar');
 const wages = require('./wages');
@@ -106,9 +106,7 @@ async function expectedDaily(orgId, date) {
       if (t.pa && t.pa.pay) paCost += t.pa.pay;
     }
     for (const ce of day.exceptions.filter(e => e.type === 'staff_absence' && e.cover_staff_id)) {
-      const covered = day.trips.filter(t => cal.appliesToTrip(ce, t));
-      const standard = covered.reduce((a, t) => a + (ce.role === 'driver' ? t.driver_rate : t.pa_rate), 0);
-      const base = ce.cover_pay != null ? Number(ce.cover_pay) : standard;
+      const base = cal.coverAmount(day, ce);
       if (ce.role === 'driver') driverCost += base; else paCost += base;
     }
   }

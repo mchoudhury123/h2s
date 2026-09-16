@@ -63,7 +63,7 @@ async function calculateWages(orgId, opts) {
               kind: 'absence', date, leg: tripName(t), trip_seq: t.seq, trip_label: t.label,
               contract_id: c.id, contract_code: c.code, role,
               description: `${c.code} ${tripName(t)} — absent, not paid${info.cover_name ? ` (covered by ${info.cover_name})` : ''}`,
-              rate: 0, amount: 0,
+              rate: info.rate, amount: 0,
             });
           }
           if (!info.absent && info.normal_staff_id && info.pay === 0 && t.status !== 'operated') {
@@ -72,7 +72,7 @@ async function calculateWages(orgId, opts) {
               kind: 'not_operated', date, leg: tripName(t), trip_seq: t.seq, trip_label: t.label,
               contract_id: c.id, contract_code: c.code, role,
               description: `${c.code} ${tripName(t)} not operated — ${t.reason}`,
-              rate: 0, amount: 0,
+              rate: info.rate, amount: 0,
             });
           }
         }
@@ -87,7 +87,7 @@ async function calculateWages(orgId, opts) {
         const operated = covered.filter(t => t.status === 'operated');
         // Without an agreed figure, cover is worth what those journeys are worth.
         const standard = round2(covered.reduce((a, t) => a + (ce.role === 'driver' ? t.driver_rate : t.pa_rate), 0));
-        const amount = ce.cover_pay != null ? Number(ce.cover_pay) : standard;
+        const amount = cal.coverAmount(day, ce);
         const span = ce.trip_seq != null ? `trip ${ce.trip_seq}` : ce.leg === 'DAY' ? 'full day' : ce.leg;
         e.lines.push({
           kind: 'cover', date, leg: span, trip_seq: ce.trip_seq,
