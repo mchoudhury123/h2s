@@ -461,11 +461,7 @@ UI.documentUpload = function (form, entityType, getType, existingDoc, onStateCha
       reading = false; refresh(); autoBtn.textContent = 'Auto input'; onStateChange();
     }
   };
-  const read = () => {
-    const values = form.read();
-    if (autoResult) values.notes = [values.notes, '[Auto input: ' + (values.status === 'needs_review' ? 'Review required' : 'Reviewed by user') + ']', ...autoResult.issues].filter(Boolean).join('\n');
-    return values;
-  };
+  const read = () => form.read();
   return { node: h('div', { class: 'field', style: 'margin-top:12px' }, label, zone, help, secondArea,
     h('div', { style: 'margin-top:10px' }, autoBtn), feedback), choose, refresh, read,
     get file() { return selectedFile; }, get secondFile() { return paired() ? selectedSecondFile : null; },

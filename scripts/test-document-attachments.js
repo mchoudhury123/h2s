@@ -47,6 +47,7 @@ async function main() {
         UI.documentEditor('staff', staff, null, () => {});
         const select = document.querySelector('.modal [name=doc_type]');
         select.value = type; select.dispatchEvent(new Event('change', { bubbles: true }));
+        document.querySelector('.modal [name=notes]').value = 'Original note.';
         const transfer = new DataTransfer();
         transfer.items.add(new File([firstText], 'front.txt', { type: 'text/plain' }));
         transfer.items.add(new File(['Expiry date: 01/09/2028'], 'back.txt', { type: 'text/plain' }));
@@ -60,6 +61,8 @@ async function main() {
       assert.equal(document.has_second_file, 1);
       assert.equal(document.second_file_name, 'back.txt');
       assert.equal(document.expiry_date, '2028-09-01');
+      assert.equal(document.notes, 'Original note.');
+      assert.equal(document.status, 'needs_review');
       await page.evaluate(async ({ document: record, staff }) => {
         UI.documentEditor('staff', staff, record, () => {});
         const modal = document.querySelector('.modal');
