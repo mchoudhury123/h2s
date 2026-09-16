@@ -176,7 +176,14 @@ async function main() {
   const dbsId = await insert('documents', { entity_type: 'staff', entity_id: driverId, doc_type: 'DBS', expiry_date: cal.addDays(cal.today(), 400), status: 'valid' }, DOC, null, orgId);
   is((await compliance.staffCompliance(orgId, driverId, 'driver')).status, 'red', 'still red while the licence is missing');
   const licId = await insert('documents', { entity_type: 'staff', entity_id: driverId, doc_type: 'Driving Licence', expiry_date: cal.addDays(cal.today(), 400), status: 'valid' }, DOC, null, orgId);
+  is((await compliance.staffCompliance(orgId, driverId, 'driver')).status, 'red', 'selfie required even with customised document requirements');
+  const selfieId = await insert('documents', { entity_type: 'staff', entity_id: driverId, doc_type: 'Selfie picture', status: 'valid' }, DOC, null, orgId);
+  is((await compliance.staffCompliance(orgId, driverId, 'driver')).status, 'red', 'selfie record without an image does not satisfy verification');
+  await run('UPDATE documents SET file_data = ?, mime_type = ? WHERE organisation_id = ? AND id = ?', ['aW1hZ2U=', 'image/jpeg', orgId, selfieId]);
   is((await compliance.staffCompliance(orgId, driverId, 'driver')).status, 'green', 'green when all required documents are valid');
+  await run('UPDATE documents SET status = ? WHERE organisation_id = ? AND id = ?', ['needs_review', orgId, dbsId]);
+  is((await compliance.staffCompliance(orgId, driverId, 'driver')).status, 'amber', 'auto input review flag is persisted and shown in compliance');
+  await run('UPDATE documents SET status = ? WHERE organisation_id = ? AND id = ?', ['valid', orgId, dbsId]);
   await run('UPDATE documents SET expiry_date = ? WHERE organisation_id = ? AND id = ?', [cal.addDays(cal.today(), 20), orgId, dbsId]);
   is((await compliance.staffCompliance(orgId, driverId, 'driver')).status, 'amber', 'amber inside the 30-day warning window');
   await setSetting(orgId, 'amber_days', '10');
@@ -186,7 +193,58 @@ async function main() {
   is((await compliance.staffCompliance(orgId, driverId, 'driver')).status, 'red', 'red once the document has expired');
   await run('UPDATE documents SET expiry_date = ?, status = ? WHERE organisation_id = ? AND id = ?', [cal.addDays(cal.today(), 400), 'invalid', orgId, dbsId]);
   is((await compliance.staffCompliance(orgId, driverId, 'driver')).status, 'red', 'red when a document is marked invalid');
-  await run('DELETE FROM documents WHERE organisation_id = ? AND id IN (?,?)', [orgId, dbsId, licId]);
+  await setSetting(orgId, 'required_docs_driver', JSON.stringify(['Safeguarding Training']));
+  const safeguardingIds = [];
+  const safeguardingColumns = [...DOC, 'file_data', 'file_name'];
+  for (let index = 0; index < 3; index++) {
+    safeguardingIds.push(await insert('documents', { entity_type: 'staff', entity_id: driverId,
+      doc_type: 'Safeguarding Training', expiry_date: cal.addDays(cal.today(), 400), status: 'valid',
+      file_data: Buffer.from('certificate ' + index).toString('base64'), file_name: 'safeguarding-' + index + '.pdf',
+    }, safeguardingColumns, null, orgId));
+    const result = await compliance.staffCompliance(orgId, driverId, 'driver');
+    is(result.status, index < 2 ? 'red' : 'green', (index + 1) + ' safeguarding certificates: requires all 3');
+    is(result.items.find(item => item.doc_type === 'Safeguarding Training').uploaded_count, index + 1, 'safeguarding certificate count is shown');
+  }
+  await run('UPDATE documents SET status = ? WHERE organisation_id = ? AND id = ?', ['needs_review', orgId, safeguardingIds[1]]);
+  is((await compliance.staffCompliance(orgId, driverId, 'driver')).status, 'amber', 'each safeguarding certificate needs review independently');
+  await run('UPDATE documents SET expiry_date = ?, status = ? WHERE organisation_id = ? AND id = ?', [cal.addDays(cal.today(), -1), 'valid', orgId, safeguardingIds[1]]);
+  is((await compliance.staffCompliance(orgId, driverId, 'driver')).status, 'red', 'one expired safeguarding certificate flags compliance');
+  await run('UPDATE documents SET status = ? WHERE organisation_id = ? AND id = ?', ['superseded', orgId, safeguardingIds[1]]);
+  is((await compliance.staffCompliance(orgId, driverId, 'driver')).items.find(item => item.doc_type === 'Safeguarding Training').uploaded_count, 2, 'superseded safeguarding certificates do not count');
+  for (const id of safeguardingIds) await run('DELETE FROM documents WHERE organisation_id = ? AND id = ?', [orgId, id]);
+  const documentRoutes = require('../server/routes');
+  const documentRequest = async (method, path, body, files = [], query = {}) => {
+    const res = { writeHead(status) { this.status = status; }, end(value) { this.body = JSON.parse(value); } };
+    await documentRoutes.handle({ req: { method }, res, path, body, files, query,
+      user: { organisation_id: orgId, name: 'Document test' } });
+    return res;
+  };
+  const certificates = Array.from({ length: 3 }, (_, index) => ({ doc_type: 'Safeguarding Training', reference: 'BATCH-' + index,
+    issue_date: '2026-09-01', expiry_date: '2028-09-0' + (index + 1), status: index === 1 ? 'needs_review' : 'valid' }));
+  const certificateFiles = certificates.map((certificate, index) => ({ field: 'file_' + index,
+    filename: 'batch-' + index + '.txt', mime: 'text/plain', data: Buffer.from(certificate.reference) }));
+  const batchBody = { entity_type: 'staff', entity_id: driverId, documents: JSON.stringify(certificates) };
+  const badBatch = await documentRequest('POST', '/api/documents/batch', batchBody, certificateFiles.slice(0, 2));
+  is(badBatch.status, 400, 'incomplete safeguarding batch is rejected before saving');
+  const batch = await documentRequest('POST', '/api/documents/batch', batchBody, certificateFiles);
+  is(batch.status, 201, 'three safeguarding certificates save together');
+  is(batch.body.documents.map(document => document.reference), ['BATCH-0', 'BATCH-1', 'BATCH-2'], 'batch preserves each certificate reference');
+  is(batch.body.documents.map(document => document.expiry_date), ['2028-09-01', '2028-09-02', '2028-09-03'], 'batch preserves each certificate expiry date');
+  is(batch.body.documents.map(document => document.status), ['valid', 'needs_review', 'valid'], 'batch preserves independent certificate review statuses');
+  for (const document of batch.body.documents) {
+    const stored = await get('SELECT file_data FROM documents WHERE organisation_id = ? AND id = ?', [orgId, document.id]);
+    is(Buffer.from(stored.file_data, 'base64').toString(), document.reference, 'certificate metadata is paired with its own file');
+    await run('DELETE FROM documents WHERE organisation_id = ? AND id = ?', [orgId, document.id]);
+  }
+  const insurance = await documentRequest('POST', '/api/documents', { entity_type: 'staff', entity_id: driverId,
+    doc_type: 'Vehicle Insurance', vehicle_registration: 'AB12CDE', status: 'needs_review' });
+  is(insurance.body.vehicle_registration, 'AB12CDE', 'car registration survives document saving');
+  const insuranceUpdate = await documentRequest('PUT', '/api/documents/' + insurance.body.id, { vehicle_registration: 'XY23ZAB' });
+  is(insuranceUpdate.body.vehicle_registration, 'XY23ZAB', 'car registration can be corrected during review');
+  const listedDocuments = await documentRequest('GET', '/api/documents', {}, [], { entity_type: 'staff', entity_id: driverId });
+  is(listedDocuments.body.find(document => document.id === insurance.body.id).vehicle_registration, 'XY23ZAB', 'car registration is included in document listings');
+  await run('DELETE FROM documents WHERE organisation_id = ? AND id = ?', [orgId, insurance.body.id]);
+  await run('DELETE FROM documents WHERE organisation_id = ? AND id IN (?,?,?)', [orgId, dbsId, licId, selfieId]);
 
   // ---------- 11. relational integrity ----------
   section('11. Single source of truth');

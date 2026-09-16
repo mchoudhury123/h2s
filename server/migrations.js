@@ -160,12 +160,42 @@ async function widenExceptionTypes(driver, log) {
   }
 }
 
+async function widenDocumentStatuses(driver, log) {
+  if (!(await driver.tableExists('documents'))) return;
+  if (driver.dialect === 'postgres') {
+    const rows = await driver.all(`SELECT conname, pg_get_constraintdef(oid) AS def FROM pg_constraint
+      WHERE conrelid = 'documents'::regclass AND contype = 'c'`);
+    const constraint = rows.find(row => row.def.includes('superseded'));
+    if (!constraint || constraint.def.includes('needs_review')) return;
+    const name = '"' + constraint.conname.replace(/"/g, '""') + '"';
+    await driver.exec(`ALTER TABLE documents DROP CONSTRAINT ${name}, ADD CONSTRAINT ${name}
+      CHECK (status IN ('valid','invalid','superseded','needs_review'))`);
+  } else {
+    const info = await driver.get("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'documents'");
+    if (!info || info.sql.includes('needs_review')) return;
+    const columns = await driver.columns('documents');
+    const statement = schema.statements('sqlite').find(stmt => /CREATE TABLE IF NOT EXISTS documents /.test(stmt));
+    await driver.exec('BEGIN IMMEDIATE');
+    try {
+      await driver.exec(statement.replace('CREATE TABLE IF NOT EXISTS documents', 'CREATE TABLE documents_review_upgrade'));
+      const shared = (await driver.columns('documents_review_upgrade')).filter(column => columns.includes(column));
+      await driver.exec(`INSERT INTO documents_review_upgrade (${shared.join(',')}) SELECT ${shared.join(',')} FROM documents`);
+      await driver.exec('DROP TABLE documents');
+      await driver.exec('ALTER TABLE documents_review_upgrade RENAME TO documents');
+      await driver.exec('COMMIT');
+    } catch (error) { await driver.exec('ROLLBACK'); throw error; }
+  }
+  log('  documents: auto input review status is now allowed');
+}
+
 /** Runs any pending upgrades, then makes sure every table and index exists. */
 async function applyMigrations(driver, log) {
   await upgradeToMultiTenant(driver, log);
   // Uploaded files moved from a local folder into the database, so they survive
   // on a host with no writable disk.
   await addColumn(driver, 'documents', 'file_data', 'TEXT', log);
+  await addColumn(driver, 'documents', 'vehicle_registration', 'TEXT', log);
+  await widenDocumentStatuses(driver, log);
   // An exception can now name the individual journey it applies to, for days
   // that run more than an outward and a return trip.
   await addColumn(driver, 'exceptions', 'trip_seq', 'INTEGER', log);
@@ -181,7 +211,7 @@ async function applyMigrations(driver, log) {
 async function run(driver, log = () => {}) {
   const fingerprint = crypto.createHash('sha256').update(JSON.stringify([
     schema.statements(driver.dialect),
-    ...[addOrgColumn, upgradeToMultiTenant, addColumn, widenExceptionTypes, applyMigrations].map(String),
+    ...[addOrgColumn, upgradeToMultiTenant, addColumn, widenExceptionTypes, widenDocumentStatuses, applyMigrations].map(String),
   ])).digest('hex');
   if (await driver.tableExists('h2s_schema_version')) {
     const current = await driver.get('SELECT fingerprint FROM h2s_schema_version WHERE id = 1');

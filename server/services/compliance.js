@@ -4,11 +4,11 @@ const { all, getSetting, inClause } = require('../db');
 const { today, addDays } = require('./calendar');
 
 const DEFAULT_REQUIRED = {
-  driver: ['Driving Licence', 'Driver Badge', 'DBS', 'Vehicle Insurance', 'MOT', 'Vehicle Licence', 'Safeguarding Training'],
-  pa: ['DBS', 'Safeguarding Training', 'PA Training'],
+  driver: ['Driving Licence', 'Driver Badge', 'DBS', 'Vehicle Insurance', 'MOT', 'Vehicle Licence', 'Safeguarding Training', 'Selfie picture'],
+  pa: ['DBS', 'Safeguarding Training', 'PA Training', 'Selfie picture'],
 };
 const DOC_TYPES = {
-  staff: ['Driving Licence', 'Driver Badge', 'DBS', 'Vehicle Insurance', 'MOT', 'Vehicle Licence', 'Safeguarding Training', 'PA Training', 'First Aid', 'Right to Work', 'Medical', 'Contract of Employment', 'Other'],
+  staff: ['Driving Licence', 'Driver Badge', 'Home to School ID Badge', 'DBS', 'Vehicle Insurance', 'MOT', 'Vehicle Licence', 'Safeguarding Training', 'PA Training', 'First Aid', 'Right to Work', 'Medical', 'Contract of Employment', 'Selfie picture', 'Other'],
   vehicle: ['MOT', 'Vehicle Insurance', 'Vehicle Licence', 'V5C', 'Service Record', 'Other'],
   child: ['Council Award Letter', 'Care Plan', 'Medical Plan', 'Risk Assessment', 'Consent Form', 'Photo ID', 'Other'],
   contract: ['Council Contract', 'Purchase Order', 'Route Sheet', 'Risk Assessment', 'Other'],
@@ -18,13 +18,16 @@ const DOC_TYPES = {
 async function amberDays(orgId) { return Number(await getSetting(orgId, 'amber_days', 30)) || 30; }
 async function requiredDocs(orgId, type) {
   const v = await getSetting(orgId, 'required_docs_' + type);
-  if (v) { try { const arr = JSON.parse(v); if (Array.isArray(arr) && arr.length) return arr; } catch (_) {} }
+  if (v) { try { const arr = JSON.parse(v); if (Array.isArray(arr) && arr.length) return ['driver', 'pa'].includes(type) ? [...new Set([...arr, 'Selfie picture'])] : arr; } catch (_) {} }
   return DEFAULT_REQUIRED[type] || [];
 }
 
 function docStatus(doc, amber, ref) {
   if (!doc) return 'red';
+  if (doc.doc_type === 'Safeguarding Training' && !(doc.has_file || doc.stored_name || doc.file_data)) return 'red';
+  if (doc.doc_type === 'Selfie picture' && (!(doc.has_file || doc.stored_name || doc.file_data) || !String(doc.mime_type || '').startsWith('image/'))) return 'red';
   if (doc.status === 'invalid') return 'red';
+  if (doc.status === 'needs_review') return doc.expiry_date && doc.expiry_date < ref ? 'red' : 'amber';
   if (!doc.expiry_date) return 'green';
   if (doc.expiry_date < ref) return 'red';
   if (doc.expiry_date <= addDays(ref, amber)) return 'amber';
@@ -47,14 +50,23 @@ function evaluate(docs, required, amber, ref) {
       if (rank[ds] < rank[bs]) best = d;
       else if (rank[ds] === rank[bs] && (d.expiry_date || '9999') > (best.expiry_date || '9999')) best = d;
     }
-    const status = docStatus(best, amber, ref);
-    let reason = 'Valid';
-    if (!best) reason = 'Missing';
+    const safeguarding = docType === 'Safeguarding Training';
+    const attached = safeguarding ? candidates.filter(d => d.has_file || d.stored_name || d.file_data)
+      .sort((a, b) => rank[docStatus(a, amber, ref)] - rank[docStatus(b, amber, ref)] || (b.expiry_date || '9999').localeCompare(a.expiry_date || '9999')) : [];
+    const certificates = attached.slice(0, 3);
+    if (safeguarding && certificates.length) best = certificates[certificates.length - 1];
+    const missingCertificates = safeguarding && certificates.length < 3;
+    const status = missingCertificates ? 'red' : docStatus(best, amber, ref);
+    let reason = safeguarding ? '3 of 3 safeguarding certificates valid' : 'Valid';
+    if (missingCertificates) reason = certificates.length + ' of 3 safeguarding certificates uploaded; ' + (3 - certificates.length) + ' missing';
+    else if (!best) reason = 'Missing';
     else if (best.status === 'invalid') reason = 'Marked invalid';
+    else if (best.status === 'needs_review') reason = 'Auto input: details need review';
+    else if (best.doc_type === 'Selfie picture' && status === 'red' && (!best.expiry_date || best.expiry_date >= ref)) reason = 'Selfie image required';
     else if (status === 'red') reason = `Expired ${ukDate(best.expiry_date)}`;
     else if (status === 'amber') { const n = daysBetween(ref, best.expiry_date); reason = `Expires ${ukDate(best.expiry_date)} (${n} ${n === 1 ? 'day' : 'days'})`; }
     else if (best.expiry_date) reason = `Expires ${ukDate(best.expiry_date)}`;
-    return { doc_type: docType, status, reason, document: best, days_left: best && best.expiry_date ? daysBetween(ref, best.expiry_date) : null };
+    return { doc_type: docType, status, reason, document: best, ...(safeguarding ? { documents: certificates, uploaded_count: certificates.length, required_count: 3 } : {}), days_left: best && best.expiry_date ? daysBetween(ref, best.expiry_date) : null };
   });
   const other = docs.filter(d => !required.includes(d.doc_type));
   const overall = items.some(i => i.status === 'red') ? 'red' : items.some(i => i.status === 'amber') ? 'amber' : 'green';
@@ -66,7 +78,7 @@ async function staffCompliance(orgId, staffId, type) {
   const amber = await amberDays(orgId);
   const ref = today();
   const docs = await all(
-    `SELECT id, organisation_id, entity_type, entity_id, doc_type, reference, file_name, stored_name,
+    `SELECT id, organisation_id, entity_type, entity_id, doc_type, reference, vehicle_registration, file_name, stored_name,
        mime_type, size, upload_date, issue_date, expiry_date, status, notes, uploaded_by,
        CASE WHEN file_data IS NULL THEN 0 ELSE 1 END AS has_file
      FROM documents
@@ -93,13 +105,13 @@ async function complianceForMany(orgId, staffRows) {
   const list = inClause(ids);
 
   const staffDocs = await all(
-    `SELECT id, organisation_id, entity_type, entity_id, doc_type, reference, file_name, stored_name,
+    `SELECT id, organisation_id, entity_type, entity_id, doc_type, reference, vehicle_registration, file_name, stored_name,
        mime_type, size, upload_date, issue_date, expiry_date, status, notes, uploaded_by,
        CASE WHEN file_data IS NULL THEN 0 ELSE 1 END AS has_file
      FROM documents WHERE organisation_id = ? AND entity_type = 'staff' AND entity_id IN (${list})`,
     [orgId, ...ids]);
   const vehicleDocs = await all(
-    `SELECT d.id, d.organisation_id, d.entity_type, d.entity_id, d.doc_type, d.reference, d.file_name,
+    `SELECT d.id, d.organisation_id, d.entity_type, d.entity_id, d.doc_type, d.reference, d.vehicle_registration, d.file_name,
        d.stored_name, d.mime_type, d.size, d.upload_date, d.issue_date, d.expiry_date, d.status,
        d.notes, d.uploaded_by,
        CASE WHEN d.file_data IS NULL THEN 0 ELSE 1 END AS has_file,
@@ -125,7 +137,7 @@ async function expiringDocuments(orgId, days, includeExpired = true) {
   const ref = today();
   const limit = addDays(ref, window);
   const rows = await all(`SELECT d.id, d.organisation_id, d.entity_type, d.entity_id, d.doc_type,
-      d.reference, d.file_name, d.stored_name, d.mime_type, d.size, d.upload_date, d.issue_date,
+      d.reference, d.vehicle_registration, d.file_name, d.stored_name, d.mime_type, d.size, d.upload_date, d.issue_date,
       d.expiry_date, d.status, d.notes, d.uploaded_by,
       CASE WHEN d.file_data IS NULL THEN 0 ELSE 1 END AS has_file,
       CASE d.entity_type

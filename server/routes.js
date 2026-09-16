@@ -603,7 +603,7 @@ function nextMonthStart(d) {
 async function documentsFor(org, type, id) {
   // The file bytes are deliberately left out: a listing only needs the details.
   const rows = await all(
-    `SELECT id, organisation_id, entity_type, entity_id, doc_type, reference, file_name, stored_name,
+    `SELECT id, organisation_id, entity_type, entity_id, doc_type, reference, vehicle_registration, file_name, stored_name,
        mime_type, size, upload_date, issue_date, expiry_date, status, notes, uploaded_by, created_at,
        CASE WHEN file_data IS NULL THEN 0 ELSE 1 END AS has_file
      FROM documents WHERE organisation_id = ? AND entity_type = ? AND entity_id = ?
@@ -636,7 +636,7 @@ const DOC_PARENT = { child: 'children', staff: 'staff', contract: 'contracts', v
 
 /** One document's details, without the file bytes. */
 function documentSummary(org, id) {
-  return get(`SELECT id, entity_type, entity_id, doc_type, reference, file_name, mime_type, size,
+  return get(`SELECT id, entity_type, entity_id, doc_type, reference, vehicle_registration, file_name, mime_type, size,
       upload_date, issue_date, expiry_date, status, notes, uploaded_by,
       CASE WHEN file_data IS NULL THEN 0 ELSE 1 END AS has_file
     FROM documents WHERE id = ? AND organisation_id = ?`, [id, org]);
@@ -649,6 +649,52 @@ route('GET', '/api/documents', async ctx => {
   H.json(ctx.res, await compliance.expiringDocuments(ctx.org, Number(ctx.query.days) || 3650, true));
 });
 
+route('POST', '/api/documents/auto-input', async ctx => {
+  const file = (ctx.files || [])[0];
+  if (!file?.data?.length) return H.error(ctx.res, 'Choose or drop a document before using Auto input.');
+  if (file.data.length > MAX_UPLOAD_BYTES) return H.error(ctx.res, 'The file limit is 8 MB.');
+  const types = compliance.DOC_TYPES[ctx.body.entity_type];
+  if (!types) return H.error(ctx.res, 'A valid document record type is required.');
+  try {
+    H.json(ctx.res, await require('./services/document-input').readDocument(file, types, ctx.body.doc_type));
+  } catch (error) { H.error(ctx.res, error.message, 422); }
+});
+
+route('POST', '/api/documents/batch', async ctx => {
+  const entityType = ctx.body.entity_type, entityId = Number(ctx.body.entity_id);
+  if (!DOC_PARENT[entityType] || !entityId) return H.error(ctx.res, 'A valid record must be given for the documents.');
+  if (!(await owned(DOC_PARENT[entityType], entityId, ctx.org))) return H.error(ctx.res, 'Record not found', 404);
+  let documents;
+  try { documents = JSON.parse(ctx.body.documents); } catch (_) { return H.error(ctx.res, 'Invalid certificate details.'); }
+  const files = ctx.files || [];
+  if (!Array.isArray(documents) || !documents.length || documents.length > 3 || files.length !== documents.length ||
+      documents.some(document => !document || document.doc_type !== 'Safeguarding Training')) {
+    return H.error(ctx.res, 'Upload up to 3 separate safeguarding certificates, each with its own details.');
+  }
+  if (files.reduce((total, file) => total + (file.data?.length || 0), 0) > MAX_UPLOAD_BYTES) return H.error(ctx.res, 'The combined upload limit is 8 MB. Upload larger certificates separately.');
+  const orderedFiles = documents.map((_, index) => files.find(file => file.field === 'file_' + index));
+  if (orderedFiles.some(file => !file?.data?.length)) return H.error(ctx.res, 'Attach a file for each safeguarding certificate.');
+  const statuses = ['valid', 'invalid', 'superseded', 'needs_review'];
+  if (documents.some(document => document.status && !statuses.includes(document.status))) return H.error(ctx.res, 'Invalid certificate status.');
+  const ids = await transaction(async tx => {
+    const ids = [];
+    for (let index = 0; index < documents.length; index++) {
+      const document = documents[index], file = orderedFiles[index];
+      ids.push(await insert('documents', {
+        entity_type: entityType, entity_id: entityId, doc_type: 'Safeguarding Training',
+        reference: document.reference, issue_date: document.issue_date, expiry_date: document.expiry_date,
+        status: document.status || 'valid', notes: document.notes, uploaded_by: ctx.user.name,
+        file_name: file.filename, mime_type: file.mime, size: file.data.length, file_data: file.data.toString('base64'),
+      }, ['entity_type', 'entity_id', 'doc_type', 'reference', 'issue_date', 'expiry_date', 'status', 'notes',
+        'uploaded_by', 'file_name', 'mime_type', 'size', 'file_data'], tx, ctx.org));
+    }
+    await tx.run(`INSERT INTO audit_log (organisation_id, user_name, entity_type, entity_id, action, summary) VALUES (?,?,?,?,?,?)`,
+      [ctx.org, ctx.user.name, entityType === 'staff' ? 'staff' : entityType + 's', entityId, 'document', 'Added ' + ids.length + ' safeguarding certificates']);
+    return ids;
+  });
+  H.json(ctx.res, { documents: await Promise.all(ids.map(id => documentSummary(ctx.org, id))) }, 201);
+});
+
 route('POST', '/api/documents', async ctx => {
   const f = ctx.body;
   const entityType = f.entity_type;
@@ -659,6 +705,11 @@ route('POST', '/api/documents', async ctx => {
 
   let fileName = null, mime = null, size = null, fileData = null;
   const file = (ctx.files || [])[0];
+  if (f.doc_type === 'Selfie picture' && (!file?.data?.length || !String(file.mime || '').startsWith('image/'))) {
+    return H.error(ctx.res, 'Please upload an image for the selfie picture.');
+  }
+  if ((ctx.files || []).length > 1) return H.error(ctx.res, 'Use the separate certificate fields for multiple safeguarding uploads.');
+  if (f.doc_type === 'Safeguarding Training' && !file?.data?.length) return H.error(ctx.res, 'Attach a file for the safeguarding certificate.');
   if (file && file.data && file.data.length) {
     if (file.data.length > MAX_UPLOAD_BYTES) {
       return H.error(ctx.res, `That file is ${(file.data.length / 1048576).toFixed(1)} MB. The limit is 8 MB.`);
@@ -670,10 +721,11 @@ route('POST', '/api/documents', async ctx => {
   }
   const id = await insert('documents', {
     entity_type: entityType, entity_id: entityId, doc_type: f.doc_type || 'Other', reference: f.reference,
+    vehicle_registration: f.vehicle_registration,
     file_name: fileName, mime_type: mime, size, file_data: fileData,
     issue_date: f.issue_date, expiry_date: f.expiry_date, status: f.status || 'valid', notes: f.notes,
     uploaded_by: ctx.user.name,
-  }, ['entity_type', 'entity_id', 'doc_type', 'reference', 'file_name', 'mime_type', 'size', 'file_data',
+  }, ['entity_type', 'entity_id', 'doc_type', 'reference', 'vehicle_registration', 'file_name', 'mime_type', 'size', 'file_data',
     'issue_date', 'expiry_date', 'status', 'notes', 'uploaded_by'], null, ctx.org);
   await audit.logAction(ctx.user, entityType === 'staff' ? 'staff' : entityType + 's', entityId, null, 'document',
     `Added document ${f.doc_type}${f.expiry_date ? ' expiring ' + f.expiry_date : ''}`);
@@ -684,7 +736,11 @@ route('PUT', '/api/documents/:id', async ctx => {
   const id = Number(ctx.params.id);
   const before = await owned('documents', id, ctx.org);
   if (!before) return H.error(ctx.res, 'Document not found', 404);
-  await update('documents', id, ctx.body, ['doc_type', 'reference', 'issue_date', 'expiry_date', 'status', 'notes'], null, ctx.org);
+  if ((ctx.body.doc_type || before.doc_type) === 'Selfie picture' &&
+      (!(before.file_data || before.stored_name) || !String(before.mime_type || '').startsWith('image/'))) {
+    return H.error(ctx.res, 'Please upload an image for the selfie picture.');
+  }
+  await update('documents', id, ctx.body, ['doc_type', 'reference', 'vehicle_registration', 'issue_date', 'expiry_date', 'status', 'notes'], null, ctx.org);
   await audit.logAction(ctx.user, before.entity_type === 'staff' ? 'staff' : before.entity_type + 's', before.entity_id, null,
     'document', `Updated document ${before.doc_type}`);
   H.json(ctx.res, await documentSummary(ctx.org, id));

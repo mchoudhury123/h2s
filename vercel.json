@@ -5,7 +5,8 @@
   ],
   "functions": {
     "api/index.js": {
-      "maxDuration": 30,
+      "maxDuration": 60,
+      "includeFiles": "node_modules/{tesseract.js,tesseract.js-core,@tesseract.js-data/eng,pdfjs-dist}/**",
       "memory": 1024
     }
   },

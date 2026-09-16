@@ -10,6 +10,7 @@
     "db:check": "node --experimental-sqlite --no-warnings scripts/db-check.js",
     "db:push": "node --experimental-sqlite --no-warnings scripts/db-push.js",
     "test": "node --experimental-sqlite --no-warnings scripts/test-rules.js",
+    "test:documents": "node --experimental-sqlite --no-warnings scripts/test-document-input.js",
     "test:performance": "node --experimental-sqlite --no-warnings scripts/check-performance.js && node --no-warnings scripts/check-ui-performance.js",
     "test:isolation": "node --experimental-sqlite --no-warnings scripts/test-isolation.js",
     "test:auth": "node --experimental-sqlite --no-warnings scripts/check-auth.js",
@@ -20,7 +21,7 @@
     "business": "node --experimental-sqlite --no-warnings scripts/business.js"
   },
   "engines": {
-    "node": ">=20.9"
+    "node": ">=20.19"
   },
   "license": "UNLICENSED",
   "private": true,
@@ -28,6 +29,11 @@
     "puppeteer-core": "^25.11.0"
   },
   "dependencies": {
-    "pg": "^8.13.0"
+    "@napi-rs/canvas": "^0.1.100",
+    "@tesseract.js-data/eng": "^1.0.0",
+    "mammoth": "^1.12.3",
+    "pdfjs-dist": "5.5.207",
+    "pg": "^8.13.0",
+    "tesseract.js": "^7.0.0"
   }
 }

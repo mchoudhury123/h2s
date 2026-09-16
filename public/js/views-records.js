@@ -464,7 +464,7 @@ App.views.staffDetail = async function ({ params }) {
     UI.table([
       { label: '', width: '26px', sortable: false, value: i => h('span', { class: 'dot ' + i.status }) },
       { key: 'doc_type', label: 'Required document' },
-      { key: 'status', label: 'Status', value: i => h('span', { class: 'badge ' + i.status }, i.status === 'green' ? 'Valid' : i.status === 'amber' ? 'Expiring' : 'Action required') },
+      { key: 'status', label: 'Status', value: i => h('span', { class: 'badge ' + i.status }, i.status === 'green' ? 'Valid' : i.status === 'amber' ? (i.document?.status === 'needs_review' ? 'Needs review' : 'Expiring') : 'Action required') },
       { key: 'reason', label: 'Detail' },
       { label: '', sortable: false, value: i => i.document ? (hasFile(i.document) ? h('a', { class: 'btn xs', href: `/api/documents/${i.document.id}/file`, target: '_blank' }, 'View file') : null)
         : (App.can('documents') ? h('button', { class: 'btn xs primary', onclick: () => UI.documentEditor('staff', s.id, null, reload) }, 'Add') : null) },

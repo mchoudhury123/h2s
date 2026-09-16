@@ -322,9 +322,10 @@ UI.documentsPanel = function (entityType, entityId, docs, onChange) {
     { label: '', width: '26px', sortable: false, value: d => h('span', { class: 'dot ' + (d.calculated_status || 'grey'), title: d.calculated_status }) },
     { key: 'doc_type', label: 'Document' },
     { key: 'reference', label: 'Reference', value: d => d.reference || '—' },
+    { key: 'vehicle_registration', label: 'Car reg' },
     { key: 'issue_date', label: 'Issued', value: d => fmt.date(d.issue_date), nowrap: true },
     { key: 'expiry_date', label: 'Expires', value: d => d.expiry_date ? h('span', null, fmt.date(d.expiry_date), d.days_left !== null && d.days_left <= 60 ? h('span', { class: 'badge ' + (d.days_left < 0 ? 'red' : 'amber'), style: 'margin-left:6px' }, d.days_left < 0 ? `${-d.days_left}d ago` : `${d.days_left}d`) : null) : 'No expiry', nowrap: true },
-    { key: 'status', label: 'Status', value: d => h('span', { class: 'badge ' + (d.status === 'valid' ? '' : 'red') }, fmt.titleCase(d.status)) },
+    { key: 'status', label: 'Status', value: d => h('span', { class: 'badge ' + (d.status === 'valid' ? '' : d.status === 'needs_review' ? 'amber' : 'red') }, d.status === 'needs_review' ? 'Needs review' : fmt.titleCase(d.status)) },
     { key: 'file_name', label: 'File', value: d => hasFile(d)
       ? h('a', { href: `/api/documents/${d.id}/file`, target: '_blank' }, d.file_name || 'View')
       : h('span', { style: 'color:var(--text-faint)' }, 'No file') },
@@ -340,40 +341,190 @@ UI.documentsPanel = function (entityType, entityId, docs, onChange) {
     list);
 };
 
+UI.documentUpload = function (form, entityType, getType, existingDoc, onStateChange, onMultiple) {
+  let selectedFile = null, reading = false, version = 0, autoResult = null;
+  const input = h('input', { type: 'file', name: 'file' });
+  const label = h('label');
+  const help = h('div', { class: 'help' });
+  const selection = h('div', { role: 'status', 'aria-live': 'polite' }, 'No file selected');
+  const feedback = h('div', { class: 'document-auto-feedback', role: 'status', 'aria-live': 'polite' });
+  const autoBtn = h('button', { class: 'btn', type: 'button', disabled: true }, 'Auto input');
+  const choose = file => {
+    if (file && file.size > 8 * 1024 * 1024) { toast('The file limit is 8 MB per file.', 'err'); return false; }
+    if (file && getType() === 'Selfie picture' && !file.type.startsWith('image/')) { toast('Please choose an image for the selfie picture.', 'err'); return false; }
+    selectedFile = file || null; version++;
+    if (autoResult) {
+      form.controls.status.value = 'needs_review';
+      feedback.textContent = 'File changed. Run Auto input again or check the existing values against this file.';
+    } else feedback.replaceChildren();
+    autoResult = null; autoBtn.disabled = !selectedFile || reading;
+    selection.textContent = file ? file.name + ' — ready to upload when saved' : 'No file selected';
+    onStateChange();
+    return true;
+  };
+  const chooseFiles = files => {
+    if (files.length > 1) {
+      if (onMultiple && getType() === 'Safeguarding Training') return onMultiple(Array.from(files));
+      toast('Please choose one file per certificate.', 'err'); return;
+    }
+    choose(files[0]);
+  };
+  input.onchange = () => chooseFiles(input.files);
+  const zone = h('div', { class: 'document-drop-zone' },
+    h('div', null, 'Drag and drop a file here, or choose a file'), input, selection,
+    h('button', { class: 'btn xs', type: 'button', onclick: () => { input.value = ''; choose(null); } }, 'Clear selected file'));
+  zone.ondragover = event => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; zone.classList.add('dragging'); };
+  zone.ondragleave = event => { if (!zone.contains(event.relatedTarget)) zone.classList.remove('dragging'); };
+  zone.ondrop = event => { event.preventDefault(); zone.classList.remove('dragging'); chooseFiles(event.dataTransfer.files); };
+  const refresh = () => {
+    const type = getType(), selfie = type === 'Selfie picture', safeguarding = type === 'Safeguarding Training';
+    input.accept = selfie ? 'image/*' : '';
+    input.multiple = !!onMultiple && safeguarding;
+    label.textContent = selfie ? 'Selfie image (required)' : existingDoc && existingDoc.file_name
+      ? 'Replace file (currently: ' + existingDoc.file_name + ')' : safeguarding ? 'Attach certificate file' : 'Attach file (optional)';
+    help.textContent = selfie ? 'Upload a clear selfie of the person for verification, up to 8 MB.'
+      : safeguarding && onMultiple ? 'Select or drop up to 3 separate certificates. Each has its own dates and reference. Up to 8 MB per file, 8 MB total when saving together.'
+      : 'PDF, image or Office document, up to 8 MB.';
+    const reference = form.controls.reference.closest('.field').querySelector('label');
+    reference.textContent = type === 'Driver Badge' ? 'Driver Licence No'
+      : type === 'Driving Licence' ? 'Driving Licence number (5)' : 'Reference / number';
+    form.controls.issue_date.closest('.field').querySelector('label').textContent = type === 'Driving Licence' ? 'Issue date (4a)' : 'Issue date';
+    form.controls.expiry_date.closest('.field').querySelector('label').textContent = type === 'Driving Licence' ? 'Expiry date (4b)' : 'Expiry date';
+    if (form.controls.vehicle_registration) form.controls.vehicle_registration.closest('.field').hidden = !['Vehicle Licence', 'Vehicle Insurance'].includes(type) && !form.controls.vehicle_registration.value;
+  };
+  autoBtn.onclick = async () => {
+    if (!selectedFile || reading) return;
+    const currentVersion = version, before = form.read(), typeBefore = getType();
+    reading = true; autoBtn.disabled = true; onStateChange();
+    autoBtn.textContent = 'Reading document…';
+    feedback.textContent = 'Reading the document. This can take up to 45 seconds.';
+    try {
+      const fd = new FormData();
+      fd.append('file', selectedFile); fd.append('entity_type', entityType); fd.append('doc_type', typeBefore);
+      const result = await api.form('/api/documents/auto-input', fd);
+      if (currentVersion !== version || getType() !== typeBefore) return;
+      const conflicts = [];
+      for (const [name, value] of Object.entries(result.fields)) {
+        const control = form.controls[name];
+        if (!value) continue;
+        if (!control) {
+          if (name === 'doc_type' && value !== typeBefore) conflicts.push('This file appears to be ' + value + '; confirm it is the correct certificate.');
+          continue;
+        }
+        if (control.value !== before[name] || (name !== 'doc_type' && control.value && control.value !== value)) {
+          conflicts.push(name.replace('_', ' ') + ': document says ' + value + '; your existing value was kept.');
+        } else { control.value = value; control.dispatchEvent(new Event('change', { bubbles: true })); }
+      }
+      autoResult = { ...result, issues: [...result.issues, ...conflicts] };
+      form.controls.status.value = 'needs_review';
+      feedback.replaceChildren(
+        h('strong', null, 'Auto input complete — review required'),
+        h('div', null, 'Check the filled fields against this file. Once checked, change Status to Valid. Confirm missing dates or references do not apply.'),
+        autoResult.issues.length ? h('ul', null, ...autoResult.issues.map(issue => h('li', null, issue))) : null,
+        h('details', null, h('summary', null, 'Text read from document'), h('pre', null, result.text_preview || 'No readable text')));
+    } catch (error) {
+      if (currentVersion !== version || getType() !== typeBefore) return;
+      form.controls.status.value = 'needs_review'; autoResult = { issues: [error.message] };
+      feedback.textContent = 'Auto input needs attention: ' + error.message;
+    } finally {
+      reading = false; autoBtn.disabled = !selectedFile; autoBtn.textContent = 'Auto input'; onStateChange();
+    }
+  };
+  const read = () => {
+    const values = form.read();
+    if (autoResult) values.notes = [values.notes, '[Auto input: ' + (values.status === 'needs_review' ? 'Review required' : 'Reviewed by user') + ']', ...autoResult.issues].filter(Boolean).join('\n');
+    return values;
+  };
+  return { node: h('div', { class: 'field', style: 'margin-top:12px' }, label, zone, help,
+    h('div', { style: 'margin-top:10px' }, autoBtn), feedback), choose, refresh, read,
+    get file() { return selectedFile; }, get reading() { return reading; } };
+};
+
 UI.documentEditor = function (entityType, entityId, doc, onChange) {
   const types = (App.state.docTypes && App.state.docTypes[entityType]) || ['Other'];
-  const fileInput = h('input', { type: 'file', name: 'file' });
-  const form = UI.form([
-    { name: 'doc_type', label: 'Document type', type: 'select', options: types, placeholder: false, required: true },
+  const statuses = [{ value: 'valid', label: 'Valid' }, { value: 'needs_review', label: 'Needs review' },
+    { value: 'invalid', label: 'Invalid / rejected' }, { value: 'superseded', label: 'Superseded' }];
+  const metadataFields = [
     { name: 'reference', label: 'Reference / number' },
     { name: 'issue_date', label: 'Issue date', type: 'date' },
     { name: 'expiry_date', label: 'Expiry date', type: 'date', help: 'Leave blank if the document does not expire' },
-    { name: 'status', label: 'Status', type: 'select', options: [{ value: 'valid', label: 'Valid' }, { value: 'invalid', label: 'Invalid / rejected' }, { value: 'superseded', label: 'Superseded' }], placeholder: false },
+    { name: 'status', label: 'Status', type: 'select', options: statuses, placeholder: false },
     { name: 'notes', label: 'Notes', type: 'textarea', span: 'full' },
+  ];
+  const form = UI.form([
+    { name: 'doc_type', label: 'Document type', type: 'select', options: types, placeholder: false, required: true },
+    { name: 'vehicle_registration', label: 'Car registration' }, ...metadataFields,
   ], doc || { status: 'valid' });
-  const body = h('div', null, form,
-    h('div', { class: 'field', style: 'margin-top:12px' },
-      h('label', doc && doc.file_name ? `Replace file (currently: ${doc.file_name})` : 'Attach file (optional)'), fileInput,
-      h('div', { class: 'help' }, 'PDF, image or Office document, up to 25 MB.')));
+  const getType = () => form.controls.doc_type.value;
   const saveBtn = h('button', { class: 'btn primary' }, 'Save document');
-  const m = UI.modal({ title: doc ? 'Edit document' : 'Add document', body, footer: [h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'), saveBtn] });
+  let saving = false;
+  const slots = [], extraHost = h('div', { class: 'safeguarding-certificates', hidden: true });
+  const stateChanged = () => { saveBtn.disabled = saving || slots.some(slot => slot.upload.reading); };
+  const distributeFiles = files => {
+    if (files.length > 3) { toast('Choose up to 3 separate safeguarding certificates.', 'err'); return; }
+    if (files.some(file => file.size > 8 * 1024 * 1024) || files.reduce((size, file) => size + file.size, 0) > 8 * 1024 * 1024) {
+      toast('The combined upload limit is 8 MB. Upload larger certificates separately.', 'err'); return;
+    }
+    files.forEach((file, index) => slots[index].upload.choose(file));
+  };
+  const firstUpload = UI.documentUpload(form, entityType, getType, doc, stateChanged, !doc ? distributeFiles : null);
+  slots.push({ form, upload: firstUpload });
+  for (let index = 2; index <= 3; index++) {
+    const certificateForm = UI.form(metadataFields, { status: 'valid' });
+    const upload = UI.documentUpload(certificateForm, entityType, () => 'Safeguarding Training', null, stateChanged);
+    slots.push({ form: certificateForm, upload });
+    extraHost.append(h('section', { class: 'safeguarding-certificate' }, h('h3', null, 'Safeguarding certificate ' + index), certificateForm, upload.node));
+    upload.refresh();
+  }
+  const firstHeading = h('h3', { hidden: true }, 'Safeguarding certificate 1');
+  const refresh = () => {
+    const safeguarding = getType() === 'Safeguarding Training' && !doc;
+    firstHeading.hidden = !safeguarding; extraHost.hidden = !safeguarding;
+    firstUpload.refresh();
+  };
+  form.addEventListener('change', refresh); refresh();
+  const body = h('div', null, firstHeading, form, firstUpload.node, extraHost);
+  const m = UI.modal({ title: doc ? 'Edit document' : 'Add document', body,
+    footer: [h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'), saveBtn] });
   saveBtn.onclick = async () => {
-    if (!form.validate()) return;
-    saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+    if (saving || slots.some(slot => slot.upload.reading)) return;
+    const type = getType(), safeguarding = type === 'Safeguarding Training';
+    const active = safeguarding && !doc ? slots.filter((slot, index) => index === 0 || slot.upload.file) : [slots[0]];
+    if (active.some(slot => !slot.form.validate())) return;
+    if (safeguarding && !doc && !firstUpload.file) { toast('Attach a file for safeguarding certificate 1.', 'err'); return; }
+    if (safeguarding && !doc && slots.slice(1).some(slot => !slot.upload.file &&
+        ['reference', 'issue_date', 'expiry_date', 'notes'].some(name => slot.form.read()[name]))) {
+      toast('Attach a file for each safeguarding certificate you have entered.', 'err'); return;
+    }
+    if (type === 'Selfie picture' && (firstUpload.file ? !firstUpload.file.type.startsWith('image/')
+      : !(doc && hasFile(doc) && String(doc.mime_type || '').startsWith('image/')))) {
+      toast('Please upload an image for the selfie picture.', 'err'); return;
+    }
+    if (active.reduce((size, slot) => size + (slot.upload.file?.size || 0), 0) > 8 * 1024 * 1024) {
+      toast('The combined upload limit is 8 MB. Upload larger certificates separately.', 'err'); return;
+    }
+    saving = true; stateChanged(); saveBtn.textContent = 'Saving…';
     try {
-      const vals = form.read();
-      const file = fileInput.files[0];
-      if (doc && !file) { await api.put('/api/documents/' + doc.id, vals); }
-      else {
+      if (active.length > 1) {
         const fd = new FormData();
         fd.append('entity_type', entityType); fd.append('entity_id', entityId);
-        for (const k in vals) fd.append(k, vals[k] ?? '');
-        if (file) fd.append('file', file);
-        await api.form('/api/documents', fd);
-        if (doc) await api.del('/api/documents/' + doc.id);
+        fd.append('documents', JSON.stringify(active.map(slot => ({ ...slot.upload.read(), doc_type: type }))));
+        active.forEach((slot, index) => fd.append('file_' + index, slot.upload.file));
+        await api.form('/api/documents/batch', fd);
+      } else {
+        const values = firstUpload.read();
+        if (doc && !firstUpload.file) await api.put('/api/documents/' + doc.id, values);
+        else {
+          const fd = new FormData();
+          fd.append('entity_type', entityType); fd.append('entity_id', entityId);
+          for (const name in values) fd.append(name, values[name] ?? '');
+          if (firstUpload.file) fd.append('file', firstUpload.file);
+          await api.form('/api/documents', fd);
+          if (doc) await api.del('/api/documents/' + doc.id);
+        }
       }
-      toast('Document saved', 'ok'); m.close(); onChange();
-    } catch (e) { toast(e.message, 'err'); saveBtn.disabled = false; saveBtn.textContent = 'Save document'; }
+      toast('Document' + (active.length > 1 ? 's' : '') + ' saved', 'ok'); m.close(); onChange();
+    } catch (error) { toast(error.message, 'err'); saving = false; stateChanged(); saveBtn.textContent = 'Save document'; }
   };
 };
 
