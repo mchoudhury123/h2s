@@ -106,6 +106,23 @@ async function main() {
         user: { organisation_id: org, name: 'Tester' } });
       assert.equal(tooMany.status, 400);
     }
+    await page.addScriptTag({ path: require('node:path').join(__dirname, '../public/js/views-records.js') });
+    await db.setSetting(org, 'required_docs_driver', JSON.stringify(['First Aid']));
+    await page.evaluate(async staffId => {
+      App.state.docTypes.staff = ['Driving Licence', 'First Aid', 'GDPR'];
+      document.getElementById('test-host').replaceChildren(await App.views.staffDetail({ params: { id: staffId } }));
+      [...document.querySelectorAll('#test-host .tabs button')].find(button => button.textContent.startsWith('Compliance')).click();
+    }, staff);
+    for (const type of ['First Aid', 'GDPR']) {
+      await page.evaluate(type => {
+        const row = [...document.querySelectorAll('tr')].find(row => row.textContent.includes(type) && [...row.querySelectorAll('button')].some(button => button.textContent === 'Add'));
+        if (!row) throw new Error('Missing compliance row: ' + type);
+        [...row.querySelectorAll('button')].find(button => button.textContent === 'Add').click();
+      }, type);
+      assert.equal(await page.$eval('#modal-root select[name="doc_type"]', input => input.value), type);
+      assert.equal(await page.$eval('#modal-root input[name="issue_date"]', input => input.required), type === 'GDPR');
+      await page.evaluate(() => [...document.querySelectorAll('#modal-root button')].find(button => button.textContent === 'Cancel').click());
+    }
     assert.deepEqual(errors, []);
     console.log('DBS and Driver Badge attachment checks passed: two files, combined Auto input, both file links, safe metadata editing and optional second-file removal.');
   } finally { await browser.close(); }

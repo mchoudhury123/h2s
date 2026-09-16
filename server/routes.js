@@ -723,6 +723,7 @@ route('POST', '/api/documents', async ctx => {
 
   let fileName = null, mime = null, size = null, fileData = null;
   const file = (ctx.files || [])[0];
+  if (f.doc_type === 'GDPR' && !compliance.validIssueDate(f.issue_date)) return H.error(ctx.res, 'Enter a valid issue date for GDPR.');
   if (f.doc_type === 'Selfie picture' && (!file?.data?.length || !String(file.mime || '').startsWith('image/'))) {
     return H.error(ctx.res, 'Please upload an image for the selfie picture.');
   }
@@ -760,6 +761,7 @@ route('PUT', '/api/documents/:id', async ctx => {
   const before = await owned('documents', id, ctx.org);
   if (!before) return H.error(ctx.res, 'Document not found', 404);
   const type = ctx.body.doc_type || before.doc_type, paired = ['DBS', 'Driver Badge'].includes(type);
+  if (type === 'GDPR' && !compliance.validIssueDate(ctx.body.issue_date === undefined ? before.issue_date : ctx.body.issue_date)) return H.error(ctx.res, 'Enter a valid issue date for GDPR.');
   const files = ctx.files || [], firstFile = files.find(file => file.field === 'file'), secondFile = files.find(file => file.field === 'second_file');
   if (files.length > (paired ? 2 : 1) || files.some(file => !['file', 'second_file'].includes(file.field) || !file.data?.length) || (secondFile && !paired)) return H.error(ctx.res, 'This document type does not support those files.');
   const removeSecond = !paired || String(ctx.body.remove_second_file) === '1';

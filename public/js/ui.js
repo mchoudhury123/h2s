@@ -414,7 +414,8 @@ UI.documentUpload = function (form, entityType, getType, existingDoc, onStateCha
     const reference = form.controls.reference.closest('.field').querySelector('label');
     reference.textContent = type === 'Driver Badge' ? 'Driver Licence No'
       : type === 'Driving Licence' ? 'Driving Licence number (5)' : 'Reference / number';
-    form.controls.issue_date.closest('.field').querySelector('label').textContent = type === 'Driving Licence' ? 'Issue date (4a)' : 'Issue date';
+    form.controls.issue_date.required = type === 'GDPR';
+    form.controls.issue_date.closest('.field').querySelector('label').textContent = type === 'Driving Licence' ? 'Issue date (4a)' : type === 'GDPR' ? 'Issue date *' : 'Issue date';
     form.controls.expiry_date.closest('.field').querySelector('label').textContent = type === 'Driving Licence' ? 'Expiry date (4b)' : 'Expiry date';
     if (form.controls.vehicle_registration) form.controls.vehicle_registration.closest('.field').hidden = !['Vehicle Licence', 'Vehicle Insurance'].includes(type) && !form.controls.vehicle_registration.value;
   };
@@ -471,8 +472,8 @@ UI.documentUpload = function (form, entityType, getType, existingDoc, onStateCha
     get removeSecondFile() { return removeSecond.checked; }, get reading() { return reading; } };
 };
 
-UI.documentEditor = function (entityType, entityId, doc, onChange) {
-  const types = (App.state.docTypes && App.state.docTypes[entityType]) || ['Other'];
+UI.documentEditor = function (entityType, entityId, doc, onChange, initialType) {
+  const types = [...new Set([...((App.state.docTypes && App.state.docTypes[entityType]) || ['Other']), ...(initialType ? [initialType] : [])])];
   const statuses = [{ value: 'valid', label: 'Valid' }, { value: 'needs_review', label: 'Needs review' },
     { value: 'invalid', label: 'Invalid / rejected' }, { value: 'superseded', label: 'Superseded' }];
   const metadataFields = [
@@ -485,7 +486,7 @@ UI.documentEditor = function (entityType, entityId, doc, onChange) {
   const form = UI.form([
     { name: 'doc_type', label: 'Document type', type: 'select', options: types, placeholder: false, required: true },
     { name: 'vehicle_registration', label: 'Car registration' }, ...metadataFields,
-  ], doc || { status: 'valid' });
+  ], doc || { status: 'valid', ...(initialType ? { doc_type: initialType } : {}) });
   const getType = () => form.controls.doc_type.value;
   const saveBtn = h('button', { class: 'btn primary' }, 'Save document');
   let saving = false;

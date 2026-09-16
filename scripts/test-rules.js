@@ -214,6 +214,12 @@ async function main() {
   const selfieId = await insert('documents', { entity_type: 'staff', entity_id: driverId, doc_type: 'Selfie picture', status: 'valid' }, DOC, null, orgId);
   is((await compliance.staffCompliance(orgId, driverId, 'driver')).status, 'red', 'selfie record without an image does not satisfy verification');
   await run('UPDATE documents SET file_data = ?, mime_type = ? WHERE organisation_id = ? AND id = ?', ['aW1hZ2U=', 'image/jpeg', orgId, selfieId]);
+  is((await compliance.staffCompliance(orgId, driverId, 'driver')).status, 'red', 'GDPR required even with customised requirements');
+  const gdprId = await insert('documents', { entity_type: 'staff', entity_id: driverId, doc_type: 'GDPR', status: 'valid' }, DOC, null, orgId);
+  is((await compliance.staffCompliance(orgId, driverId, 'driver')).items.find(item => item.doc_type === 'GDPR').reason, 'Issue date required', 'GDPR without issue date is flagged');
+  await run('UPDATE documents SET issue_date = ? WHERE organisation_id = ? AND id = ?', ['2026-09-01', orgId, gdprId]);
+  is((await compliance.staffCompliance(orgId, driverId, 'driver')).items.find(item => item.doc_type === 'GDPR').reason, 'Issued 01/09/2026', 'GDPR issue date shown in compliance');
+  is((await compliance.requiredDocs(orgId, 'pa')).includes('GDPR'), true, 'PAs require GDPR');
   is((await compliance.staffCompliance(orgId, driverId, 'driver')).status, 'green', 'green when all required documents are valid');
   await run('UPDATE documents SET status = ? WHERE organisation_id = ? AND id = ?', ['needs_review', orgId, dbsId]);
   is((await compliance.staffCompliance(orgId, driverId, 'driver')).status, 'amber', 'auto input review flag is persisted and shown in compliance');
@@ -278,7 +284,10 @@ async function main() {
   const listedDocuments = await documentRequest('GET', '/api/documents', {}, [], { entity_type: 'staff', entity_id: driverId });
   is(listedDocuments.body.find(document => document.id === insurance.body.id).vehicle_registration, 'XY23ZAB', 'car registration is included in document listings');
   await run('DELETE FROM documents WHERE organisation_id = ? AND id = ?', [orgId, insurance.body.id]);
-  await run('DELETE FROM documents WHERE organisation_id = ? AND id IN (?,?,?)', [orgId, dbsId, licId, selfieId]);
+  is((await documentRequest('POST', '/api/documents', { entity_type: 'staff', entity_id: driverId, doc_type: 'GDPR' })).status, 400, 'GDPR creation requires issue date');
+  is((await documentRequest('PUT', '/api/documents/' + gdprId, { issue_date: '2026-02-30' })).status, 400, 'GDPR rejects invalid calendar dates');
+  is((await documentRequest('PUT', '/api/documents/' + gdprId, { notes: 'Reviewed' })).status, 200, 'GDPR metadata edits preserve issue date');
+  await run('DELETE FROM documents WHERE organisation_id = ? AND id IN (?,?,?,?)', [orgId, dbsId, licId, selfieId, gdprId]);
 
   // ---------- 11. relational integrity ----------
   section('11. Single source of truth');

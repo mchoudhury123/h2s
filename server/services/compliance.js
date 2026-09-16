@@ -4,11 +4,11 @@ const { all, getSetting, inClause } = require('../db');
 const { today, addDays } = require('./calendar');
 
 const DEFAULT_REQUIRED = {
-  driver: ['Driving Licence', 'Driver Badge', 'DBS', 'Vehicle Insurance', 'MOT', 'Vehicle Licence', 'Safeguarding Training', 'Selfie picture'],
-  pa: ['DBS', 'Safeguarding Training', 'PA Training', 'Selfie picture'],
+  driver: ['Driving Licence', 'Driver Badge', 'DBS', 'Vehicle Insurance', 'MOT', 'Vehicle Licence', 'Safeguarding Training', 'Selfie picture', 'GDPR'],
+  pa: ['DBS', 'Safeguarding Training', 'PA Training', 'Selfie picture', 'GDPR'],
 };
 const DOC_TYPES = {
-  staff: ['Driving Licence', 'Driver Badge', 'Home to School ID Badge', 'DBS', 'Vehicle Insurance', 'MOT', 'Vehicle Licence', 'Safeguarding Training', 'PA Training', 'First Aid', 'Right to Work', 'Medical', 'Contract of Employment', 'Selfie picture', 'Other'],
+  staff: ['Driving Licence', 'Driver Badge', 'Home to School ID Badge', 'DBS', 'Vehicle Insurance', 'MOT', 'Vehicle Licence', 'Safeguarding Training', 'PA Training', 'First Aid', 'GDPR', 'Right to Work', 'Medical', 'Contract of Employment', 'Selfie picture', 'Other'],
   vehicle: ['MOT', 'Vehicle Insurance', 'Vehicle Licence', 'V5C', 'Service Record', 'Other'],
   child: ['Council Award Letter', 'Care Plan', 'Medical Plan', 'Risk Assessment', 'Consent Form', 'Photo ID', 'Other'],
   contract: ['Council Contract', 'Purchase Order', 'Route Sheet', 'Risk Assessment', 'Other'],
@@ -18,11 +18,18 @@ const DOC_TYPES = {
 async function amberDays(orgId) { return Number(await getSetting(orgId, 'amber_days', 30)) || 30; }
 async function requiredDocs(orgId, type) {
   const v = await getSetting(orgId, 'required_docs_' + type);
-  if (v) { try { const arr = JSON.parse(v); if (Array.isArray(arr) && arr.length) return ['driver', 'pa'].includes(type) ? [...new Set([...arr, 'Selfie picture'])] : arr; } catch (_) {} }
+  if (v) { try { const arr = JSON.parse(v); if (Array.isArray(arr) && arr.length) return ['driver', 'pa'].includes(type) ? [...new Set([...arr, 'Selfie picture', 'GDPR'])] : arr; } catch (_) {} }
   return DEFAULT_REQUIRED[type] || [];
 }
 
+function validIssueDate(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(value + 'T00:00:00Z');
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
 function docStatus(doc, amber, ref) {
+  if (doc && doc.doc_type === 'GDPR' && !validIssueDate(doc.issue_date)) return 'red';
   if (!doc) return 'red';
   if (doc.doc_type === 'Safeguarding Training' && !(doc.has_file || doc.stored_name || doc.file_data)) return 'red';
   if (doc.doc_type === 'Selfie picture' && (!(doc.has_file || doc.stored_name || doc.file_data) || !String(doc.mime_type || '').startsWith('image/'))) return 'red';
@@ -60,12 +67,14 @@ function evaluate(docs, required, amber, ref) {
     let reason = safeguarding ? '3 of 3 safeguarding certificates valid' : 'Valid';
     if (missingCertificates) reason = certificates.length + ' of 3 safeguarding certificates uploaded; ' + (3 - certificates.length) + ' missing';
     else if (!best) reason = 'Missing';
+    else if (best.doc_type === 'GDPR' && !validIssueDate(best.issue_date)) reason = 'Issue date required';
     else if (best.status === 'invalid') reason = 'Marked invalid';
     else if (best.status === 'needs_review') reason = 'Auto input: details need review';
     else if (best.doc_type === 'Selfie picture' && status === 'red' && (!best.expiry_date || best.expiry_date >= ref)) reason = 'Selfie image required';
     else if (status === 'red') reason = `Expired ${ukDate(best.expiry_date)}`;
     else if (status === 'amber') { const n = daysBetween(ref, best.expiry_date); reason = `Expires ${ukDate(best.expiry_date)} (${n} ${n === 1 ? 'day' : 'days'})`; }
     else if (best.expiry_date) reason = `Expires ${ukDate(best.expiry_date)}`;
+    else if (best.doc_type === 'GDPR') reason = `Issued ${ukDate(best.issue_date)}`;
     return { doc_type: docType, status, reason, document: best, ...(safeguarding ? { documents: certificates, uploaded_count: certificates.length, required_count: 3 } : {}), days_left: best && best.expiry_date ? daysBetween(ref, best.expiry_date) : null };
   });
   const other = docs.filter(d => !required.includes(d.doc_type));
@@ -157,6 +166,6 @@ async function expiringDocuments(orgId, days, includeExpired = true) {
 }
 
 module.exports = {
-  DOC_TYPES, DEFAULT_REQUIRED, amberDays, requiredDocs, docStatus,
+  DOC_TYPES, DEFAULT_REQUIRED, amberDays, requiredDocs, docStatus, validIssueDate,
   staffCompliance, complianceForMany, expiringDocuments, daysBetween, ukDate,
 };
