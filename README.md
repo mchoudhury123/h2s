@@ -148,6 +148,7 @@ npm run test:serverless  # sessions and uploads across instance restarts
 npm run test:browser     # every page in a real browser, fails on any console error
 npm run test:workflow    # create records through the forms, through to payroll
 npm run test:schedules   # weekly schedules and child timetables, in a browser
+npm run test:invoicing   # invoice numbering, day counting, snapshots and PDFs
 ```
 
 The browser suites expect Chrome at the default Windows location and the server already running. The walkthrough suites (`test:browser`, `test:workflow` and `test:schedules`) sign in as the seeded sample business, so run them against a local SQLite server after `npm run seed`, or point them at a filled business of your own with `USER_EMAIL` and `USER_PASS`. A live database with only a real, empty firm on it has nothing for them to walk through.
@@ -318,6 +319,22 @@ Income minus driver cost minus PA cost minus other direct costs equals gross pro
 
 View profitability by day, week, month or any date range, and by contract, school, council or the whole business.
 
+### Invoicing
+
+Under Money. One invoice per contract per period, to the council, as a PDF.
+
+**Numbers are never reused.** Each business has a prefix and a next number in Settings, for example `BLSOLO` and `300`, and every invoice reads `BLSOLO 300 - Bamburgh Secondary`. Numbers are taken only when a batch is generated, never when previewing, in alphabetical order of contract code, inside one database transaction that advances the counter with a single locked update. Two batches started at the same moment cannot share a number, and a unique index on the number is the last line of defence. A wrong invoice is voided with a reason and keeps its number; the replacement gets the next new one. The next number can be raised in Settings but never lowered, and every change is in the audit log.
+
+**Days come from the calendar.** For every date the contract runs in the period, a date is worth 1 day when every run operated or was cancelled, half a day when only some did, and nothing when the whole day was taken off. Cancelled runs are billed because the council still pays for them; runs taken off are not, and the day dialog offers both. Extra one-off runs follow the same rule and a date is never worth more than 1 day. Weekends and days the contract does not run are never counted. The preview shows the working per contract, date by date, and the day count can be changed by hand in halves with a reason that is printed on the invoice and logged.
+
+**Nothing to invoice is refused clearly.** A contract with no PO number is blocked until one is added; a period already invoiced for a contract is blocked unless confirmed; a period with no billable days is skipped.
+
+**An issued invoice never changes.** Everything printed, from the rate and the days to the addresses, is kept with the invoice, so re-downloading gives the identical PDF however the contract changes afterwards. The register lists every invoice with its status, filters, search, mark as paid, void and CSV export. A batch downloads as a ZIP of PDFs or one combined PDF.
+
+**PO numbers and daily rates** are contract fields, shown on the Rates & PO numbers tab for editing in place. A change there is a change to the contract everywhere: the Contracts list, profitability and every future invoice, with the old and new value in the audit log.
+
+The PDF is drawn by the server with no dependency: A4, black on white, the company details on the left, the invoice number, date and supply period on the right, the bill-to block, one line, the totals and the payment footer.
+
 ### Schools
 
 Name, address, postcode, telephone, contact, email, opening and closing times and notes. Each school page automatically lists the children attending, the contracts travelling there, and the drivers and PAs who serve it.
@@ -368,11 +385,14 @@ server/
   http.js               request parsing, static files, CSV
   routes.js             the API
   reports.js            report builders
+  pdf.js                a small PDF writer for invoices
+  zip.js                a stored ZIP writer for batches of invoices
   seed.js               demo data
   services/
     schedule.js         the normal week: contract patterns and child timetables
     calendar.js         journey generation and exception evaluation
     wages.js            wage calculation
+    invoicing.js        billable days, invoice numbers, snapshots and the PDF layout
     finance.js          profitability
     compliance.js       traffic lights
     dashboard.js        dashboard figures and alerts

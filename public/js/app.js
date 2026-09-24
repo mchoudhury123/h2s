@@ -149,6 +149,7 @@ const NAV = [
     { path: '/payroll', label: 'Payroll history', icon: '🧾' },
     { path: '/finance', label: 'Profitability', icon: '📈' },
     { path: '/expenses', label: 'Expenses', icon: '🧮' },
+    { path: '/invoicing', label: 'Invoicing', icon: '📄' },
   ] },
   { group: 'Admin', items: [
     { path: '/reports', label: 'Reports', icon: '📑' },
@@ -342,6 +343,7 @@ Router.on('/wages', App.views.wages);
 Router.on('/payroll', App.views.payrollRuns);
 Router.on('/finance', App.views.finance);
 Router.on('/expenses', App.views.expenses);
+Router.on('/invoicing', App.views.invoicing);
 Router.on('/reports', App.views.reports);
 Router.on('/audit', App.views.audit);
 Router.on('/settings', App.views.settings);

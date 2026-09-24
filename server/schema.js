@@ -125,6 +125,7 @@ const TABLES = [
     pa_pay_per_day {{REAL}} NOT NULL DEFAULT 0,
     pay_basis TEXT NOT NULL DEFAULT 'per_journey' CHECK (pay_basis IN ('per_day','per_journey')),
     other_costs_per_day {{REAL}} NOT NULL DEFAULT 0,
+    po_number TEXT,
     notes TEXT,
     created_at TEXT NOT NULL DEFAULT {{NOW}}
   )`,
@@ -242,7 +243,7 @@ const TABLES = [
     id {{PK}},
     organisation_id ${ORG},
     date TEXT NOT NULL,
-    type TEXT NOT NULL CHECK (type IN ('child_absence','staff_absence','school_closed','contract_cancelled','journey_cancelled','pay_override','note','extra_journey')),
+    type TEXT NOT NULL CHECK (type IN ('child_absence','staff_absence','school_closed','contract_cancelled','journey_cancelled','journey_removed','pay_override','note','extra_journey')),
     -- Which journey this applies to. A trip number targets one journey; without
     -- one, AM means the outward trips, PM the return trips, DAY the whole day.
     leg TEXT NOT NULL DEFAULT 'DAY' CHECK (leg IN ('AM','PM','DAY')),
@@ -305,6 +306,27 @@ const TABLES = [
     created_by TEXT,
     created_at TEXT NOT NULL DEFAULT {{NOW}}
   )`,
+  // Invoices to the council: one contract, one period, one number that is
+  // never reused. Everything printed is kept in the snapshot, so the PDF can
+  // be produced again identically however the contract changes later.
+  `CREATE TABLE IF NOT EXISTS invoices (
+    id {{PK}},
+    organisation_id ${ORG},
+    number {{INT}} NOT NULL,
+    invoice_no TEXT NOT NULL,
+    contract_id {{INT}} REFERENCES contracts(id) ON DELETE SET NULL,
+    contract_code TEXT, school_name TEXT, po_number TEXT,
+    period_from TEXT NOT NULL, period_to TEXT NOT NULL, invoice_date TEXT NOT NULL,
+    days {{REAL}} NOT NULL, calculated_days {{REAL}}, override_reason TEXT,
+    daily_rate {{REAL}} NOT NULL, subtotal {{REAL}} NOT NULL,
+    vat_rate {{REAL}} NOT NULL DEFAULT 20, vat {{REAL}} NOT NULL, total {{REAL}} NOT NULL,
+    status TEXT NOT NULL DEFAULT 'issued' CHECK (status IN ('issued','paid','void')),
+    paid_date TEXT, void_reason TEXT,
+    batch_id TEXT, snapshot TEXT, created_by TEXT,
+    created_at TEXT NOT NULL DEFAULT {{NOW}}
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_number ON invoices(organisation_id, number)`,
+  `CREATE INDEX IF NOT EXISTS idx_invoices_contract ON invoices(organisation_id, contract_id, period_from, period_to)`,
   `CREATE TABLE IF NOT EXISTS audit_log (
     id {{PK}},
     organisation_id ${ORG},
@@ -365,7 +387,7 @@ function statements(dialect) {
 const TABLE_ORDER = ['organisations', 'settings', 'users', 'user_organisations', 'councils', 'schools', 'staff', 'vehicles',
   'contracts', 'contract_schedules', 'contract_trips', 'children', 'contract_trip_children',
   'child_timetables', 'child_timetable_days', 'documents', 'exceptions', 'payroll_runs', 'payments',
-  'payroll_run_lines', 'expenses', 'audit_log'];
+  'payroll_run_lines', 'expenses', 'invoices', 'audit_log'];
 
 // Every table holding one firm's data. Each must be filtered by organisation_id.
 // "sessions" is deliberately outside this: a session is looked up by its token

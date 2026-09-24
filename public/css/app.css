@@ -340,6 +340,20 @@ table.cal td.off { background: repeating-linear-gradient(45deg, transparent, tra
 .brand .orgpick { width: 100%; margin-top: 4px; font: inherit; font-size: 12px; font-weight: 600; letter-spacing: .02em; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); cursor: pointer; }
 .brand .orgpick:hover { border-color: var(--brand); }
 
+/* ---------- invoicing ---------- */
+.inv-row { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; margin-bottom: 8px; }
+.inv-row.blocked { opacity: .75; background: var(--surface-2); }
+.inv-main { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
+.inv-pick { padding-top: 4px; }
+.inv-who { min-width: 170px; }
+.inv-break { flex: 1; min-width: 240px; font-size: 12.5px; color: var(--text-dim); }
+.inv-days { display: flex; flex-direction: column; gap: 4px; }
+.inv-days label { font-size: 11px; color: var(--text-dim); font-weight: 600; }
+.inv-money { min-width: 150px; text-align: right; font-size: 12.5px; }
+.inv-warn { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.inv-warn .badge { white-space: normal; text-align: left; }
+.inv-dates { margin-top: 10px; }
+
 /* ---------- weekly schedules and timetables ---------- */
 .weekgrid { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
 .weekrow { display: flex; align-items: baseline; gap: 10px; padding: 7px 11px; border-bottom: 1px solid var(--border); font-size: 13px; }

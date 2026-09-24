@@ -130,16 +130,16 @@ async function widenExceptionTypes(driver, log) {
       if (!row) return;
       const def = await driver.get(
         `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = ?`, [row.conname]);
-      if (def && def.def.includes('extra_journey')) return;
+      if (def && def.def.includes('journey_removed')) return;
       await driver.exec(`ALTER TABLE exceptions DROP CONSTRAINT ${row.conname}`);
       await driver.exec(`ALTER TABLE exceptions ADD CONSTRAINT ${row.conname} CHECK (type IN
-        ('child_absence','staff_absence','school_closed','contract_cancelled','journey_cancelled','pay_override','note','extra_journey'))`);
-      log('  exceptions: one-off extra journeys are now allowed');
+        ('child_absence','staff_absence','school_closed','contract_cancelled','journey_cancelled','journey_removed','pay_override','note','extra_journey'))`);
+      log('  exceptions: runs can now be taken off as well as cancelled');
       return;
     }
     // SQLite: only rebuild if the old constraint is actually in the way.
     const info = await driver.get("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'exceptions'");
-    if (!info || info.sql.includes('extra_journey')) return;
+    if (!info || info.sql.includes('journey_removed')) return;
     const rows = await driver.all('SELECT * FROM exceptions');
     const cols = await driver.columns('exceptions');
     await driver.exec('ALTER TABLE exceptions RENAME TO exceptions_old');
@@ -153,7 +153,7 @@ async function widenExceptionTypes(driver, log) {
         shared.map(c => (r[c] === undefined ? null : r[c])));
     }
     await driver.exec('DROP TABLE exceptions_old');
-    log(`  exceptions: rebuilt to allow one-off extra journeys (${rows.length} kept)`);
+    log(`  exceptions: rebuilt to allow runs to be taken off (${rows.length} kept)`);
   } catch (e) {
     log(`  exceptions: could not widen the type list (${e.message})`);
     throw e;
@@ -207,6 +207,8 @@ async function applyMigrations(driver, log) {
   await widenExceptionTypes(driver, log);
   // An account can now belong to several businesses; a session says which.
   await addColumn(driver, 'sessions', 'organisation_id', 'INTEGER', log);
+  // Invoicing: the PO number lives on the contract.
+  await addColumn(driver, 'contracts', 'po_number', 'TEXT', log);
   for (const stmt of schema.statements(driver.dialect)) await driver.exec(stmt);
 }
 

@@ -414,7 +414,7 @@ Ops.dayDialog = async function (contractId, date, onChange) {
     const jbox = h('fieldset', h('legend', `Journeys on this date — ${plural(day.planned_trips, 'planned journey')}`));
     for (const t of day.trips) {
       const cancelled = day.exceptions.find(e =>
-        ['journey_cancelled', 'contract_cancelled', 'school_closed'].includes(e.type) && scopeTrips(day, e).some(x => x.seq === t.seq));
+        ['journey_cancelled', 'journey_removed', 'contract_cancelled', 'school_closed'].includes(e.type) && scopeTrips(day, e).some(x => x.seq === t.seq));
       jbox.appendChild(h('div', { class: 'trip-head' },
         h('div', { class: 'th-num' }, t.seq),
         h('div', { class: 'th-name' }, t.label,
@@ -429,6 +429,7 @@ Ops.dayDialog = async function (contractId, date, onChange) {
           (cancelled && cancelled.contract_id
             ? h('button', { class: 'btn xs', onclick: () => remove(cancelled.id) }, 'Undo cancellation')
             : (cancelled ? null : h('button', { class: 'btn xs danger', onclick: () => Ops.cancelRunDialog(c, date, day, tripScope(day, t), refresh, markDirty) }, 'Run cancelled'))),
+          (cancelled || t.source === 'extra') ? null : h('button', { class: 'btn xs', title: 'The run was not needed: not billed to the council and not paid', onclick: () => Ops.removeRunDialog(c, date, day, tripScope(day, t), refresh, markDirty) }, 'Taken off'),
           t.source === 'extra' ? h('button', { class: 'btn xs', onclick: () => remove(t.exception_id) }, 'Remove extra journey') : null)));
     }
     jbox.appendChild(h('div', { class: 'pill-row', style: 'margin-top:9px' },
@@ -758,6 +759,31 @@ Ops.cancelRunDialog = function (contract, date, day, scope, refresh, markDirty) 
       await api.post('/api/exceptions', { contract_id: contract.id, date, type: 'journey_cancelled',
         ...payloadOf(chosen), note: [values.reason, values.note.trim()].filter(Boolean).join(': ') });
       markDirty(); toast('Run cancelled — council income retained', 'ok'); dlg.close(); await refresh();
+    } catch (error) { toast(error.message, 'err'); saveBtn.disabled = false; }
+  };
+};
+
+/* A run taken off was never needed. Unlike a cancellation it is not billed
+   to the council, so the invoice for the period counts that date as a half
+   day, or nothing if every run was taken off. */
+Ops.removeRunDialog = function (contract, date, day, scope, refresh, markDirty) {
+  const choices = scopeChoices(day);
+  const initial = choices.findIndex(choice => choice.trip_seq === scope.trip_seq && choice.leg === scope.leg);
+  const form = UI.form([
+    { name: 'which', label: 'Which runs', type: 'select', placeholder: false, options: choices.map((choice, index) => ({ value: index, label: choice.label })) },
+    { name: 'note', label: 'Reason', span: 'full', placeholder: 'e.g. Council removed the PM run this week' },
+  ], { which: initial < 0 ? 0 : initial });
+  const saveBtn = h('button', { class: 'btn primary' }, 'Take run off');
+  const dlg = UI.modal({ title: `Take run off — ${contract.code} ${fmt.date(date)}`,
+    body: h('div', null, h('div', { class: 'note-box', style: 'margin-bottom:12px' },
+      h('strong', 'Not billed, not paid. '), 'Use this when the run was not needed. If the council cancelled a run late and still pays for it, use Run cancelled instead.'), form),
+    footer: [h('button', { class: 'btn', onclick: () => dlg.close() }, 'Back'), saveBtn] });
+  saveBtn.onclick = async () => {
+    const values = form.read(), chosen = choices[Number(values.which)] || ALL_DAY;
+    saveBtn.disabled = true;
+    try {
+      await api.post('/api/exceptions', { contract_id: contract.id, date, type: 'journey_removed', ...payloadOf(chosen), note: values.note });
+      markDirty(); toast('Run taken off — not billed', 'ok'); dlg.close(); await refresh();
     } catch (error) { toast(error.message, 'err'); saveBtn.disabled = false; }
   };
 };

@@ -19,6 +19,8 @@ const finance = require('./services/finance');
 const search = require('./services/search');
 const dash = require('./services/dashboard');
 const reports = require('./reports');
+const invoicing = require('./services/invoicing');
+const { zip } = require('./zip');
 
 // Uploaded files are kept in the database. This folder is only read, for files
 // stored by an older self-hosted version, and does not need to exist.
@@ -31,7 +33,7 @@ const COLS = {
   schools: ['name', 'address', 'postcode', 'phone', 'contact_name', 'email', 'open_time', 'close_time', 'notes', 'active'],
   staff: ['type', 'first_name', 'last_name', 'address', 'postcode', 'phone', 'email', 'emergency_contact_name', 'emergency_contact_phone', 'status', 'licensing_authority', 'badge_number', 'dbs_number', 'default_day_rate', 'availability', 'preferred_areas', 'start_date', 'notes'],
   vehicles: ['driver_id', 'registration', 'make', 'model', 'seats', 'wheelchair_accessible', 'colour', 'notes', 'active'],
-  contracts: ['code', 'name', 'council_id', 'council_ref', 'school_id', 'driver_id', 'pa_id', 'vehicle_id', 'requires_pa', 'status', 'start_date', 'end_date', 'days_of_week', 'am_pickup_time', 'am_arrival_time', 'pm_finish_time', 'pm_dropoff_time', 'route_info', 'am_notes', 'pm_notes', 'income_per_day', 'income_basis', 'driver_pay_per_day', 'pa_pay_per_day', 'pay_basis', 'other_costs_per_day', 'notes'],
+  contracts: ['code', 'name', 'council_id', 'council_ref', 'school_id', 'driver_id', 'pa_id', 'vehicle_id', 'requires_pa', 'status', 'start_date', 'end_date', 'days_of_week', 'am_pickup_time', 'am_arrival_time', 'pm_finish_time', 'pm_dropoff_time', 'route_info', 'am_notes', 'pm_notes', 'income_per_day', 'income_basis', 'driver_pay_per_day', 'pa_pay_per_day', 'pay_basis', 'other_costs_per_day', 'notes', 'po_number'],
   children: ['first_name', 'last_name', 'dob', 'address', 'postcode', 'parent_name', 'parent_phone', 'emergency_contact_name', 'emergency_contact_phone', 'school_id', 'contract_id', 'council_ref', 'pickup_time', 'arrival_time', 'finish_time', 'dropoff_time', 'medical_info', 'sen_needs', 'conditions', 'mobility', 'wheelchair', 'behaviour', 'communication', 'allergies', 'safeguarding_info', 'risk_info', 'notes', 'status'],
   expenses: ['date', 'contract_id', 'category', 'amount', 'description'],
 };
@@ -996,6 +998,7 @@ function describeException(r) {
     case 'school_closed': return `School closed (${leg})`;
     case 'contract_cancelled': return `Contract cancelled (${leg})`;
     case 'journey_cancelled': return `Journey cancelled (${leg})`;
+    case 'journey_removed': return `Run taken off (${leg}) - not billed`;
     case 'extra_journey': return `Extra journey: ${r.trip_label || r.note || 'additional run'}`;
     case 'pay_override': return `Pay override ${r.amount} (${leg})`;
     default: return r.note || 'Note';
@@ -1268,6 +1271,86 @@ route('GET', '/api/contracts/:id/day/:date', async ctx => {
   if (!c) return H.error(ctx.res, 'Contract not found', 404);
   const day = cal.evaluateContractDay(c, ctx.params.date, data.childMap[id] || [], data.exceptions, data);
   H.json(ctx.res, { ...day, contract: c });
+});
+
+// =====================================================================
+// Invoicing
+// =====================================================================
+function sendFile(res, buf, name, mime, inline = true) {
+  res.writeHead(200, {
+    'Content-Type': mime,
+    'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename="${name.replace(/"/g, '')}"`,
+    'Content-Length': buf.length,
+    'Cache-Control': 'private, no-store',
+  });
+  res.end(buf);
+}
+
+route('GET', '/api/invoicing/settings', async ctx => H.json(ctx.res, await invoicing.settings(ctx.org)));
+
+route('POST', '/api/invoicing/settings', async ctx => {
+  const r = await invoicing.saveSettings(ctx.org, ctx.body || {});
+  if (r.error) return H.error(ctx.res, r.error, 400);
+  if (r.changes.length) await audit.logAction(ctx.user, 'settings', 0, 'Invoice settings', 'update', `Invoice settings: ${r.changes.join('; ')}`);
+  H.json(ctx.res, r.settings);
+});
+
+route('GET', '/api/invoicing/preview', async ctx => {
+  const ids = ctx.query.contract_ids ? String(ctx.query.contract_ids).split(',').map(Number).filter(Boolean) : null;
+  const r = await invoicing.preview(ctx.org, { from: ctx.query.from, to: ctx.query.to, contract_ids: ids, invoice_date: ctx.query.invoice_date });
+  if (r.error) return H.error(ctx.res, r.error, 400);
+  H.json(ctx.res, r);
+});
+
+route('POST', '/api/invoicing/generate', async ctx => {
+  const b = ctx.body || {};
+  let r;
+  try { r = await invoicing.generate(ctx.org, ctx.user, { from: b.from, to: b.to, invoice_date: b.invoice_date, items: b.items, allow_overlap: !!b.allow_overlap }); }
+  catch (e) { return H.error(ctx.res, friendly(e), 400); }
+  if (r.error) return H.error(ctx.res, r.error, 400, r.overlap ? { overlap: true } : {});
+  for (const inv of r.invoices) {
+    await audit.logAction(ctx.user, 'invoice', inv.id, inv.invoice_no, 'create',
+      `Issued ${inv.invoice_no}: ${invoicing.daysText(inv.days)} days × ${invoicing.money(inv.daily_rate)} = ${invoicing.money(inv.total)} inc VAT, ${invoicing.ukDate(r.from)} to ${invoicing.ukDate(r.to)}`
+      + (inv.override_reason ? ` (days changed from ${invoicing.daysText(inv.calculated_days)} to ${invoicing.daysText(inv.days)}: ${inv.override_reason})` : ''));
+    if (inv.contract_id) await audit.logAction(ctx.user, 'contracts', inv.contract_id, inv.code, 'invoice', `Invoiced on ${inv.invoice_no}`);
+  }
+  H.json(ctx.res, r, 201);
+});
+
+route('GET', '/api/invoices', async ctx => H.json(ctx.res, await invoicing.list(ctx.org, ctx.query)));
+
+route('GET', '/api/invoices/:id', async ctx => {
+  const inv = await invoicing.one(ctx.org, Number(ctx.params.id));
+  if (!inv) return H.error(ctx.res, 'Invoice not found', 404);
+  H.json(ctx.res, inv);
+});
+
+route('GET', '/api/invoices/:id/pdf', async ctx => {
+  const inv = await invoicing.one(ctx.org, Number(ctx.params.id));
+  if (!inv) return H.error(ctx.res, 'Invoice not found', 404);
+  sendFile(ctx.res, invoicing.pdfFor(inv), invoicing.fileName(inv), 'application/pdf', ctx.query.download !== '1');
+});
+
+route('PUT', '/api/invoices/:id', async ctx => {
+  const b = ctx.body || {};
+  const r = await invoicing.setStatus(ctx.org, Number(ctx.params.id), b.status, b.reason);
+  if (r.error) return H.error(ctx.res, r.error, r.error === 'Invoice not found' ? 404 : 400);
+  await audit.logAction(ctx.user, 'invoice', r.invoice.id, r.invoice.invoice_no, 'update',
+    b.status === 'void' ? `Voided ${r.invoice.invoice_no}: ${r.invoice.void_reason}` : `${r.invoice.invoice_no} marked as ${b.status}`);
+  H.json(ctx.res, r.invoice);
+});
+
+route('GET', '/api/invoicing/batch/:batchId/zip', async ctx => {
+  const rows = await invoicing.byBatch(ctx.org, ctx.params.batchId);
+  if (!rows.length) return H.error(ctx.res, 'Batch not found', 404);
+  const files = rows.map(inv => ({ name: invoicing.fileName(inv), data: invoicing.pdfFor(inv) }));
+  sendFile(ctx.res, zip(files), `invoices-${rows[0].period_from}-to-${rows[0].period_to}.zip`, 'application/zip', false);
+});
+
+route('GET', '/api/invoicing/batch/:batchId/pdf', async ctx => {
+  const rows = await invoicing.byBatch(ctx.org, ctx.params.batchId);
+  if (!rows.length) return H.error(ctx.res, 'Batch not found', 404);
+  sendFile(ctx.res, invoicing.pdfForMany(rows), `invoices-${rows[0].period_from}-to-${rows[0].period_to}.pdf`, 'application/pdf');
 });
 
 // =====================================================================

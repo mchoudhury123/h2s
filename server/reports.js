@@ -213,6 +213,19 @@ const BUILDERS = {
     };
   },
 
+  'invoices': async (q, user, org) => {
+    const invoicing = require('./services/invoicing');
+    const rows = await invoicing.list(org, q);
+    return {
+      title: 'Invoice register',
+      columns: [c('invoice_no', 'Invoice number'), c('contract_code', 'Contract'), c('school_name', 'School'), c('po_number', 'PO number'),
+        c('period_from', 'Period from'), c('period_to', 'Period to'), c('invoice_date', 'Invoice date'),
+        c('days', 'Days'), c('daily_rate', 'Daily rate', money), c('subtotal', 'Subtotal', money), c('vat', 'VAT', money), c('total', 'Total', money),
+        c('status', 'Status'), c('paid_date', 'Paid date'), c('void_reason', 'Void reason'), c('override_reason', 'Days adjusted because')],
+      rows,
+    };
+  },
+
   'audit': async (q, user, org) => ({
     title: 'Audit Log',
     columns: [c('created_at', 'When'), c('user_name', 'User'), c('entity_type', 'Record type'), c('entity_label', 'Record'), c('action', 'Action'), c('field', 'Field'), c('old_value', 'Previous value'), c('new_value', 'New value'), c('summary', 'Summary')],

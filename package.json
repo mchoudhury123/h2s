@@ -20,7 +20,8 @@
     "test:browser": "node --experimental-sqlite --no-warnings scripts/smoke.js",
     "test:workflow": "node --experimental-sqlite --no-warnings scripts/check-workflow.js",
     "test:schedules": "node --experimental-sqlite --no-warnings scripts/check-schedules.js",
-    "business": "node --experimental-sqlite --no-warnings scripts/business.js"
+    "business": "node --experimental-sqlite --no-warnings scripts/business.js",
+    "test:invoicing": "node --experimental-sqlite --no-warnings scripts/test-invoicing.js"
   },
   "engines": {
     "node": ">=20.19"

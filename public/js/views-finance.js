@@ -561,6 +561,7 @@ App.views.settings = async function () {
         UI.card('Required for PAs', h('div', null,
           h('p', { style: 'color:var(--text-dim);font-size:13px;margin:0 0 10px' }, 'Click to add or remove a required document.'),
           docPicker('required_docs_pa', s.all_doc_types.staff, s.required_docs_pa)))) },
+      { id: 'invoicing', label: 'Invoicing', render: () => { const box = h('div', h('div', { class: 'loading' }, h('span', { class: 'spinner' }))); Inv.settingsTab().then(el => { box.innerHTML = ''; box.appendChild(el); }).catch(e => { box.textContent = e.message; }); return box; } },
       { id: 'users', label: 'Who can sign in', count: users.length, render: () => h('div', null,
         UI.cardTight('Accounts for ' + (App.state.settings.company_name || 'your business'), userTable,
           h('button', { class: 'btn sm primary', onclick: () => Fin.userEditor(null) }, '+ Add someone')),

@@ -165,13 +165,19 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
     const cancelled = cancelledWholeDay
       || ex.find(e => e.type === 'contract_cancelled' && appliesToTrip(e, plan));
     const journeyCancelled = ex.find(e => e.type === 'journey_cancelled' && appliesToTrip(e, plan));
-    const cancellation = closedHere || cancelled || journeyCancelled;
+    // A run taken off was never needed: no council income, no staff pay, not
+    // billed. A cancelled run keeps its council income and is billed.
+    const removed = ex.find(e => e.type === 'journey_removed' && appliesToTrip(e, plan));
+    const cancellation = removed ? null : (closedHere || cancelled || journeyCancelled);
     t.cancelled = !!cancellation;
-    t.cancellation_exception_id = cancellation ? cancellation.id : null;
-    if (closedHere) { t.status = 'not_operated'; t.reason = 'School closed'; }
+    t.removed = !!removed;
+    t.cancellation_exception_id = cancellation ? cancellation.id : (removed ? removed.id : null);
+    if (removed) { t.status = 'not_operated'; t.reason = 'Run taken off'; }
+    else if (closedHere) { t.status = 'not_operated'; t.reason = 'School closed'; }
     else if (cancelled) { t.status = 'not_operated'; t.reason = 'Contract not operating'; }
     else if (journeyCancelled) { t.status = 'not_operated'; t.reason = 'Journey cancelled'; }
     if (cancellation && cancellation.note) t.reason += ' — ' + cancellation.note;
+    if (removed && removed.note) t.reason += ' — ' + removed.note;
 
     // Who is on this trip, of the children expected in today.
     const riders = sched.tripChildren(plan, scheduledChildren);
