@@ -40,9 +40,22 @@ const TABLES = [
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(LOWER(email))`,
   // Sign-in sessions live in the database, not in memory, so the CRM works on a
   // serverless host where each request may be served by a different instance.
+  // Further businesses an account belongs to. The business the account was
+  // created in is users.organisation_id and is not repeated here.
+  `CREATE TABLE IF NOT EXISTS user_organisations (
+    id {{PK}},
+    organisation_id ${ORG},
+    user_id {{INT}} NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    added_by TEXT,
+    created_at TEXT NOT NULL DEFAULT {{NOW}}
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_user_organisations ON user_organisations(user_id, organisation_id)`,
+  // A session remembers which of the account's businesses it is looking at.
+  // Empty means the account's own business.
   `CREATE TABLE IF NOT EXISTS sessions (
     token TEXT PRIMARY KEY,
     user_id {{INT}} NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    organisation_id {{INT}},
     expires_at TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT {{NOW}}
   )`,
@@ -349,7 +362,7 @@ function statements(dialect) {
 }
 
 // Order matters for deletes and for copying rows between databases.
-const TABLE_ORDER = ['organisations', 'settings', 'users', 'councils', 'schools', 'staff', 'vehicles',
+const TABLE_ORDER = ['organisations', 'settings', 'users', 'user_organisations', 'councils', 'schools', 'staff', 'vehicles',
   'contracts', 'contract_schedules', 'contract_trips', 'children', 'contract_trip_children',
   'child_timetables', 'child_timetable_days', 'documents', 'exceptions', 'payroll_runs', 'payments',
   'payroll_run_lines', 'expenses', 'audit_log'];

@@ -115,9 +115,10 @@ App.signedOut = function (message) {
 
 App.loadMe = async function () {
   const me = await api.get('/api/me');
-  if (App.state.user?.id !== me.user.id) UI.invalidateLookups();
+  if (App.state.user?.id !== me.user.id || App.state.organisation?.id !== me.organisation.id) UI.invalidateLookups();
   App.state.user = me.user;
   App.state.organisation = me.organisation;
+  App.state.organisations = me.organisations || [me.organisation];
   App.state.settings = me.settings;
   App.state.docTypes = me.doc_types;
   return me;
@@ -156,13 +157,39 @@ const NAV = [
   ] },
 ];
 
+/* Someone who belongs to more than one business chooses which one to look at
+   here. Everything on screen then belongs to that business and nothing else. */
+App.businessPicker = function () {
+  const orgs = App.state.organisations || [];
+  if (orgs.length < 2) return null;
+  const current = App.state.organisation ? App.state.organisation.id : null;
+  const sel = h('select', { class: 'orgpick', title: 'Switch business', 'aria-label': 'Business' },
+    ...orgs.map(o => h('option', { value: o.id, selected: o.id === current }, o.name)));
+  sel.onchange = async () => {
+    const id = Number(sel.value);
+    if (id === current) return;
+    sel.disabled = true;
+    try {
+      const r = await api.post('/api/switch-business', { organisation_id: id });
+      UI.closeAll();
+      UI.invalidateLookups();
+      await App.loadMe();
+      toast(`Now looking at ${r.organisation.name}`, 'ok');
+      App.renderShell();
+      Router.go('/', true);
+      Router.handle();
+    } catch (e) { toast(e.message, 'err'); sel.value = current; sel.disabled = false; }
+  };
+  return h('div', { class: 'sub' }, sel);
+};
+
 App.renderShell = function () {
   const root = document.getElementById('root');
   const u = App.state.user;
   const sidebar = h('aside', { class: 'sidebar', id: 'sidebar' },
     h('div', { class: 'brand' },
       h('div', { class: 'logo' }, '🚐 ', h('span', 'Transport CRM')),
-      h('div', { class: 'sub' }, App.state.settings.company_name || 'Operations')),
+      App.businessPicker() || h('div', { class: 'sub' }, App.state.settings.company_name || 'Operations')),
     h('nav', { class: 'nav', id: 'nav' }),
     h('div', { class: 'userbox' },
       h('div', { class: 'who' }, u.name),

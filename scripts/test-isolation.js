@@ -43,6 +43,7 @@ class Firm {
   del(p) { return this.call('DELETE', p); }
 
   async register(businessName, email, password) {
+    this.password = password;
     const r = await this.post('/api/register', { business_name: businessName, email, password, name: 'Owner of ' + businessName });
     if (r.status !== 201) throw new Error(`${this.label}: registration failed: ${JSON.stringify(r.data)}`);
     this.user = r.data.user;
@@ -243,8 +244,41 @@ class Firm {
   ok(editOther.status === 404, "A cannot edit B's account");
   const delOther = await a.del('/api/users/' + bUserId);
   ok(delOther.status === 404, "A cannot delete B's account");
-  const dupEmail = await b.post('/api/users', { email: `alpha${stamp}@example.test`, name: 'X', password: 'somepass1' });
-  ok(dupEmail.status === 400, 'an email address already in use anywhere is refused');
+  // ---------------------------------------------------------------
+  section('8b. One account can belong to two firms, and sees one at a time');
+  const alphaEmail = `alpha${stamp}@example.test`;
+  const shared = await b.post('/api/users', { email: alphaEmail, name: 'ignored', password: '' });
+  ok(shared.status === 201 && shared.data.existing === true, "B adds A's owner by email, and it joins as the existing account");
+  const again = await b.post('/api/users', { email: alphaEmail, name: 'X', password: 'somepass1' });
+  ok(again.status === 400, 'adding the same person twice is refused');
+  const meA = await a.get('/api/me');
+  ok(meA.data.organisations.length === 2 && meA.data.organisation.id === meA.data.user.home_organisation_id,
+    "A's owner now belongs to two businesses and is still looking at their own");
+  const bOrgId = meA.data.organisations.find(o => !o.home).id;
+  ok((await a.get('/api/contracts')).data.every(c => c.id !== b.ids.contract), 'before switching, A still sees only A');
+
+  const sw = await a.post('/api/switch-business', { organisation_id: bOrgId });
+  ok(sw.status === 200 && sw.data.organisation.id === bOrgId, 'switching to B works');
+  const asB = (await a.get('/api/contracts')).data;
+  ok(asB.some(c => c.id === b.ids.contract) && asB.every(c => c.id !== a.ids.contract), 'after switching, the same session sees only B');
+  const kidsAsB = (await a.get('/api/children')).data;
+  ok(kidsAsB.some(c => c.id === b.ids.child) && kidsAsB.every(c => c.id !== a.ids.child), "and B's children, none of A's");
+  ok((await a.get('/api/contracts/' + a.ids.contract)).status === 404, "A's own contract is out of reach while looking at B");
+  const teamB = (await a.get('/api/users')).data;
+  ok(teamB.some(u => u.email === alphaEmail && !u.home), "B's team lists the shared account as shared");
+  const takeover = await b.put('/api/users/' + meA.data.user.id, { password: 'stolen123' });
+  ok(takeover.status === 403, "B cannot change the shared account's password");
+  ok((await a.post('/api/switch-business', { organisation_id: 999999 })).status === 403, 'switching to a business you are not part of is refused');
+
+  ok((await a.post('/api/switch-business', { organisation_id: meA.data.user.home_organisation_id })).status === 200, 'switching back works');
+  ok((await a.get('/api/contracts')).data.some(c => c.id === a.ids.contract) && (await a.get('/api/contracts')).data.every(c => c.id !== b.ids.contract), 'and A sees only A again');
+
+  const dropped = await b.del('/api/users/' + meA.data.user.id);
+  ok(dropped.status === 200 && dropped.data.account_closed === false, 'B removes the shared account without closing it');
+  const relogin = await a.post('/api/login', { email: alphaEmail, password: a.password });
+  ok(relogin.status === 200, "removal ended A's sessions but the account and password survive");
+  ok((await a.get('/api/me')).data.organisations.length === 1, 'and it now belongs to one business again');
+  ok((await b.get('/api/users')).data.every(u => u.email !== alphaEmail), "B's team no longer lists it");
 
   // ---------------------------------------------------------------
   section('9. Settings are per firm');

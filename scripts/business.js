@@ -120,6 +120,16 @@ async function main() {
         await tx.run(`DELETE FROM ${t} WHERE organisation_id = ?`, [org.id]);
       }
     } else {
+      // An account created here that also belongs to another business moves
+      // there instead of vanishing with this one.
+      const shared = await tx.all(
+        `SELECT u.id, MIN(m.organisation_id) AS next FROM users u
+         JOIN user_organisations m ON m.user_id = u.id
+         WHERE u.organisation_id = ? GROUP BY u.id`, [org.id]);
+      for (const s of shared) {
+        await tx.run('/* cross-org: the account moves its home to another of its businesses */ UPDATE users SET organisation_id = ? WHERE id = ?', [s.next, s.id]);
+        await tx.run('DELETE FROM user_organisations WHERE organisation_id = ? AND user_id = ?', [s.next, s.id]);
+      }
       // Every table of firm data cascades from the business, accounts and
       // their sessions included.
       await tx.run('DELETE FROM organisations WHERE id = ?', [org.id]);

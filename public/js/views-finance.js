@@ -532,15 +532,20 @@ App.views.settings = async function () {
   const userTable = UI.table([
     { key: 'name', label: 'Name', value: u => h('strong', u.name) },
     { key: 'email', label: 'Email address' },
+    { key: 'home', label: 'Account', value: u => u.home
+      ? (u.business_count > 1 ? h('span', { class: 'badge blue', title: 'Created here, and added to other businesses' }, `Also in ${plural(u.business_count - 1, 'other business', 'other businesses')}`) : h('span', { class: 'badge' }, 'This business'))
+      : h('span', { class: 'badge purple', title: 'Created by another business and added here. They switch between businesses from the top left.' }, 'Shared from another business') },
     { key: 'active', label: 'Status', value: u => u.active ? h('span', { class: 'badge green' }, 'Active') : h('span', { class: 'badge' }, 'Disabled') },
     { key: 'last_login', label: 'Last signed in', value: u => u.last_login ? fmt.datetime(u.last_login) : 'Never' },
     { key: 'created_at', label: 'Added', value: u => fmt.datetime(u.created_at) },
     { label: '', sortable: false, value: u => h('div', { class: 'pill-row' },
-      h('button', { class: 'btn xs', onclick: () => Fin.userEditor(u) }, 'Edit'),
+      (u.home || u.id === App.state.user.id) ? h('button', { class: 'btn xs', onclick: () => Fin.userEditor(u) }, 'Edit') : null,
       u.id !== App.state.user.id
         ? h('button', { class: 'btn xs danger', onclick: () => UI.confirm(
-            `Remove ${u.email} from ${App.state.settings.company_name || 'your business'}? They will no longer be able to sign in.`,
-            async () => { await api.del('/api/users/' + u.id); toast('Account removed', 'ok'); Router.handle(); })
+            u.business_count > 1
+              ? `Remove ${u.email} from ${App.state.settings.company_name || 'this business'}? They keep their account and their other ${plural(u.business_count - 1, 'business', 'businesses')}.`
+              : `Remove ${u.email} from ${App.state.settings.company_name || 'your business'}? They will no longer be able to sign in.`,
+            async () => { const r = await api.del('/api/users/' + u.id); toast(r.account_closed ? 'Account removed' : 'Removed from this business', 'ok'); Router.handle(); })
           }, 'Remove')
         : h('span', { class: 'badge blue' }, 'You')) },
   ], users, { empty: 'No accounts' });
@@ -561,7 +566,8 @@ App.views.settings = async function () {
           h('button', { class: 'btn sm primary', onclick: () => Fin.userEditor(null) }, '+ Add someone')),
         h('p', { style: 'color:var(--text-dim);font-size:13px;margin-top:12px' },
           'Everyone here has full access to this business and nothing outside it. ',
-          'No other firm using this system can see your records.')) },
+          'No other firm using this system can see your records. ',
+          'Add someone who already signs in elsewhere and they keep their one account and password, and switch between businesses from the top left.')) },
     ]));
 };
 
@@ -571,17 +577,20 @@ Fin.userEditor = function (u) {
     fields: [
       { name: 'name', label: 'Full name', required: true, span: 'full' },
       ...(u ? [] : [{ name: 'email', label: 'Email address', type: 'email', required: true, span: 'full',
-        help: 'They sign in with this address.' }]),
-      { name: 'password', label: u ? 'New password (leave blank to keep the current one)' : 'Password',
-        type: 'password', required: !u, span: 'full',
-        help: 'At least 8 characters, including a letter and a number.' },
+        help: 'They sign in with this address. If it already signs in to another business, that account is added here as it is.' }]),
+      { name: 'password', label: u ? 'New password (leave blank to keep the current one)' : 'Password for a new account',
+        type: 'password', required: false, span: 'full',
+        help: u ? 'At least 8 characters, including a letter and a number.'
+          : 'At least 8 characters, including a letter and a number. Leave blank for someone who already has an account; their password is not changed.' },
       ...(u ? [{ name: 'active', label: 'This account can sign in', type: 'checkbox', span: 'full' }] : []),
     ],
     values: u || {},
     onSave: async v => {
-      if (u) { if (!v.password) delete v.password; await api.put('/api/users/' + u.id, v); }
-      else await api.post('/api/users', v);
-      toast(u ? 'Account updated' : 'Account created', 'ok');
+      if (u) { if (!v.password) delete v.password; await api.put('/api/users/' + u.id, v); toast('Account updated', 'ok'); }
+      else {
+        const r = await api.post('/api/users', v);
+        toast(r.existing ? `${r.email} added. They can switch to this business from the top left.` : 'Account created', 'ok');
+      }
       Router.handle();
     },
   });

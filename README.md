@@ -51,7 +51,9 @@ It only ever touches the business you name. Without `--replace` it keeps what yo
 
 Every operating firm is separate. Registering creates the firm and its first account in one step.
 
-There are **no roles**. Everyone who can sign in administers their own firm and sees everything belonging to it: children, staff, compliance, wages, profitability, reports and the audit log. To let a colleague in, go to **Settings then Who can sign in** and add them with their email address and a password. They get the same access, to the same firm, and nothing else.
+There are **no roles**. Everyone who can sign in administers the firm they are looking at and sees everything belonging to it: children, staff, compliance, wages, profitability, reports and the audit log. To let a colleague in, go to **Settings then Who can sign in** and add them with their email address and a password. They get the same access, to the same firm, and nothing else.
+
+**One person, one account, several firms.** Add an email address that already signs in elsewhere and that account joins your firm as it is, with its existing password. The person then gets a dropdown in the top left to switch between their businesses, and everything on screen belongs to whichever one is chosen. Only the firm an account was created in, or the person themselves, can change its name, password or standing; another firm can only remove it from its own team.
 
 An email address belongs to one account in one firm. Signing in finds the account, and the account fixes which firm's records you see for the whole session.
 

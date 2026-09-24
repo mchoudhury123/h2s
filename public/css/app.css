@@ -336,6 +336,10 @@ table.cal td.off { background: repeating-linear-gradient(45deg, transparent, tra
 @keyframes spin { to { transform: rotate(360deg); } }
 .loading { padding: 40px; text-align: center; color: var(--text-faint); }
 
+/* the business switcher in the sidebar, for accounts that belong to several */
+.brand .orgpick { width: 100%; margin-top: 4px; font: inherit; font-size: 12px; font-weight: 600; letter-spacing: .02em; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); cursor: pointer; }
+.brand .orgpick:hover { border-color: var(--brand); }
+
 /* ---------- weekly schedules and timetables ---------- */
 .weekgrid { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
 .weekrow { display: flex; align-items: baseline; gap: 10px; padding: 7px 11px; border-bottom: 1px solid var(--border); font-size: 13px; }

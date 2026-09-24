@@ -126,6 +126,7 @@ route('GET', '/api/me', async ctx => {
   H.json(ctx.res, {
     user: ctx.user,
     organisation: await get('SELECT id, name FROM organisations WHERE id = ?', [ctx.org]),
+    organisations: await auth.memberships(ctx.user.id, ctx.user.home_organisation_id),
     settings: {
       amber_days: await compliance.amberDays(ctx.org),
       company_name: await getSetting(ctx.org, 'company_name', ctx.user.organisation_name),
@@ -1510,48 +1511,67 @@ route('POST', '/api/settings', async ctx => {
 
 route('GET', '/api/users', async ctx => H.json(ctx.res, await auth.listUsers(ctx.org)));
 
+/** Looks at another of the account's businesses. Everything after this is scoped to it. */
+route('POST', '/api/switch-business', async ctx => {
+  const org = await auth.switchOrganisation(ctx.token, ctx.user, ctx.body.organisation_id);
+  if (!org) return H.error(ctx.res, 'You are not part of that business', 403);
+  const user = { ...ctx.user, organisation_id: org.id, organisation_name: org.name };
+  await audit.logAction(user, 'user', user.id, user.name, 'login', `Switched to ${org.name}`);
+  H.json(ctx.res, { user, organisation: org });
+});
+
 route('POST', '/api/users', async ctx => {
   const { email, name, password } = ctx.body;
-  const r = await auth.addUser(ctx.org, { email, name, password });
+  const r = await auth.addUser(ctx.org, { email, name, password }, ctx.user.name);
   if (r.error) return H.error(ctx.res, r.error, 400);
-  await audit.logAction(ctx.user, 'user', r.user.id, r.user.name, 'create', `Added ${r.user.email} to the team`);
-  H.json(ctx.res, r.user, 201);
+  await audit.logAction(ctx.user, 'user', r.user.id, r.user.name, 'create',
+    r.existing ? `Added ${r.user.email}, who already had an account, to the team` : `Added ${r.user.email} to the team`);
+  H.json(ctx.res, { ...r.user, existing: r.existing }, 201);
 });
 
 route('PUT', '/api/users/:id', async ctx => {
   const id = Number(ctx.params.id);
+  // Only the business an account was created in, or the person themselves, may
+  // change its name, password or standing. Anyone else in a shared business
+  // could otherwise take over an account and walk into its other firms.
   const u = await get('SELECT * FROM users WHERE id = ? AND organisation_id = ?', [id, ctx.org]);
-  if (!u) return H.error(ctx.res, 'User not found', 404);
+  if (!u) {
+    const shared = (await auth.listUsers(ctx.org)).find(x => x.id === id);
+    if (!shared) return H.error(ctx.res, 'User not found', 404);
+    if (id !== ctx.user.id) return H.error(ctx.res, 'That account belongs to another business. You can remove it from yours, but not change it.', 403);
+  }
   const b = ctx.body;
   if (b.password) {
     const bad = auth.checkPassword(b.password);
     if (bad) return H.error(ctx.res, bad, 400);
-    await run('UPDATE users SET password_hash = ? WHERE id = ? AND organisation_id = ?', [auth.hash(b.password), id, ctx.org]);
+    await run('/* cross-org: the account was checked against this business above */ UPDATE users SET password_hash = ? WHERE id = ?', [auth.hash(b.password), id]);
     // A new password ends that account's other sessions. Your own stays alive,
     // so changing your password does not sign you out mid-task.
     await auth.endSessionsFor(id, id === ctx.user.id ? ctx.token : null);
   }
-  if (b.name !== undefined) await run('UPDATE users SET name = ? WHERE id = ? AND organisation_id = ?', [String(b.name).trim(), id, ctx.org]);
+  if (b.name !== undefined) await run('/* cross-org: the account was checked against this business above */ UPDATE users SET name = ? WHERE id = ?', [String(b.name).trim(), id]);
   if (b.active !== undefined) {
     if (!Number(b.active) && id === ctx.user.id) return H.error(ctx.res, 'You cannot disable your own account', 400);
-    await run('UPDATE users SET active = ? WHERE id = ? AND organisation_id = ?', [b.active ? 1 : 0, id, ctx.org]);
+    await run('/* cross-org: the account was checked against this business above */ UPDATE users SET active = ? WHERE id = ?', [b.active ? 1 : 0, id]);
     if (!Number(b.active)) await auth.endSessionsFor(id);
   }
-  await audit.logAction(ctx.user, 'user', id, u.name, 'update', `Updated ${u.email}`);
-  H.json(ctx.res, await get('SELECT id, email, name, active FROM users WHERE id = ? AND organisation_id = ?', [id, ctx.org]));
+  const after = (await auth.listUsers(ctx.org)).find(x => x.id === id);
+  await audit.logAction(ctx.user, 'user', id, after.name, 'update', `Updated ${after.email}`);
+  H.json(ctx.res, after);
 });
 
 route('DELETE', '/api/users/:id', async ctx => {
   const id = Number(ctx.params.id);
-  if (ctx.user.id === id) return H.error(ctx.res, 'You cannot delete your own account', 400);
-  const u = await get('SELECT * FROM users WHERE id = ? AND organisation_id = ?', [id, ctx.org]);
+  if (ctx.user.id === id) return H.error(ctx.res, 'You cannot remove your own account', 400);
+  const team = await auth.listUsers(ctx.org);
+  const u = team.find(x => x.id === id);
   if (!u) return H.error(ctx.res, 'User not found', 404);
-  const remaining = Number((await get('SELECT COUNT(*) AS n FROM users WHERE organisation_id = ? AND active = 1', [ctx.org])).n);
-  if (remaining <= 1) return H.error(ctx.res, 'A business must keep at least one active account', 400);
-  await run('DELETE FROM users WHERE id = ? AND organisation_id = ?', [id, ctx.org]);
-  await auth.endSessionsFor(id);
-  await audit.logAction(ctx.user, 'user', id, u.name, 'delete', `Removed ${u.email} from the team`);
-  H.json(ctx.res, { ok: true });
+  if (team.filter(x => x.active && x.id !== id).length < 1) return H.error(ctx.res, 'A business must keep at least one active account', 400);
+  const r = await auth.removeUser(ctx.org, id);
+  if (r.error) return H.error(ctx.res, r.error, 404);
+  await audit.logAction(ctx.user, 'user', id, u.name, 'delete',
+    r.deleted ? `Removed ${u.email} from the team and closed the account` : `Removed ${u.email} from the team`);
+  H.json(ctx.res, { ok: true, account_closed: r.deleted });
 });
 
 route('GET', '/api/audit', async ctx => H.json(ctx.res,

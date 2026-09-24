@@ -205,6 +205,8 @@ async function applyMigrations(driver, log) {
   await addColumn(driver, 'exceptions', 'trip_label', 'TEXT', log);
   await addColumn(driver, 'exceptions', 'trip_kind', 'TEXT', log);
   await widenExceptionTypes(driver, log);
+  // An account can now belong to several businesses; a session says which.
+  await addColumn(driver, 'sessions', 'organisation_id', 'INTEGER', log);
   for (const stmt of schema.statements(driver.dialect)) await driver.exec(stmt);
 }
 
