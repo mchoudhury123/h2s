@@ -1319,6 +1319,14 @@ route('POST', '/api/invoicing/generate', async ctx => {
 
 route('GET', '/api/invoices', async ctx => H.json(ctx.res, await invoicing.list(ctx.org, ctx.query)));
 
+/** Every invoice matching the register's filters, as one ZIP of PDFs. */
+route('GET', '/api/invoices/zip', async ctx => {
+  const rows = await invoicing.withSnapshots(ctx.org, ctx.query);
+  if (!rows.length) return H.error(ctx.res, 'No invoices match', 404);
+  const label = [ctx.query.from, ctx.query.to].filter(Boolean).join('-to-') || 'all';
+  sendFile(ctx.res, invoicing.zipFor(rows), `invoices-${label}.zip`, 'application/zip', false);
+});
+
 route('GET', '/api/invoices/:id', async ctx => {
   const inv = await invoicing.one(ctx.org, Number(ctx.params.id));
   if (!inv) return H.error(ctx.res, 'Invoice not found', 404);
@@ -1333,11 +1341,15 @@ route('GET', '/api/invoices/:id/pdf', async ctx => {
 
 route('PUT', '/api/invoices/:id', async ctx => {
   const b = ctx.body || {};
-  const r = await invoicing.setStatus(ctx.org, Number(ctx.params.id), b.status, b.reason);
+  const r = await invoicing.setStatus(ctx.org, Number(ctx.params.id), b.status, b.reason, !!b.reuse_number);
   if (r.error) return H.error(ctx.res, r.error, r.error === 'Invoice not found' ? 404 : 400);
-  await audit.logAction(ctx.user, 'invoice', r.invoice.id, r.invoice.invoice_no, 'update',
-    b.status === 'void' ? `Voided ${r.invoice.invoice_no}: ${r.invoice.void_reason}` : `${r.invoice.invoice_no} marked as ${b.status}`);
-  H.json(ctx.res, r.invoice);
+  await audit.logAction(ctx.user, 'invoice', r.invoice.id, r.invoice.invoice_no, r.released ? 'delete' : 'update',
+    b.status === 'void'
+      ? (r.released
+        ? `Voided ${r.invoice.invoice_no} and handed number ${r.invoice.number} back for the next invoice: ${r.invoice.void_reason} (was ${invoicing.daysText(r.invoice.days)} days, ${invoicing.money(r.invoice.total)}, ${invoicing.ukDate(r.invoice.period_from)} to ${invoicing.ukDate(r.invoice.period_to)})`
+        : `Voided ${r.invoice.invoice_no}: ${r.invoice.void_reason}`)
+      : `${r.invoice.invoice_no} marked as ${b.status}`);
+  H.json(ctx.res, { ...r.invoice, released: !!r.released });
 });
 
 route('GET', '/api/invoicing/batch/:batchId/zip', async ctx => {

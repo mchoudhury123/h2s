@@ -43,7 +43,14 @@ async function settings(orgId) {
     bill_to: await getSetting(orgId, 'invoice_bill_to', DEFAULTS.bill_to),
     footer: await getSetting(orgId, 'invoice_footer', DEFAULTS.footer),
     max_issued: maxIssued && maxIssued.n != null ? Number(maxIssued.n) : null,
+    released_numbers: await releasedNumbers(orgId),
   };
+}
+
+/** Numbers handed back by a void, waiting to be used by the next batch. */
+async function releasedNumbers(orgId) {
+  try { const v = JSON.parse(await getSetting(orgId, 'invoice_released_numbers', '[]')); return Array.isArray(v) ? v.map(Number).filter(Number.isInteger).sort((a, b) => a - b) : []; }
+  catch (_) { return []; }
 }
 
 /** The counter row must exist before a batch can lock and advance it. */
@@ -248,9 +255,8 @@ async function generate(orgId, user, { from, to, invoice_date, items, allow_over
     if (item.days !== undefined && item.days !== null && item.days !== '' && Number(item.days) !== row.days) {
       const d = Number(item.days);
       if (!(d >= 0) || Math.round(d * 2) !== d * 2) return { error: `${row.code}: days must be a whole or half number` };
-      if (!String(item.reason || '').trim()) return { error: `${row.code}: give a reason for changing the day count from ${daysText(row.days)} to ${daysText(d)}` };
       days = d;
-      overrideReason = String(item.reason).trim();
+      overrideReason = String(item.reason || '').trim() || 'Adjusted by hand';
     }
     if (days === 0) { skipped.push({ contract_id: row.contract_id, code: row.code, reason: 'No billable days' }); continue; }
     if (row.overlaps.length && !allow_overlap) {
@@ -268,17 +274,30 @@ async function generate(orgId, user, { from, to, invoice_date, items, allow_over
   const created = [];
 
   await transaction(async tx => {
-    // Advance the counter first. On Postgres this UPDATE takes the row lock,
-    // so a second batch waits here until this one has committed.
+    // Take the counter row's lock first. On Postgres a second batch waits
+    // here until this one has committed, so numbers can never be shared.
+    await tx.run("UPDATE settings SET value = value WHERE organisation_id = ? AND key = 'invoice_next_number'", [orgId]);
+    // Numbers handed back by a void are used up first, lowest first, then
+    // the counter supplies the rest.
+    const poolRow = await tx.get("SELECT value FROM settings WHERE organisation_id = ? AND key = 'invoice_released_numbers'", [orgId]);
+    let pool = [];
+    try { pool = poolRow ? JSON.parse(poolRow.value).map(Number).sort((a, b) => a - b) : []; } catch (_) { pool = []; }
+    const reused = pool.slice(0, planned.length);
+    const fromCounter = planned.length - reused.length;
+    if (poolRow && reused.length) {
+      await tx.run("UPDATE settings SET value = ? WHERE organisation_id = ? AND key = 'invoice_released_numbers'", [JSON.stringify(pool.slice(reused.length)), orgId]);
+    }
     await tx.run(
       `UPDATE settings SET value = CAST(CAST(value AS INTEGER) + CAST(? AS INTEGER) AS TEXT)
-       WHERE organisation_id = ? AND key = 'invoice_next_number'`, [planned.length, orgId]);
+       WHERE organisation_id = ? AND key = 'invoice_next_number'`, [fromCounter, orgId]);
     const after = await tx.get("SELECT value FROM settings WHERE organisation_id = ? AND key = 'invoice_next_number'", [orgId]);
     if (!after) throw new Error('The invoice counter is missing');
-    let number = Number(after.value) - planned.length;
+    const counterStart = Number(after.value) - fromCounter;
+    const numbers = [...reused, ...Array.from({ length: fromCounter }, (_, i) => counterStart + i)];
 
-    for (const p of planned) {
+    for (const [index, p] of planned.entries()) {
       const r = p.row;
+      const number = numbers[index];
       const invoiceNo = `${conf.prefix} ${number} - ${r.school_name || r.code}`;
       const snapshot = {
         from: conf.from, bill_to: conf.bill_to, footer: conf.footer, prefix: conf.prefix, vat_rate: conf.vat_rate,
@@ -296,8 +315,7 @@ async function generate(orgId, user, { from, to, invoice_date, items, allow_over
       }, INVOICE_COLS, tx, orgId);
       created.push({ id, number, invoice_no: invoiceNo, contract_id: r.contract_id, code: r.code, school_name: r.school_name || '',
         po_number: r.po_number, days: p.days, calculated_days: r.days, override_reason: p.overrideReason,
-        daily_rate: r.daily_rate, subtotal: p.subtotal, vat: p.vat, total: p.total });
-      number += 1;
+        daily_rate: r.daily_rate, subtotal: p.subtotal, vat: p.vat, total: p.total, reused_number: index < reused.length });
     }
   });
   return { batch_id: batchId, invoices: created, skipped, from, to, invoice_date: date };
@@ -336,13 +354,28 @@ async function byBatch(orgId, batchId) {
   return rows;
 }
 
-/** Paid, or void with a reason. A void invoice keeps its number for ever. */
-async function setStatus(orgId, id, status, reason) {
+/**
+ * Paid, or void with a reason. A void invoice keeps its number unless the
+ * number is handed back: then the record is removed and the number goes to
+ * the front of the queue for the next batch.
+ */
+async function setStatus(orgId, id, status, reason, reuseNumber = false) {
   const inv = await one(orgId, id);
   if (!inv) return { error: 'Invoice not found' };
   if (!STATUSES.includes(status)) return { error: 'Unknown status' };
   if (inv.status === 'void') return { error: 'A void invoice cannot be changed' };
   if (status === 'void' && !String(reason || '').trim()) return { error: 'Give the reason this invoice is void' };
+  if (status === 'void' && reuseNumber) {
+    await transaction(async tx => {
+      await tx.run('DELETE FROM invoices WHERE id = ? AND organisation_id = ?', [id, orgId]);
+      const pool = await releasedNumbers(orgId);
+      if (!pool.includes(inv.number)) pool.push(inv.number);
+      await tx.run(`INSERT INTO settings (organisation_id, key, value) VALUES (?,?,?)
+        ON CONFLICT (organisation_id, key) DO UPDATE SET value = excluded.value`,
+        [orgId, 'invoice_released_numbers', JSON.stringify(pool.sort((a, b) => a - b))]);
+    });
+    return { invoice: { ...inv, status: 'void', void_reason: String(reason).trim() }, before: inv.status, released: true };
+  }
   const paidDate = status === 'paid' ? cal.today() : null;
   await run('UPDATE invoices SET status = ?, void_reason = ?, paid_date = ? WHERE id = ? AND organisation_id = ?',
     [status, status === 'void' ? String(reason).trim() : null, paidDate, id, orgId]);
@@ -440,9 +473,17 @@ function drawInvoice(pdf, inv) {
 }
 
 function pdfFor(inv) { const pdf = new Pdf(); pdf.addPage(); drawInvoice(pdf, inv); return pdf.render(); }
+function zipFor(invoices) { return require('../zip').zip(invoices.map(inv => ({ name: fileName(inv), data: pdfFor(inv) }))); }
+/** Rows with their snapshots, for rendering. */
+async function withSnapshots(orgId, q) {
+  const ids = (await list(orgId, q)).map(r => r.id);
+  const out = [];
+  for (const id of ids) out.push(await one(orgId, id));
+  return out;
+}
 function pdfForMany(invoices) { const pdf = new Pdf(); for (const inv of invoices) { pdf.addPage(); drawInvoice(pdf, inv); } return pdf.render(); }
 
 module.exports = {
-  settings, saveSettings, billableDays, preview, generate, list, one, byBatch, setStatus,
-  pdfFor, pdfForMany, fileName, ukDate, money, daysText, STATUSES, billableRun, dayValue,
+  settings, saveSettings, billableDays, preview, generate, list, one, byBatch, setStatus, withSnapshots,
+  pdfFor, pdfForMany, zipFor, fileName, ukDate, money, daysText, STATUSES, billableRun, dayValue, releasedNumbers,
 };

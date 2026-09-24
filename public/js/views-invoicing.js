@@ -35,22 +35,32 @@ Inv.generatePanel = function (L, query) {
   const fromIn = h('input', { type: 'date', value: state.from, onchange: e => { state.from = e.target.value; } });
   const toIn = h('input', { type: 'date', value: state.to, onchange: e => { state.to = e.target.value; } });
   const dateIn = h('input', { type: 'date', value: state.invoice_date, onchange: e => { state.invoice_date = e.target.value; } });
-  const allBox = h('input', { type: 'checkbox', checked: true });
-  const pick = h('select', { multiple: true, size: 6, disabled: true, style: 'min-width:240px' },
-    ...L.contracts.map(c => h('option', { value: c.id }, `${c.code}${c.school_name ? ' · ' + c.school_name : ''}`)));
-  allBox.onchange = () => { pick.disabled = allBox.checked; };
+  const chosen = new Set();
+  const modeAll = h('input', { type: 'radio', name: 'invmode', checked: true });
+  const modeSome = h('input', { type: 'radio', name: 'invmode' });
+  const chips = h('div', { class: 'pill-row inv-chips', hidden: true });
+  for (const c of L.contracts) {
+    const chip = h('button', { class: 'chip', type: 'button', title: c.school_name || '' }, c.code);
+    chip.onclick = () => { if (chosen.has(c.id)) chosen.delete(c.id); else chosen.add(c.id); chip.classList.toggle('on', chosen.has(c.id)); };
+    chips.appendChild(chip);
+  }
+  const chipTools = h('div', { class: 'pill-row', style: 'margin-top:6px' },
+    h('button', { class: 'btn xs', type: 'button', onclick: () => { for (const c of L.contracts) chosen.add(c.id); for (const el of chips.children) el.classList.add('on'); } }, 'Select all'),
+    h('button', { class: 'btn xs', type: 'button', onclick: () => { chosen.clear(); for (const el of chips.children) el.classList.remove('on'); } }, 'Clear'));
+  const chipsBox = h('div', { hidden: true }, chips, chipTools);
+  modeAll.onchange = modeSome.onchange = () => { chipsBox.hidden = !modeSome.checked; chips.hidden = !modeSome.checked; };
   const setRange = (a, b) => { state.from = a; state.to = b; fromIn.value = a; toIn.value = b; };
   const quick = h('div', { class: 'pill-row' },
-    h('button', { class: 'btn xs', onclick: () => setRange(D.monthStart(today), D.monthEnd(today)) }, 'This month'),
-    h('button', { class: 'btn xs', onclick: () => { const lm = D.add(D.monthStart(today), -1); setRange(D.monthStart(lm), lm); } }, 'Last month'),
-    h('button', { class: 'btn xs', onclick: () => setRange(D.weekStart(today), D.add(D.weekStart(today), 6)) }, 'This week'),
-    h('button', { class: 'btn xs', onclick: () => { const ws = D.add(D.weekStart(today), -7); setRange(ws, D.add(ws, 6)); } }, 'Last week'));
+    h('button', { class: 'btn xs', type: 'button', onclick: () => setRange(D.monthStart(today), D.monthEnd(today)) }, 'This month'),
+    h('button', { class: 'btn xs', type: 'button', onclick: () => { const lm = D.add(D.monthStart(today), -1); setRange(D.monthStart(lm), lm); } }, 'Last month'),
+    h('button', { class: 'btn xs', type: 'button', onclick: () => setRange(D.weekStart(today), D.add(D.weekStart(today), 6)) }, 'This week'),
+    h('button', { class: 'btn xs', type: 'button', onclick: () => { const ws = D.add(D.weekStart(today), -7); setRange(ws, D.add(ws, 6)); } }, 'Last week'));
 
-  const previewBtn = h('button', { class: 'btn primary' }, 'Preview');
+  const previewBtn = h('button', { class: 'btn primary' }, 'Preview the invoices');
   const results = h('div');
   previewBtn.onclick = async () => {
-    state.contract_ids = allBox.checked ? [] : [...pick.selectedOptions].map(o => Number(o.value));
-    if (!allBox.checked && !state.contract_ids.length) return toast('Choose at least one contract, or tick All contracts', 'err');
+    state.contract_ids = modeAll.checked ? [] : [...chosen];
+    if (!modeAll.checked && !state.contract_ids.length) return toast('Choose at least one contract, or pick All contracts', 'err');
     previewBtn.disabled = true; previewBtn.textContent = 'Working out the days…';
     try {
       const pv = await api.get('/api/invoicing/preview', { from: state.from, to: state.to, invoice_date: state.invoice_date, contract_ids: state.contract_ids.join(',') });
@@ -58,21 +68,30 @@ Inv.generatePanel = function (L, query) {
       results.innerHTML = '';
       results.appendChild(Inv.previewTable(pv, state, results));
     } catch (e) { toast(e.message, 'err'); }
-    previewBtn.disabled = false; previewBtn.textContent = 'Preview';
+    previewBtn.disabled = false; previewBtn.textContent = 'Preview the invoices';
   };
 
   wrap.appendChild(h('div', { class: 'card' },
-    h('div', { class: 'card-head' }, h('div', { class: 'filters' },
-      h('div', { class: 'field' }, h('label', 'From'), fromIn),
-      h('div', { class: 'field' }, h('label', 'To'), toIn),
-      h('div', { class: 'field' }, h('label', 'Quick'), quick),
-      h('div', { class: 'field' }, h('label', 'Invoice date'), dateIn),
-      h('div', { class: 'field' }, h('label', h('span', { class: 'pill-row', style: 'gap:6px' }, allBox, 'All contracts')), pick),
-      h('div', { class: 'field' }, h('label', ' '), previewBtn))),
     h('div', { class: 'card-body' },
-      h('div', { class: 'note-box' },
-        h('strong', 'How days are counted. '),
-        'Every date the contract runs is worth 1 day when all of its runs operated or were cancelled, ½ day when only some did, and nothing when the whole day was taken off. Cancelled runs are billed; runs taken off are not. Weekends and days the contract does not run are never counted.'))));
+      h('div', { class: 'inv-form' },
+        h('div', { class: 'inv-block' },
+          h('div', { class: 'inv-block-title' }, '1. Period of transport'),
+          h('div', { class: 'pill-row', style: 'gap:10px;align-items:flex-end' },
+            h('div', { class: 'field' }, h('label', 'From'), fromIn),
+            h('div', { class: 'field' }, h('label', 'To'), toIn)),
+          h('div', { style: 'margin-top:8px' }, quick)),
+        h('div', { class: 'inv-block' },
+          h('div', { class: 'inv-block-title' }, '2. Invoice date'),
+          h('div', { class: 'field' }, h('label', 'Printed on every invoice in the batch'), dateIn)),
+        h('div', { class: 'inv-block wide' },
+          h('div', { class: 'inv-block-title' }, '3. Which contracts'),
+          h('div', { class: 'pill-row', style: 'gap:16px' },
+            h('label', { class: 'inv-radio' }, modeAll, ' All contracts'),
+            h('label', { class: 'inv-radio' }, modeSome, ' Choose contracts')),
+          chipsBox),
+        h('div', { class: 'inv-block wide inv-actions' },
+          previewBtn,
+          h('span', { style: 'color:var(--text-dim);font-size:12.5px' }, 'Previewing assigns no numbers. Cancelled runs are billed, runs taken off are not, and a date is never worth more than one day.'))))));
   wrap.appendChild(results);
   return wrap;
 };
@@ -100,7 +119,7 @@ Inv.previewTable = function (pv, state, host) {
     const it = items.get(r.contract_id);
     const include = h('input', { type: 'checkbox', checked: it.include, disabled: !r.can_invoice });
     const daysIn = h('input', { type: 'number', step: '0.5', min: '0', value: r.days, style: 'width:72px', disabled: !r.can_invoice });
-    const reasonIn = h('input', { type: 'text', placeholder: 'Reason for the change (required)', style: 'width:220px', hidden: true });
+    const reasonIn = h('input', { type: 'text', placeholder: 'Reason for the change (optional)', style: 'width:220px', hidden: true });
     const b = r.breakdown;
     daysIn.oninput = () => {
       const v = Number(daysIn.value);
@@ -150,10 +169,6 @@ Inv.previewTable = function (pv, state, host) {
   const genBtn = h('button', { class: 'btn primary' });
   genBtn.onclick = async () => {
     const chosen = pv.rows.filter(r => items.get(r.contract_id).include && r.can_invoice);
-    for (const r of chosen) {
-      const it = items.get(r.contract_id);
-      if (it.days !== r.days && !it.reason.trim()) return toast(`${r.code}: give a reason for changing the days`, 'err');
-    }
     const allowOverlap = chosen.some(r => r.needs_confirmation);
     genBtn.disabled = true; genBtn.textContent = 'Generating…';
     try {
@@ -189,7 +204,7 @@ Inv.batchResult = function (res) {
     { label: '', sortable: false, value: i => h('a', { class: 'btn xs primary', href: `/api/invoices/${i.id}/pdf`, target: '_blank' }, 'Download PDF') },
   ], res.invoices);
   return h('div', { class: 'card' },
-    h('div', { class: 'card-head' }, h('h2', `${plural(res.invoices.length, 'invoice')} generated · ${fmt.date(res.from)} to ${fmt.date(res.to)}`),
+    h('div', { class: 'card-head' }, h('h2', `${plural(res.invoices.length, 'invoice')} generated · ${fmt.date(res.from)} to ${fmt.date(res.to)}${res.invoices.some(i => i.reused_number) ? ' · reused numbers used first' : ''}`),
       h('div', { class: 'pill-row' },
         h('a', { class: 'btn sm', href: `/api/invoicing/batch/${res.batch_id}/zip` }, 'Download all (ZIP)'),
         h('a', { class: 'btn sm', href: `/api/invoicing/batch/${res.batch_id}/pdf`, target: '_blank' }, 'Download as one combined PDF'),
@@ -207,10 +222,23 @@ Inv.registerPanel = function (L, query) {
   const wrap = h('div');
   const f = { from: query.rfrom || '', to: query.rto || '', contract_id: query.contract || '', status: query.status || '', q: query.q || '' };
   const body = h('div');
+  const foot = h('div', { class: 'inv-foot' });
   const load = async () => {
     body.innerHTML = '<div class="loading"><span class="spinner"></span></div>';
     const rows = await api.get('/api/invoices', clean(f));
     body.innerHTML = '';
+    const live = rows.filter(i => i.status !== 'void');
+    const sum = k => live.reduce((a, i) => a + Number(i[k] || 0), 0);
+    foot.innerHTML = '';
+    foot.appendChild(h('div', { class: 'inv-totals' },
+      h('span', null, h('strong', plural(live.length, 'invoice')), rows.length !== live.length ? ` (${rows.length - live.length} void, not counted)` : ''),
+      h('span', null, 'Days ', h('strong', daysText(sum('days')))),
+      h('span', null, 'Subtotal ', h('strong', fmt.money(sum('subtotal')))),
+      h('span', null, `VAT `, h('strong', fmt.money(sum('vat')))),
+      h('span', { class: 'inv-grand' }, 'Total ', h('strong', fmt.money(sum('total'))))));
+    foot.appendChild(h('div', { class: 'pill-row' },
+      rows.length ? h('a', { class: 'btn sm primary', href: '/api/invoices/zip?' + new URLSearchParams(clean(f)) }, `Download all ${plural(rows.length, 'PDF')} (ZIP)`) : null,
+      h('a', { class: 'btn sm', href: '#', onclick: e => { e.preventDefault(); window.open('/api/reports/invoices.csv?' + new URLSearchParams(clean(f)), '_blank'); } }, 'Export CSV')));
     body.appendChild(UI.table([
       { key: 'number', label: 'Invoice', value: i => h('div', null, h('strong', i.invoice_no), i.override_reason ? h('div', { style: 'font-size:11px;color:var(--text-faint)' }, 'days adjusted') : null) },
       { key: 'contract_code', label: 'Contract', value: i => i.contract_id ? h('a', { href: '#/contracts/' + i.contract_id }, i.contract_code) : i.contract_code },
@@ -228,6 +256,7 @@ Inv.registerPanel = function (L, query) {
         i.status === 'issued' ? h('button', { class: 'btn xs', onclick: () => UI.confirm(`Mark ${i.invoice_no} as paid?`, async () => { try { await api.put('/api/invoices/' + i.id, { status: 'paid' }); toast('Marked as paid', 'ok'); load(); } catch (e) { toast(e.message, 'err'); } }, { yes: 'Mark paid', danger: false }) }, 'Mark paid') : null,
         i.status !== 'void' ? h('button', { class: 'btn xs danger', onclick: () => Inv.voidDialog(i, load) }, 'Void') : null) },
     ], rows, { empty: 'No invoices match', sortKey: 'number', sortDir: -1 }));
+    body.appendChild(foot);
   };
   const filters = h('div', { class: 'filters' },
     h('div', { class: 'field' }, h('label', 'Invoice date from'), h('input', { type: 'date', value: f.from, onchange: e => { f.from = e.target.value; load(); } })),
@@ -236,25 +265,34 @@ Inv.registerPanel = function (L, query) {
       h('option', { value: '' }, 'All contracts'), ...L.contracts.map(c => h('option', { value: c.id, selected: String(c.id) === String(f.contract_id) }, c.code)))),
     h('div', { class: 'field' }, h('label', 'Status'), h('select', { onchange: e => { f.status = e.target.value; load(); } },
       h('option', { value: '' }, 'All'), ...['issued', 'paid', 'void'].map(s => h('option', { value: s, selected: s === f.status }, fmt.titleCase(s))))),
-    h('div', { class: 'field' }, h('label', 'Search'), h('input', { type: 'search', placeholder: 'Invoice number, contract or PO', value: f.q, oninput: e => { f.q = e.target.value; clearTimeout(f._t); f._t = setTimeout(load, 300); } })),
-    h('div', { class: 'field' }, h('label', ' '), h('a', { class: 'btn sm', href: '#', onclick: e => { e.preventDefault(); window.open('/api/reports/invoices.csv?' + new URLSearchParams(clean(f)), '_blank'); } }, 'Export CSV')));
+    h('div', { class: 'field' }, h('label', 'Search'), h('input', { type: 'search', placeholder: 'Invoice number, contract or PO', value: f.q, oninput: e => { f.q = e.target.value; clearTimeout(f._t); f._t = setTimeout(load, 300); } })));
   wrap.appendChild(h('div', { class: 'card' }, h('div', { class: 'card-head' }, filters), h('div', { class: 'card-body tight' }, body)));
   load();
   return wrap;
 };
 
 Inv.voidDialog = function (inv, reload) {
-  const form = UI.form([{ name: 'reason', label: 'Why is this invoice void?', type: 'textarea', rows: 3, required: true, span: 'full', placeholder: 'e.g. Wrong day count, replaced by BLSOLO 321' }], {});
+  const form = UI.form([
+    { name: 'reason', label: 'Why is this invoice void?', type: 'textarea', rows: 3, required: true, span: 'full', placeholder: 'e.g. Wrong day count' },
+    { name: 'reuse', label: `Use number ${inv.number} again for the next invoice`, type: 'checkbox', span: 'full' },
+  ], {});
+  const help = h('div', { class: 'note-box', style: 'margin-top:10px;font-size:12.5px' },
+    h('strong', 'Keep the number: '), 'the invoice stays in the register marked void, and the number is never used again. ',
+    h('strong', 'Use it again: '), 'the invoice is removed from the register, the removal is logged, and the next invoice you generate takes this number before any new one. Only do this if the council never received it.');
   const btn = h('button', { class: 'btn danger' }, 'Void invoice');
   const dlg = UI.modal({
     title: `Void ${inv.invoice_no}`,
-    body: h('div', null, h('div', { class: 'note-box warn', style: 'margin-bottom:12px' }, 'The number ', h('strong', inv.invoice_no), ' stays used for ever. A replacement gets the next new number.'), form),
+    body: h('div', null, form, help),
     footer: [h('button', { class: 'btn', onclick: () => dlg.close() }, 'Cancel'), btn],
   });
   btn.onclick = async () => {
     if (!form.validate()) return;
-    try { await api.put('/api/invoices/' + inv.id, { status: 'void', reason: form.read().reason }); toast('Invoice voided', 'ok'); dlg.close(); reload(); }
-    catch (e) { toast(e.message, 'err'); }
+    const v = form.read();
+    try {
+      const r = await api.put('/api/invoices/' + inv.id, { status: 'void', reason: v.reason, reuse_number: !!v.reuse });
+      toast(r.released ? `Invoice voided. Number ${inv.number} will be used by the next invoice.` : 'Invoice voided', 'ok');
+      dlg.close(); reload();
+    } catch (e) { toast(e.message, 'err'); }
   };
 };
 
@@ -311,7 +349,7 @@ Inv.settingsTab = async function () {
   const form = UI.form([
     { type: 'section', label: 'Invoice numbers' },
     { name: 'prefix', label: 'Prefix', value: s.prefix, help: 'Invoices are numbered "PREFIX number - School", for example BLSOLO 300 - Bamburgh Secondary.' },
-    { name: 'next_number', label: 'Next invoice number', type: 'number', min: 1, value: s.next_number, help: s.max_issued != null ? `Highest number issued so far: ${s.max_issued}. This can only be raised, never lowered.` : 'Nothing issued yet. This can only be raised, never lowered.' },
+    { name: 'next_number', label: 'Next invoice number', type: 'number', min: 1, value: s.next_number, help: (s.max_issued != null ? `Highest number issued so far: ${s.max_issued}. This can only be raised, never lowered.` : 'Nothing issued yet. This can only be raised, never lowered.') + (s.released_numbers && s.released_numbers.length ? ` Numbers handed back by a void and used first: ${s.released_numbers.join(', ')}.` : '') },
     { name: 'vat_rate', label: 'VAT rate (%)', type: 'number', step: '0.5', min: 0, max: 100, value: s.vat_rate },
     { type: 'section', label: 'From (our details)' },
     { name: 'from_name', label: 'Company name', value: s.from.name, span: 'full' },

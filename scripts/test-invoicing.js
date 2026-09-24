@@ -128,21 +128,30 @@ async function main() {
   ok(forced.data.invoices[0].days === 13 && forced.data.invoices[0].calculated_days === 13.5 && forced.data.invoices[0].override_reason === 'Council disputed one half day', 'the manual day count and its reason are saved');
   const badOverride = await post('/api/invoicing/generate', { ...NOV, items: [{ contract_id: beta.id, days: 12.25, reason: 'x' }] });
   ok(badOverride.status === 400, 'a quarter day is refused');
-  const noReason = await post('/api/invoicing/generate', { ...NOV, items: [{ contract_id: beta.id, days: 12 }] });
-  ok(noReason.status === 400 && /reason/i.test(noReason.data.error), 'an override without a reason is refused');
+  const noReason = await post('/api/invoicing/generate', { from: '2027-03-01', to: '2027-03-05', items: [{ contract_id: beta.id, days: 4 }] });
+  ok(noReason.status === 201 && noReason.data.invoices[0].days === 4 && noReason.data.invoices[0].override_reason === 'Adjusted by hand', 'an override without a reason is accepted and noted as adjusted by hand');
 
   section('6. Void keeps its number; the next invoice gets a new one');
   const v = await put('/api/invoices/' + forced.data.invoices[0].id, { status: 'void', reason: 'Wrong day count' });
   ok(v.status === 200 && v.data.status === 'void' && v.data.number === 311, 'BLSOLO 311 is void and keeps its number');
   ok((await put('/api/invoices/' + forced.data.invoices[0].id, { status: 'void' })).status === 400, 'a void without a reason is refused');
   const after = await post('/api/invoicing/generate', { ...OCT, items: [{ contract_id: alpha.id }], allow_overlap: true });
-  ok(after.status === 201 && after.data.invoices[0].number === 312, 'the replacement is 312, never 311 again');
+  ok(after.status === 201 && after.data.invoices[0].number === 313, 'the replacement is 313, never 311 again');
+
+  section('6b. Voiding can hand the number back for the next invoice');
+  const handBack = await put('/api/invoices/' + after.data.invoices[0].id, { status: 'void', reason: 'Never sent', reuse_number: true });
+  ok(handBack.status === 200 && handBack.data.released === true, 'BLSOLO 313 is voided with its number handed back');
+  ok((await get('/api/invoices/' + after.data.invoices[0].id)).status === 404, 'and it is gone from the register');
+  ok((await get('/api/invoicing/settings')).data.released_numbers.includes(313), 'settings show 313 waiting to be used');
+  const reuse = await post('/api/invoicing/generate', { ...OCT, items: [{ contract_id: alpha.id }, { contract_id: gamma.id }], allow_overlap: true });
+  ok(reuse.status === 201 && reuse.data.invoices.map(i => i.number).join(',') === '313,314', `the next batch takes 313 first, then a new number (got ${reuse.data.invoices.map(i => i.number)})`);
+  ok((await get('/api/invoicing/settings')).data.released_numbers.length === 0, 'the handed-back number is used up');
   const paid = await put('/api/invoices/' + g1.data.invoices[1].id, { status: 'paid' });
   ok(paid.status === 200 && paid.data.status === 'paid' && paid.data.paid_date, 'an invoice can be marked paid');
 
   section('7. The next number can be raised but never lowered');
   ok((await post('/api/invoicing/settings', { next_number: 305 })).status === 400, 'lowering to an issued number is refused');
-  ok((await post('/api/invoicing/settings', { next_number: 312 })).status === 400, 'lowering below the current next number is refused');
+  ok((await post('/api/invoicing/settings', { next_number: 314 })).status === 400, 'lowering below the current next number is refused');
   ok((await post('/api/invoicing/settings', { next_number: 400 })).status === 200, 'raising to 400 is allowed');
   const g3 = await post('/api/invoicing/generate', { from: '2027-01-04', to: '2027-01-08', items: [{ contract_id: gamma.id }] });
   ok(g3.status === 201 && g3.data.invoices[0].number === 400, 'the next invoice is 400');
@@ -182,6 +191,8 @@ async function main() {
   ok((await get('/api/invoices?status=void')).data.every(i => i.status === 'void'), 'the status filter works');
   const csv = await call('GET', '/api/reports/invoices.csv', undefined, true);
   ok(csv.status === 200 && /Invoice number/.test(csv.buf.toString()) && /BLSOLO 300 - Bamburgh Secondary/.test(csv.buf.toString()), 'the register exports to CSV');
+  const periodZip = await call('GET', '/api/invoices/zip?from=2026-10-26&to=2026-10-26', undefined, true);
+  ok(periodZip.status === 200 && periodZip.buf.slice(0, 2).toString() === 'PK' && (periodZip.buf.toString('latin1').match(/\.pdf/g) || []).length >= 3, 'the register downloads the period as one ZIP');
 }
 
 main()
