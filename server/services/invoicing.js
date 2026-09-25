@@ -298,7 +298,7 @@ async function generate(orgId, user, { from, to, invoice_date, items, allow_over
     for (const [index, p] of planned.entries()) {
       const r = p.row;
       const number = numbers[index];
-      const invoiceNo = `${conf.prefix} ${number} - ${r.school_name || r.code}`;
+      const invoiceNo = `${conf.prefix} ${number}`;
       const snapshot = {
         from: conf.from, bill_to: conf.bill_to, footer: conf.footer, prefix: conf.prefix, vat_rate: conf.vat_rate,
         breakdown: r.breakdown, calculated_days: r.days, override_reason: p.overrideReason,
@@ -390,7 +390,8 @@ function money(n) {
   return (v < 0 ? '-£' : '£') + Math.abs(v).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 function daysText(n) { const v = Number(n) || 0; return Number.isInteger(v) ? String(v) : v.toFixed(1); }
-function fileName(inv) { return String(inv.invoice_no).replace(/[\\/:*?"<>|]+/g, '-').trim() + '.pdf'; }
+/** The file is named with the school too, so a folder of PDFs reads easily. The number itself is prefix and number only. */
+function fileName(inv) { return `${inv.invoice_no}${inv.school_name ? ' - ' + inv.school_name : ''}`.replace(/[\\/:*?"<>|]+/g, '-').trim() + '.pdf'; }
 
 /** Draws one invoice on the current page of a Pdf. */
 function drawInvoice(pdf, inv) {

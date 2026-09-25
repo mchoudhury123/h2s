@@ -99,7 +99,7 @@ async function main() {
   const nums1 = g1.data.invoices.map(i => i.number);
   ok(JSON.stringify(nums1) === '[300,301,302]', `numbers are 300, 301, 302 (got ${nums1})`);
   ok(g1.data.invoices.map(i => i.code).join(',') === 'ALPHA ROUTE,BETA ROUTE,GAMMA ROUTE', 'in alphabetical order of contract code');
-  ok(g1.data.invoices[0].invoice_no === 'BLSOLO 300 - Bamburgh Secondary', 'the invoice number reads BLSOLO 300 - Bamburgh Secondary');
+  ok(g1.data.invoices[0].invoice_no === 'BLSOLO 300', 'the invoice number reads BLSOLO 300, with no school name');
   ok(g1.data.invoices[0].days === 13.5 && g1.data.invoices[0].total === 2511, 'the invoice carries the previewed figures');
   ok((await get('/api/invoicing/settings')).data.next_number === 303, 'the counter now says 303');
 
@@ -220,7 +220,7 @@ async function main() {
   ok(reg2.length === 1 && reg2[0].number === 300, 'searching by invoice number finds it');
   ok((await get('/api/invoices?status=void')).data.every(i => i.status === 'void'), 'the status filter works');
   const csv = await call('GET', '/api/reports/invoices.csv', undefined, true);
-  ok(csv.status === 200 && /Invoice number/.test(csv.buf.toString()) && /BLSOLO 300 - Bamburgh Secondary/.test(csv.buf.toString()), 'the register exports to CSV');
+  ok(csv.status === 200 && /Invoice number/.test(csv.buf.toString()) && /BLSOLO 300,/.test(csv.buf.toString()), 'the register exports to CSV');
   const periodZip = await call('GET', '/api/invoices/zip?from=2026-10-26&to=2026-10-26', undefined, true);
   ok(periodZip.status === 200 && periodZip.buf.slice(0, 2).toString() === 'PK' && (periodZip.buf.toString('latin1').match(/\.pdf/g) || []).length >= 3, 'the register downloads the period as one ZIP');
 }

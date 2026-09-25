@@ -348,7 +348,7 @@ Inv.settingsTab = async function () {
   const s = await api.get('/api/invoicing/settings');
   const form = UI.form([
     { type: 'section', label: 'Invoice numbers' },
-    { name: 'prefix', label: 'Prefix', value: s.prefix, help: 'Invoices are numbered "PREFIX number - School", for example BLSOLO 300 - Bamburgh Secondary.' },
+    { name: 'prefix', label: 'Prefix', value: s.prefix, help: 'Invoices are numbered "PREFIX number", for example BLSOLO 300. The PDF file name adds the school so a folder reads easily.' },
     { name: 'next_number', label: 'Next invoice number', type: 'number', min: 1, value: s.next_number, help: (s.max_issued != null ? `Highest number issued so far: ${s.max_issued}. This can only be raised, never lowered.` : 'Nothing issued yet. This can only be raised, never lowered.') + (s.released_numbers && s.released_numbers.length ? ` Numbers handed back by a void and used first: ${s.released_numbers.join(', ')}.` : '') },
     { name: 'vat_rate', label: 'VAT rate (%)', type: 'number', step: '0.5', min: 0, max: 100, value: s.vat_rate },
     { type: 'section', label: 'From (our details)' },
