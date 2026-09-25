@@ -208,7 +208,13 @@ App.views.finance = async function ({ query }) {
 
   const t = data.totals;
   const stats = h('div', { class: 'stats' },
-    UI.stat({ label: 'Contract income', value: fmt.money0(t.income), hint: `${t.contracts} contracts` }),
+    UI.stat({
+      label: 'Contract income', value: fmt.money0(t.income),
+      hint: data.reconciliation
+        ? (data.reconciliation.matches ? `Matches invoicing ✓ · ${plural(t.contracts, 'contract')}` : `Does not match invoicing: ${fmt.money(Math.abs(data.reconciliation.difference))} ${data.reconciliation.difference > 0 ? 'more' : 'less'} than invoicing would bill`)
+        : `${t.contracts} contracts`,
+      tone: data.reconciliation && !data.reconciliation.matches ? 'red' : '',
+    }),
     UI.stat({ label: 'Driver cost', value: fmt.money0(t.driver_cost) }),
     UI.stat({ label: 'PA cost', value: fmt.money0(t.pa_cost) }),
     UI.stat({ label: 'Other direct costs', value: fmt.money0(t.other_costs), hint: 'Including ad-hoc expenses' }),

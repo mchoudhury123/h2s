@@ -97,6 +97,24 @@ async function loadContext(orgId, from, to, where = '', params = []) {
 
 // ---------------------------------------------------------------- evaluation
 
+// ---------------------------------------------------------------- billing rule
+//
+// The one place that decides what the council pays for. Invoicing bills it,
+// profitability reports it, the dashboard and the contract page show it.
+
+/** The council pays for a run that operated, and for one it cancelled. */
+function billableRun(t) { return t.status === 'operated' || !!t.cancelled; }
+
+/**
+ * What one date is worth in days: 1 when every run is billable, 0.5 when
+ * only some are, 0 when none is. Never more than 1, however many runs.
+ */
+function billableDayValue(trips) {
+  if (!trips.length) return 0;
+  const billable = trips.filter(billableRun).length;
+  return billable === trips.length ? 1 : billable > 0 ? 0.5 : 0;
+}
+
 /** Does this exception apply to this trip? */
 function appliesToTrip(ex, trip) {
   if (ex.trip_seq !== null && ex.trip_seq !== undefined) return Number(ex.trip_seq) === trip.seq;
@@ -251,20 +269,28 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
   }
 
   const operatedTrips = trips.filter(t => t.status === 'operated');
-  const income = round2(
-    c.income_basis === 'per_day'
-      ? (!planned.length ? 0 : (c.income_per_day || 0))
-      : trips.filter(t => t.status === 'operated' || t.cancelled).reduce((a, t) => a + t.income_value, 0));
-  // Allocate a fixed council day rate once across its scheduled runs. Use
-  // cumulative rounding so the run amounts add up exactly to the day income.
-  const normalTrips = trips.filter(t => t.source !== 'extra');
-  let councilTotal = 0, normalIndex = 0;
+
+  // Council income for the date, by the one shared rule. A contract on a
+  // fixed day rate earns the whole day once any run is billable. A journey
+  // given its own income figure on the weekly schedule is billed at that
+  // figure. Otherwise the date is worth its day value times the day rate.
+  const billableTrips = trips.filter(billableRun);
+  const dayValue = billableDayValue(trips);
+  const namedIncome = tripPlan.some(p => p.income != null && p.source !== 'extra');
+  const billableDays = c.income_basis === 'per_day' ? (billableTrips.length ? 1 : 0) : dayValue;
+  let income;
+  if (c.income_basis === 'per_day') income = billableTrips.length ? round2(c.income_per_day || 0) : 0;
+  else if (namedIncome) income = round2(billableTrips.reduce((a, t) => a + t.income_value, 0));
+  else income = round2(dayValue * (c.income_per_day || 0));
+  // Spread the date's income across its billable runs, with cumulative
+  // rounding so the run amounts add up exactly to the day.
+  let councilTotal = 0, billedIndex = 0;
   for (const t of trips) {
-    if (c.income_basis === 'per_day') {
-      if (t.source === 'extra') { t.council_income = 0; continue; }
-      const cumulative = round2(income * (++normalIndex / normalTrips.length));
-      t.council_income = round2(cumulative - councilTotal); councilTotal = cumulative;
-    } else t.council_income = t.status === 'operated' || t.cancelled ? t.income_value : 0;
+    if (!billableRun(t)) { t.council_income = 0; continue; }
+    const cumulative = namedIncome
+      ? round2(councilTotal + t.income_value)
+      : round2(income * (++billedIndex / billableTrips.length));
+    t.council_income = round2(cumulative - councilTotal); councilTotal = cumulative;
   }
 
   const result = {
@@ -273,6 +299,8 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
     planned_trips: planned.length,
     operated_trips: operatedTrips.length,
     cancelled_trips: trips.filter(t => t.cancelled).length,
+    billable_days: billableDays,
+    billable_trips: billableTrips.length,
     children: childStates,
     exceptions: ex,
     notes: ex.filter(e => e.type === 'note'),
@@ -435,4 +463,5 @@ module.exports = {
   contractLiveOn, contractOperatesOn,
   loadContracts, loadChildrenByContract, loadExceptions, loadContext,
   evaluateContractDay, appliesToTrip, coverAmount, buildCalendar, dayOverview,
+  billableRun, billableDayValue,
 };

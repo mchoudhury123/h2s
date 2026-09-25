@@ -185,6 +185,36 @@ async function main() {
   const audit = (await get('/api/audit?entity_type=contracts&entity_id=' + alpha.id)).data;
   ok(JSON.stringify(audit).includes('160'), 'the rate change is in the audit log');
 
+  section('11. Profitability and invoicing agree to the penny');
+  // Give ALPHA a three-run Friday, the case that used to overstate income.
+  const AM = { label: 'AM school drop-off', kind: 'outbound', depart_time: '07:45' };
+  const PM = { label: 'PM school collection', kind: 'return', depart_time: '15:15' };
+  const sched = await put(`/api/contracts/${alpha.id}/schedule`, { effective_from: '2026-09-01', days: [1, 2, 3, 4].map(weekday => ({ weekday, trips: [AM, PM] })).concat([{ weekday: 5, trips: [AM, { label: '1pm collection', kind: 'return', depart_time: '13:00' }, { label: '3pm collection', kind: 'return', depart_time: '15:00' }] }]) });
+  ok(sched.status === 201, 'ALPHA runs three journeys on Fridays');
+  await ex(gamma, { date: '2026-11-03', type: 'journey_removed', leg: 'PM', note: 'PM taken off' });
+  await ex(beta, { date: '2026-11-04', type: 'journey_cancelled', leg: 'DAY', note: 'Cancelled late' });
+  await ex(beta, { date: '2026-11-05', type: 'extra_journey', leg: 'DAY', trip_label: 'Extra run', trip_kind: 'other' });
+  const compare = async (label, q, contractId) => {
+    const pq = `from=${q.from}&to=${q.to}` + (contractId ? `&contract_id=${contractId}` : '');
+    const iq = `from=${q.from}&to=${q.to}` + (contractId ? `&contract_ids=${contractId}` : '');
+    const p = (await get('/api/profitability?' + pq)).data;
+    const i = (await get('/api/invoicing/preview?' + iq)).data;
+    const invoicing = Math.round(i.rows.reduce((a, r) => a + r.subtotal, 0) * 100) / 100;
+    ok(Math.abs(p.totals.income - invoicing) < 0.005, `${label}: profitability ${p.totals.income} equals invoicing ${invoicing}`);
+    ok(p.reconciliation && p.reconciliation.matches === true && p.reconciliation.invoicing_income === invoicing, `${label}: the page reports "matches invoicing"`);
+    for (const r of p.rows) {
+      const ir = i.rows.find(x => x.contract_id === r.contract_id);
+      ok(ir && Math.abs(r.income - ir.subtotal) < 0.005, `${label}: ${r.code} ${r.income} vs ${ir ? ir.subtotal : 'missing'}`);
+    }
+  };
+  await compare('three weeks with three-run Fridays', OCT);
+  await compare('a single week', { from: '2026-11-02', to: '2026-11-06' });
+  await compare('a single day', { from: '2026-11-06', to: '2026-11-06' });
+  await compare('a full month', { from: '2026-11-01', to: '2026-11-30' });
+  await compare('one contract only', OCT, alpha.id);
+  const fridayPv = (await get(`/api/invoicing/preview?from=2026-10-16&to=2026-10-16&contract_ids=${alpha.id}`)).data;
+  ok(fridayPv.rows[0].days === 1 && fridayPv.rows[0].subtotal === 160, 'a three-run Friday is one day, £160, not one and a half');
+
   section('10. The register and its export');
   const reg2 = (await get('/api/invoices?q=blsolo 300')).data;
   ok(reg2.length === 1 && reg2[0].number === 300, 'searching by invoice number finds it');

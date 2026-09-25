@@ -1573,7 +1573,15 @@ route('GET', '/api/profitability', async ctx => {
   if (ctx.query.contract_id) opts.contract_id = Number(ctx.query.contract_id);
   if (ctx.query.school_id) opts.school_id = Number(ctx.query.school_id);
   if (ctx.query.council_id) opts.council_id = Number(ctx.query.council_id);
-  H.json(ctx.res, await finance.profitability(ctx.org, opts));
+  const prof = await finance.profitability(ctx.org, opts);
+  // The same contracts through the invoicing path. Both read one rule in the
+  // journey engine, so this is a live check that they still agree.
+  const ids = prof.rows.map(r => r.contract_id);
+  const billed = ids.length ? await invoicing.billableDays(ctx.org, from, to, ids) : new Map();
+  const invoicingIncome = cal.round2([...billed.values()].reduce((a, b) => a + b.income, 0));
+  const difference = cal.round2(prof.totals.income - invoicingIncome);
+  prof.reconciliation = { invoicing_income: invoicingIncome, difference, matches: Math.abs(difference) < 0.005 };
+  H.json(ctx.res, prof);
 });
 
 // =====================================================================
