@@ -495,6 +495,91 @@ async function main() {
   is((await day('2026-09-11')).planned_trips, 2, 'removing the pattern returns the contract to a standard week');
   is((await wagesFor('John Normal')).totals.amount_due, 300, 'and to five ordinary days of pay');
 
+  // ---------- 17. what the council is charged is not what the staff are paid ----------
+  section('17. Every run on the calendar is half a chargeable day');
+  const profit = async () => (await finance.profitability(orgId, { ...WEEK, contract_id: contractId })).rows[0];
+  is((await day('2026-09-08')).chargeable_days, 1, 'a normal two-run day is one chargeable day');
+  is((await profit()).income, 500, 'a clean week is five days of income');
+
+  section('17b. Child non-attendance changes the wages, never the invoice');
+  const absA = await addEx({ date: '2026-09-08', type: 'child_absence', leg: 'DAY', contract_id: contractId, child_id: childA });
+  const absB = await addEx({ date: '2026-09-08', type: 'child_absence', leg: 'DAY', contract_id: contractId, child_id: childB });
+  const nobody = await day('2026-09-08');
+  is(nobody.trips.every(t => t.status === 'not_operated'), true, 'with every child absent neither run operates');
+  is(nobody.trips.every(t => t.chargeable), true, 'but both runs are still on the calendar, so both are charged');
+  is(nobody.chargeable_days, 1, 'the date is still one chargeable day');
+  is(nobody.income, 100, 'and still earns the full day rate');
+  is((await wagesFor('John Normal')).totals.amount_due, 240, 'while the driver is not paid for the day');
+  let p17 = await profit();
+  is(p17.income, 500, 'profitability keeps the council income');
+  is(p17.driver_cost, 240, 'and shows the lower staff cost');
+  is(p17.gross_profit, 500 - 240 - 160 - 40, 'so the saved wages are profit, not lost revenue');
+  await run('DELETE FROM exceptions WHERE organisation_id = ? AND id IN (?,?)', [orgId, absA, absB]);
+
+  section('17c. Driver or PA absence, with or without cover, never changes the invoice');
+  const noCover = await addEx({ date: '2026-09-09', type: 'staff_absence', leg: 'AM', contract_id: contractId, role: 'driver', staff_id: driverId });
+  const uncovered = await day('2026-09-09');
+  is(AM(uncovered).status, 'not_operated', 'the AM run does not operate without a driver');
+  is(uncovered.chargeable_days, 1, 'the date is still charged as a full day');
+  is(uncovered.income, 100, 'at the full day rate');
+  is((await wagesFor('John Normal')).totals.amount_due, 270, 'the driver loses the AM run');
+  await run('DELETE FROM exceptions WHERE organisation_id = ? AND id = ?', [orgId, noCover]);
+  const covered = await addEx({ date: '2026-09-09', type: 'staff_absence', leg: 'DAY', contract_id: contractId, role: 'driver', staff_id: driverId, cover_staff_id: coverId, cover_pay: 75 });
+  is((await day('2026-09-09')).income, 100, 'a covered day is charged exactly as a normal one');
+  is((await wagesFor('Ahmed Cover')).totals.amount_due, 75, 'the cover driver is paid the agreed rate');
+  is((await wagesFor('John Normal')).totals.amount_due, 240, 'the absent driver is not');
+  is((await profit()).income, 500, 'and the week still earns 500');
+  await run('DELETE FROM exceptions WHERE organisation_id = ? AND id = ?', [orgId, covered]);
+  const paAbsent = await addEx({ date: '2026-09-09', type: 'staff_absence', leg: 'PM', contract_id: contractId, role: 'pa', staff_id: paId });
+  is((await day('2026-09-09')).income, 100, 'a PA absence with no cover is charged in full too');
+  is((await wagesFor('Linda Assist')).totals.amount_due, 180, 'while the PA loses the run');
+  await run('DELETE FROM exceptions WHERE organisation_id = ? AND id = ?', [orgId, paAbsent]);
+
+  section('17d. Only taking a run off removes it from the invoice');
+  const pmOff = await addEx({ date: '2026-09-10', type: 'journey_removed', leg: 'PM', contract_id: contractId, note: 'Not needed' });
+  const halfDay = await day('2026-09-10');
+  is(PM(halfDay).chargeable, false, 'a run taken off is not charged');
+  is(halfDay.chargeable_days, 0.5, 'leaving half a day');
+  is(halfDay.income, 50, 'at half the rate');
+  is(PM(halfDay).driver.pay, 0, 'and it is not paid either');
+  const dayOff = await addEx({ date: '2026-09-11', type: 'journey_removed', leg: 'DAY', contract_id: contractId, note: 'School holiday' });
+  is((await day('2026-09-11')).chargeable_days, 0, 'a whole day taken off is nothing');
+  is((await day('2026-09-11')).income, 0, 'and earns nothing');
+  is((await profit()).income, 350, 'the week is 3.5 days: 500 less a half day and a whole day');
+  await run('DELETE FROM exceptions WHERE organisation_id = ? AND id IN (?,?)', [orgId, pmOff, dayOff]);
+
+  section('17e. A third run is half a day more, every week, by itself');
+  const threeFridays = await saveSchedule('2026-09-07', {
+    1: [AMT, PMT], 2: [AMT, PMT], 3: [AMT, PMT], 4: [AMT, PMT],
+    5: [AMT, { label: '1pm early collection', kind: 'return', depart_time: '13:00' }, PMT],
+  }, 'Two schools on a Friday');
+  const fri3 = await day('2026-09-11');
+  is(fri3.trips.length, 3, 'Friday has three runs');
+  is(fri3.chargeable_days, 1.5, 'three runs are a day and a half');
+  is(fri3.income, 150, 'charged at one and a half times the day rate');
+  is((await day('2026-09-18')).chargeable_days, 1.5, 'the following Friday is a day and a half too, with nothing recorded');
+  is((await profit()).income, 550, 'the week is 5.5 days');
+  is((await wagesFor('John Normal')).totals.amount_due, 330, 'and the driver is paid for eleven runs');
+  const extraRun = await addEx({ date: '2026-09-08', type: 'extra_journey', contract_id: contractId, leg: 'DAY', trip_label: 'Hospital run', trip_kind: 'other' });
+  is((await day('2026-09-08')).chargeable_days, 1.5, 'a one-off extra run is half a day more on that date');
+  is((await day('2026-09-08')).income, 150, 'and is charged at half the day rate');
+  await run('DELETE FROM exceptions WHERE organisation_id = ? AND id = ?', [orgId, extraRun]);
+  const fri3Cancelled = await addEx({ date: '2026-09-11', type: 'journey_cancelled', leg: 'DAY', contract_id: contractId, trip_seq: 2, note: 'Council cancelled late' });
+  is((await day('2026-09-11')).chargeable_days, 1.5, 'a run the council cancelled late is still charged');
+  is((await day('2026-09-11')).income, 150, 'at the same rate');
+  is(trip(await day('2026-09-11'), 2).driver.pay, 0, 'but nobody is paid for it');
+  await run('DELETE FROM exceptions WHERE organisation_id = ? AND id = ?', [orgId, fri3Cancelled]);
+
+  section('17f. A fixed day rate charges one day for any date with a run');
+  await run("UPDATE contracts SET income_basis = 'per_day' WHERE organisation_id = ? AND id = ?", [orgId, contractId]);
+  is((await day('2026-09-11')).chargeable_days, 1, 'a three-run Friday is one day on a fixed day rate');
+  is((await day('2026-09-11')).income, 100, 'at the day rate');
+  const fixedOff = await addEx({ date: '2026-09-11', type: 'journey_removed', leg: 'DAY', contract_id: contractId });
+  is((await day('2026-09-11')).income, 0, 'and nothing once every run is taken off');
+  await run('DELETE FROM exceptions WHERE organisation_id = ? AND id = ?', [orgId, fixedOff]);
+  await run("UPDATE contracts SET income_basis = 'per_journey' WHERE organisation_id = ? AND id = ?", [orgId, contractId]);
+  await run('DELETE FROM contract_schedules WHERE organisation_id = ? AND id = ?', [orgId, threeFridays]);
+
   console.log(`\n${pass} passed, ${fail} failed on ${database.describe}`);
   return fail;
 }

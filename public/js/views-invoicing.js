@@ -91,7 +91,7 @@ Inv.generatePanel = function (L, query) {
           chipsBox),
         h('div', { class: 'inv-block wide inv-actions' },
           previewBtn,
-          h('span', { style: 'color:var(--text-dim);font-size:12.5px' }, 'Previewing assigns no numbers. Cancelled runs are billed, runs taken off are not, and a date is never worth more than one day.'))))));
+          h('span', { style: 'color:var(--text-dim);font-size:12.5px' }, 'Previewing assigns no numbers. Every run on the calendar is half a day, so a three-run Friday is a day and a half. Only a run taken off is not charged: absences, cover and cancellations change the wages, not the invoice.'))))));
   wrap.appendChild(results);
   return wrap;
 };
@@ -141,8 +141,8 @@ Inv.previewTable = function (pv, state, host) {
       UI.table([
         { key: 'date', label: 'Date', value: d => fmt.dateLong(d.date), nowrap: true },
         { key: 'runs', label: 'Runs', num: true },
-        { key: 'billable', label: 'Billed', num: true },
-        { key: 'value', label: 'Days', num: true, value: d => d.value === 0.5 ? '½' : d.value },
+        { key: 'chargeable', label: 'Charged', num: true },
+        { key: 'value', label: 'Days', num: true, value: d => daysText(d.value) },
         { label: 'What happened', sortable: false, value: d => d.detail },
       ], b.dates, { empty: 'No scheduled dates in this period' }));
     const showBtn = h('button', { class: 'btn xs', onclick: () => { detail.hidden = !detail.hidden; showBtn.textContent = detail.hidden ? 'Show dates' : 'Hide dates'; } }, 'Show dates');
@@ -154,8 +154,8 @@ Inv.previewTable = function (pv, state, host) {
           h('div', { style: 'font-size:12px;color:var(--text-dim)' }, r.school_name || 'No school'),
           r.po_number ? h('div', { style: 'font-size:12px' }, 'PO ', h('strong', r.po_number)) : h('span', { class: 'badge red' }, 'No PO number')),
         h('div', { class: 'inv-break' },
-          h('div', null, `${plural(b.scheduled_days, 'scheduled day')} · ${b.full_days} full · ${b.half_days} half · ${b.days_removed} removed · ${b.days_added} added · ${b.cancelled_days} cancelled (billed)`),
-          h('div', { style: 'margin-top:3px' }, 'Billable days: ', h('strong', daysText(b.billable_days)), ' ', showBtn)),
+          h('div', null, `${plural(b.scheduled_days, 'date')} · ${plural(b.trips, 'run')} · ${b.trips_removed} taken off · ${b.trips_added} added · ${b.trips_cancelled} cancelled (charged)` + (b.trips_not_operated ? ` · ${b.trips_not_operated} not operated (charged)` : '')),
+          h('div', { style: 'margin-top:3px' }, `${plural(b.chargeable_trips, 'chargeable run')} = `, h('strong', daysText(b.chargeable_days) + ' days'), ' ', showBtn)),
         h('div', { class: 'inv-days' }, h('label', 'Days'), daysIn, reasonIn),
         h('div', { class: 'inv-money' },
           h('div', null, `${daysText(r.days)} × ${fmt.money(r.daily_rate)}`),

@@ -315,7 +315,7 @@ Each journey is its own line, so the Friday that runs three of them is visibly p
 
 ### Contract financials
 
-Income minus driver cost minus PA cost minus other direct costs equals gross profit, with the margin percentage. Costs come from journeys that actually operated, not from the theoretical schedule, so absences and cancellations are already reflected.
+Income minus driver cost minus PA cost minus other direct costs equals gross profit, with the margin percentage. Income is what the council is charged, by the same rule invoicing uses. Costs come from journeys that actually operated and from who worked them, so absences, cover and cancellations are already reflected. The two move independently: a day every child was absent still earns its council income while the staff cost falls, and the profit shows exactly that.
 
 View profitability by day, week, month or any date range, and by contract, school, council or the whole business.
 
@@ -325,9 +325,13 @@ Under Money. One invoice per contract per period, to the council, as a PDF.
 
 **Numbers are never reused.** Each business has a prefix and a next number in Settings, for example `BLSOLO` and `300`, and every invoice is numbered `BLSOLO 300`; the PDF file is named `BLSOLO 300 - Bamburgh Secondary.pdf` so a folder of them reads easily. Numbers are taken only when a batch is generated, never when previewing, in alphabetical order of contract code, inside one database transaction that advances the counter with a single locked update. Two batches started at the same moment cannot share a number, and a unique index on the number is the last line of defence. A wrong invoice is voided with a reason and keeps its number; the replacement gets the next new one. The next number can be raised in Settings but never lowered, and every change is in the audit log.
 
-**Days come from the calendar.** For every date the contract runs in the period, a date is worth 1 day when every run operated or was cancelled, half a day when only some did, and nothing when the whole day was taken off. Cancelled runs are billed because the council still pays for them; runs taken off are not, and the day dialog offers both. Extra one-off runs follow the same rule and a date is never worth more than 1 day. Weekends and days the contract does not run are never counted. The preview shows the working per contract, date by date, and the day count can be changed by hand in halves with a reason that is printed on the invoice and logged.
+**Days come from the runs on the calendar.** Every run on the calendar is half a chargeable day, with no ceiling per date: two runs are a day, a three-run Friday is a day and a half, and a one-off extra run adds half a day. A recurring third run on the weekly schedule is picked up every week by itself; nobody adjusts the invoice by hand. Weekends and days the contract does not run are never counted. The preview shows the working per contract, date by date, and the day count can be changed by hand in halves with a reason that is printed on the invoice and logged.
 
-**Nothing to invoice is refused clearly.** A contract with no PO number is blocked until one is added; a period already invoiced for a contract is blocked unless confirmed; a period with no billable days is skipped.
+**Charging and paying are two different questions.** A run is charged to the council as long as it is still on the calendar. A child who did not attend, a driver or PA who was absent, a cover driver or PA, a pay override and a run the council cancelled late all change what the staff are paid and never what is charged. The only thing that removes a run from the invoice is taking it off in the day dialog, which is for a run that was genuinely not needed, such as a school holiday. The dialog offers both **Run cancelled** (charged, unpaid) and **Taken off** (not charged, unpaid) and says which is which.
+
+A contract can instead be set to a fixed income per operating day, in which case any date with at least one run on the calendar is charged as exactly one day, however many runs it has.
+
+**Nothing to invoice is refused clearly.** A contract with no PO number is blocked until one is added; a period already invoiced for a contract is blocked unless confirmed; a period with no chargeable runs is skipped.
 
 **An issued invoice never changes.** Everything printed, from the rate and the days to the addresses, is kept with the invoice, so re-downloading gives the identical PDF however the contract changes afterwards. The register lists every invoice with its status, filters, search, mark as paid, void and CSV export. A batch downloads as a ZIP of PDFs or one combined PDF.
 
@@ -392,7 +396,7 @@ server/
     schedule.js         the normal week: contract patterns and child timetables
     calendar.js         journey generation and exception evaluation
     wages.js            wage calculation
-    invoicing.js        billable days, invoice numbers, snapshots and the PDF layout
+    invoicing.js        chargeable days, invoice numbers, snapshots and the PDF layout
     finance.js          profitability
     compliance.js       traffic lights
     dashboard.js        dashboard figures and alerts

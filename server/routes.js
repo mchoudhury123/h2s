@@ -998,7 +998,7 @@ function describeException(r) {
     case 'school_closed': return `School closed (${leg})`;
     case 'contract_cancelled': return `Contract cancelled (${leg})`;
     case 'journey_cancelled': return `Journey cancelled (${leg})`;
-    case 'journey_removed': return `Run taken off (${leg}) - not billed`;
+    case 'journey_removed': return `Run taken off (${leg}) - not charged`;
     case 'extra_journey': return `Extra journey: ${r.trip_label || r.note || 'additional run'}`;
     case 'pay_override': return `Pay override ${r.amount} (${leg})`;
     default: return r.note || 'Note';
@@ -1577,8 +1577,8 @@ route('GET', '/api/profitability', async ctx => {
   // The same contracts through the invoicing path. Both read one rule in the
   // journey engine, so this is a live check that they still agree.
   const ids = prof.rows.map(r => r.contract_id);
-  const billed = ids.length ? await invoicing.billableDays(ctx.org, from, to, ids) : new Map();
-  const invoicingIncome = cal.round2([...billed.values()].reduce((a, b) => a + b.income, 0));
+  const charged = ids.length ? await invoicing.chargeableDays(ctx.org, from, to, ids) : new Map();
+  const invoicingIncome = cal.round2([...charged.values()].reduce((a, b) => a + b.income, 0));
   const difference = cal.round2(prof.totals.income - invoicingIncome);
   prof.reconciliation = { invoicing_income: invoicingIncome, difference, matches: Math.abs(difference) < 0.005 };
   H.json(ctx.res, prof);

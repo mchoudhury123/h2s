@@ -3,11 +3,12 @@
 // reused, printed from a snapshot so a contract can change later without an
 // issued invoice changing with it.
 //
-// Days come from the same journey engine as the calendar and the wages. A
-// date counts as a full day when every run on it was operated or cancelled
-// (the council still pays for a cancelled run), half a day when only some
-// runs were, and nothing when the whole day was taken off. Weekends and days
-// the contract does not run are never counted.
+// Days come from the same journey engine as the calendar and the wages, but
+// they answer a different question from the wages. Every run on the calendar
+// is half a chargeable day unless it was taken off, so two runs are a day and
+// a three-run Friday is a day and a half. Whether the run operated, whether
+// the children travelled, who drove and what they were paid never change what
+// is charged. Weekends and days the contract does not run are never counted.
 const crypto = require('crypto');
 const { all, get, run, transaction, getSetting, setSetting, insert } = require('../db');
 const cal = require('./calendar');
@@ -107,41 +108,58 @@ async function saveSettings(orgId, body) {
 
 // The rule itself lives in the journey engine, so invoicing and
 // profitability can never drift apart.
-const { billableRun } = cal;
-function dayValue(day) { return day.billable_days; }
+const { chargeableRun } = cal;
+
+/** An empty breakdown, for a contract with nothing on the calendar. */
+function emptyBreakdown() {
+  return {
+    scheduled_days: 0, trips: 0, chargeable_trips: 0, trips_removed: 0, trips_cancelled: 0,
+    trips_added: 0, trips_not_operated: 0, chargeable_days: 0, income: 0, dates: [],
+  };
+}
+
+/** One run's line in the working: what happened to it, and whether it is charged. */
+function describeRun(t) {
+  if (t.removed) return `${t.label}: taken off, not charged`;
+  const what = t.status === 'operated' ? 'operated'
+    : t.cancelled ? 'cancelled'
+      : `not operated (${(t.reason || 'not run').toLowerCase()})`;
+  const staff = [];
+  if (t.driver && t.driver.status === 'covered') staff.push('driver cover');
+  if (t.pa && t.pa.status === 'covered') staff.push('PA cover');
+  if (t.children_absent) staff.push(`${t.children_absent} absent`);
+  return `${t.label}: ${what}${staff.length ? ', ' + staff.join(', ') : ''}, charged`;
+}
 
 /**
- * Billable days and income for every contract over a period, with the
- * working shown. Returns a Map of contract id -> breakdown.
+ * Chargeable days and income for every contract over a period, with the
+ * working shown date by date. Returns a Map of contract id -> breakdown.
  */
-async function billableDays(orgId, from, to, contractIds = null) {
+async function chargeableDays(orgId, from, to, contractIds = null) {
   const data = await cal.buildCalendar(orgId, from, to, {});
   const out = new Map();
   for (const row of data.rows) {
     if (contractIds && !contractIds.includes(row.contract.id)) continue;
-    const b = {
-      scheduled_days: 0, full_days: 0, half_days: 0, days_removed: 0, days_added: 0,
-      cancelled_days: 0, billable_days: 0, income: 0, dates: [],
-    };
+    const b = emptyBreakdown();
     for (const date of data.dates) {
       const day = row.days[date];
       if (!day || !day.trips.length) continue;
-      const value = dayValue(day);
-      b.income = round2(b.income + day.income);
-      const cancelled = day.trips.filter(t => t.cancelled && t.status !== 'operated').length;
-      const added = day.trips.some(t => t.source === 'extra');
+      const chargeable = day.trips.filter(chargeableRun);
       b.scheduled_days += 1;
-      if (value === 1) b.full_days += 1;
-      else if (value === 0.5) b.half_days += 1;
-      else b.days_removed += 1;
-      if (added) b.days_added += 1;
-      if (cancelled && value > 0) b.cancelled_days += 1;
-      b.billable_days += value;
+      b.trips += day.trips.length;
+      b.chargeable_trips += chargeable.length;
+      b.trips_removed += day.trips.filter(t => t.removed).length;
+      b.trips_cancelled += chargeable.filter(t => t.cancelled).length;
+      b.trips_added += day.trips.filter(t => t.source === 'extra').length;
+      b.trips_not_operated += chargeable.filter(t => !t.cancelled && t.status !== 'operated').length;
+      b.chargeable_days += day.chargeable_days;
+      b.income = round2(b.income + day.income);
       b.dates.push({
-        date, value, income: day.income, runs: day.trips.length,
-        billable: day.trips.filter(billableRun).length,
-        cancelled, added,
-        detail: day.trips.map(t => `${t.label}: ${billableRun(t) ? (t.status === 'operated' ? 'operated' : 'cancelled, billed') : (t.reason || 'not billed')}`).join('; '),
+        date, runs: day.trips.length, chargeable: chargeable.length, value: day.chargeable_days, income: day.income,
+        removed: day.trips.length - chargeable.length,
+        cancelled: chargeable.filter(t => t.cancelled).length,
+        added: day.trips.filter(t => t.source === 'extra').length,
+        detail: day.trips.map(describeRun).join('; '),
       });
     }
     out.set(row.contract.id, b);
@@ -184,28 +202,29 @@ async function preview(orgId, { from, to, contract_ids = null, invoice_date = nu
   if (ids) { sql += ` AND c.id IN (${ids.map(() => '?').join(',')})`; params.push(...ids); }
   sql += ' ORDER BY c.code';
   const contracts = await all(sql, params);
-  const days = await billableDays(orgId, from, to, ids);
+  const days = await chargeableDays(orgId, from, to, ids);
 
   const rows = [];
   for (const c of contracts) {
-    const b = days.get(c.id) || { scheduled_days: 0, full_days: 0, half_days: 0, days_removed: 0, days_added: 0, cancelled_days: 0, billable_days: 0, income: 0, dates: [] };
+    const b = days.get(c.id) || emptyBreakdown();
     const rate = round2(c.income_per_day || 0);
     const overlaps = await overlapping(orgId, c.id, from, to);
     const warnings = [];
     if (!c.po_number) warnings.push({ level: 'block', text: 'No PO number on this contract. Add one on the Rates & PO numbers tab before invoicing.' });
-    if (b.billable_days === 0) warnings.push({ level: 'skip', text: 'No billable days in this period, so nothing to invoice.' });
+    if (b.chargeable_days === 0) warnings.push({ level: 'skip', text: 'No chargeable runs in this period, so nothing to invoice.' });
     if (overlaps.length) warnings.push({ level: 'warn', text: `Already invoiced for these dates: ${overlaps.map(o => `${o.invoice_no} (${ukDate(o.period_from)} to ${ukDate(o.period_to)})`).join(', ')}.` });
     if (!rate) warnings.push({ level: 'warn', text: 'The daily rate is £0.00.' });
-    // The subtotal is the engine's income for the period: days times the
-    // rate, unless a journey carries its own figure on the weekly schedule.
+    // The subtotal is the engine's income for the period: half the rate per
+    // chargeable run, unless a journey carries its own figure on the weekly
+    // schedule or the contract is on a fixed day rate.
     const subtotal = round2(b.income);
     const vat = round2(subtotal * conf.vat_rate / 100);
     rows.push({
       contract_id: c.id, code: c.code, name: c.name, school_name: c.school_name || '', po_number: c.po_number || '',
-      status: c.status, daily_rate: rate, breakdown: b, days: b.billable_days,
+      status: c.status, daily_rate: rate, breakdown: b, days: b.chargeable_days,
       subtotal, vat, total: round2(subtotal + vat),
       overlaps, warnings,
-      can_invoice: !!c.po_number && b.billable_days > 0,
+      can_invoice: !!c.po_number && b.chargeable_days > 0,
       needs_confirmation: overlaps.length > 0,
     });
   }
@@ -255,7 +274,7 @@ async function generate(orgId, user, { from, to, invoice_date, items, allow_over
       days = d;
       overrideReason = String(item.reason || '').trim() || 'Adjusted by hand';
     }
-    if (days === 0) { skipped.push({ contract_id: row.contract_id, code: row.code, reason: 'No billable days' }); continue; }
+    if (days === 0) { skipped.push({ contract_id: row.contract_id, code: row.code, reason: 'No chargeable runs' }); continue; }
     if (row.overlaps.length && !allow_overlap) {
       return { error: `${row.code} has already been invoiced for dates in this period (${row.overlaps.map(o => o.invoice_no).join(', ')}). Confirm to invoice it again.`, overlap: true };
     }
@@ -485,6 +504,6 @@ async function withSnapshots(orgId, q) {
 function pdfForMany(invoices) { const pdf = new Pdf(); for (const inv of invoices) { pdf.addPage(); drawInvoice(pdf, inv); } return pdf.render(); }
 
 module.exports = {
-  settings, saveSettings, billableDays, preview, generate, list, one, byBatch, setStatus, withSnapshots,
-  pdfFor, pdfForMany, zipFor, fileName, ukDate, money, daysText, STATUSES, billableRun, dayValue, releasedNumbers,
+  settings, saveSettings, chargeableDays, preview, generate, list, one, byBatch, setStatus, withSnapshots,
+  pdfFor, pdfForMany, zipFor, fileName, ukDate, money, daysText, STATUSES, chargeableRun, releasedNumbers,
 };

@@ -63,20 +63,23 @@ async function main() {
   // October 2026: Mon 5 to Fri 23 is three clean weeks, 15 weekdays.
   const OCT = { from: '2026-10-05', to: '2026-10-23' };
   const ex = (c, body) => post('/api/exceptions', { contract_id: c.id, ...body });
-  await ex(alpha, { date: '2026-10-07', type: 'journey_removed', leg: 'PM', note: 'PM not needed' });     // half day
-  await ex(alpha, { date: '2026-10-08', type: 'journey_cancelled', leg: 'DAY', note: 'Council cancelled late' }); // still billed
-  await ex(alpha, { date: '2026-10-09', type: 'journey_removed', leg: 'DAY', note: 'Whole day off' });    // nothing
-  await ex(alpha, { date: '2026-10-12', type: 'extra_journey', leg: 'DAY', trip_label: 'Extra hospital run', trip_kind: 'other' }); // added, still 1
-  await ex(beta, { date: '2026-10-06', type: 'journey_removed', leg: 'PM', note: 'PM taken off' });       // 14.5
+  // Every run on the calendar is half a day. ALPHA starts at 30 runs.
+  await ex(alpha, { date: '2026-10-07', type: 'journey_removed', leg: 'PM', note: 'PM not needed' });     // -1 run
+  await ex(alpha, { date: '2026-10-08', type: 'journey_cancelled', leg: 'DAY', note: 'Council cancelled late' }); // still charged
+  await ex(alpha, { date: '2026-10-09', type: 'journey_removed', leg: 'DAY', note: 'Whole day off' });    // -2 runs
+  await ex(alpha, { date: '2026-10-12', type: 'extra_journey', leg: 'DAY', trip_label: 'Extra hospital run', trip_kind: 'other' }); // +1 run
+  await ex(beta, { date: '2026-10-06', type: 'journey_removed', leg: 'PM', note: 'PM taken off' });       // 29 runs, 14.5 days
 
-  section('1. Preview counts days the way the calendar does');
+  section('1. Preview counts half a day for every run on the calendar');
   const pv = (await get(`/api/invoicing/preview?from=${OCT.from}&to=${OCT.to}`)).data;
   const row = code => pv.rows.find(r => r.code === code);
-  ok(row('ALPHA ROUTE').breakdown.scheduled_days === 15, 'ALPHA has 15 scheduled days in three weeks');
-  ok(row('ALPHA ROUTE').days === 13.5, `ALPHA bills 13.5 days: one half day, one day taken off, a cancelled day still counted (got ${row('ALPHA ROUTE').days})`);
-  ok(row('ALPHA ROUTE').breakdown.half_days === 1 && row('ALPHA ROUTE').breakdown.days_removed === 1 && row('ALPHA ROUTE').breakdown.cancelled_days === 1 && row('ALPHA ROUTE').breakdown.days_added === 1,
-    'the breakdown shows 1 half, 1 removed, 1 cancelled (billed), 1 added');
-  ok(row('ALPHA ROUTE').subtotal === 2092.5 && row('ALPHA ROUTE').vat === 418.5 && row('ALPHA ROUTE').total === 2511, 'ALPHA: 13.5 × £155 = £2,092.50, VAT £418.50, total £2,511.00');
+  ok(row('ALPHA ROUTE').breakdown.scheduled_days === 15, 'ALPHA has 15 scheduled dates in three weeks');
+  ok(row('ALPHA ROUTE').days === 14, `ALPHA charges 14 days: 28 runs after one PM and one whole day taken off and one extra run added, with the cancelled day still counted (got ${row('ALPHA ROUTE').days})`);
+  const ab = row('ALPHA ROUTE').breakdown;
+  ok(ab.trips === 31 && ab.chargeable_trips === 28 && ab.trips_removed === 3 && ab.trips_cancelled === 2 && ab.trips_added === 1,
+    `the breakdown shows 31 runs, 28 charged, 3 taken off, 2 cancelled (charged), 1 added (got ${JSON.stringify({ trips: ab.trips, chargeable_trips: ab.chargeable_trips, trips_removed: ab.trips_removed, trips_cancelled: ab.trips_cancelled, trips_added: ab.trips_added })})`);
+  ok(ab.dates.find(d => d.date === '2026-10-07').value === 0.5 && ab.dates.find(d => d.date === '2026-10-12').value === 1.5, 'the working shows the half day and the day and a half');
+  ok(row('ALPHA ROUTE').subtotal === 2170 && row('ALPHA ROUTE').vat === 434 && row('ALPHA ROUTE').total === 2604, 'ALPHA: 14 × £155 = £2,170.00, VAT £434.00, total £2,604.00');
   ok(row('BETA ROUTE').days === 14.5 && row('BETA ROUTE').subtotal === 1450, 'BETA: a PM taken off makes 14.5 days, £1,450.00');
   ok(row('GAMMA ROUTE').breakdown.scheduled_days === 9 && row('GAMMA ROUTE').days === 9, 'GAMMA (Tue/Wed/Fri) counts only those weekdays: 9 days');
   ok(row('NOPO ROUTE').can_invoice === false && row('NOPO ROUTE').warnings.some(w => w.level === 'block'), 'a contract with no PO number is blocked');
@@ -88,7 +91,29 @@ async function main() {
   await del('/api/exceptions/' + betaEx[0].id);
   await ex(beta, { date: '2026-10-06', type: 'journey_cancelled', leg: 'PM', note: 'Council cancelled the PM' });
   const pv2 = (await get(`/api/invoicing/preview?from=${OCT.from}&to=${OCT.to}&contract_ids=${beta.id}`)).data;
-  ok(pv2.rows[0].days === 15 && pv2.rows[0].breakdown.cancelled_days === 1, 'BETA is back to 15 days with the cancellation billed');
+  ok(pv2.rows[0].days === 15 && pv2.rows[0].breakdown.trips_cancelled === 1, 'BETA is back to 15 days with the cancellation charged');
+
+  section('1c. Absences and cover change the wages, never the invoice');
+  const gammaDays = async () => (await get(`/api/invoicing/preview?from=${OCT.from}&to=${OCT.to}&contract_ids=${gamma.id}`)).data.rows[0];
+  const kid = (await post('/api/children', { first_name: 'Only', last_name: 'Child', school_id: school.id, contract_id: gamma.id, status: 'active' })).data;
+  ok(kid.id, 'GAMMA has one child');
+  const absentAll = await ex(gamma, { date: '2026-10-06', type: 'child_absence', leg: 'DAY', child_id: kid.id });
+  let g = await gammaDays();
+  ok(g.days === 9, `the only child absent all day leaves GAMMA at 9 days (got ${g.days})`);
+  ok(/not operated \(all children absent\), 1 absent, charged/.test(g.breakdown.dates.find(d => d.date === '2026-10-06').detail), 'and the working says the runs did not operate but are charged');
+  ok(g.breakdown.trips_not_operated === 2, 'two runs are counted as not operated but charged');
+  const driverOff = await ex(gamma, { date: '2026-10-07', type: 'staff_absence', leg: 'AM', role: 'driver' });
+  g = await gammaDays();
+  ok(g.days === 9, `a driver absent with no cover leaves GAMMA at 9 days (got ${g.days})`);
+  const paCover = await ex(gamma, { date: '2026-10-09', type: 'staff_absence', leg: 'DAY', role: 'pa', cover_pay: 50 });
+  g = await gammaDays();
+  ok(g.days === 9, `a PA absence leaves GAMMA at 9 days (got ${g.days})`);
+  const offPm = await ex(gamma, { date: '2026-10-13', type: 'journey_removed', leg: 'PM', note: 'Not needed' });
+  g = await gammaDays();
+  ok(g.days === 8.5 && g.subtotal === 765, `only a run taken off changes it: 8.5 days, £765.00 (got ${g.days}, ${g.subtotal})`);
+  for (const r of [absentAll, driverOff, paCover, offPm]) await del('/api/exceptions/' + r.data[0].id);
+  await del('/api/children/' + kid.id);
+  ok((await gammaDays()).days === 9, 'GAMMA is back to 9 days');
 
   section('2. Generating assigns sequential numbers from 300, alphabetically');
   const items = pv.rows.map(r => ({ contract_id: r.contract_id }));
@@ -100,7 +125,7 @@ async function main() {
   ok(JSON.stringify(nums1) === '[300,301,302]', `numbers are 300, 301, 302 (got ${nums1})`);
   ok(g1.data.invoices.map(i => i.code).join(',') === 'ALPHA ROUTE,BETA ROUTE,GAMMA ROUTE', 'in alphabetical order of contract code');
   ok(g1.data.invoices[0].invoice_no === 'BLSOLO 300', 'the invoice number reads BLSOLO 300, with no school name');
-  ok(g1.data.invoices[0].days === 13.5 && g1.data.invoices[0].total === 2511, 'the invoice carries the previewed figures');
+  ok(g1.data.invoices[0].days === 14 && g1.data.invoices[0].total === 2604, 'the invoice carries the previewed figures');
   ok((await get('/api/invoicing/settings')).data.next_number === 303, 'the counter now says 303');
 
   section('3. A second batch carries on from where the first ended');
@@ -125,7 +150,7 @@ async function main() {
   ok(again.status === 400 && again.data.overlap === true && /BLSOLO 300/.test(again.data.error), 'invoicing October again is refused and names BLSOLO 300');
   const forced = await post('/api/invoicing/generate', { ...OCT, items: [{ contract_id: alpha.id, days: 13, reason: 'Council disputed one half day' }], allow_overlap: true });
   ok(forced.status === 201 && forced.data.invoices[0].number === 311, 'confirmed, it gets the next new number, 311');
-  ok(forced.data.invoices[0].days === 13 && forced.data.invoices[0].calculated_days === 13.5 && forced.data.invoices[0].override_reason === 'Council disputed one half day', 'the manual day count and its reason are saved');
+  ok(forced.data.invoices[0].days === 13 && forced.data.invoices[0].calculated_days === 14 && forced.data.invoices[0].override_reason === 'Council disputed one half day', 'the manual day count and its reason are saved');
   const badOverride = await post('/api/invoicing/generate', { ...NOV, items: [{ contract_id: beta.id, days: 12.25, reason: 'x' }] });
   ok(badOverride.status === 400, 'a quarter day is refused');
   const noReason = await post('/api/invoicing/generate', { from: '2027-03-01', to: '2027-03-05', items: [{ contract_id: beta.id, days: 4 }] });
@@ -161,7 +186,7 @@ async function main() {
   ok(pdf.status === 200 && pdf.buf.slice(0, 5).toString() === '%PDF-', 'the invoice PDF downloads');
   ok(/BLSOLO 300 - Bamburgh Secondary\.pdf/.test(pdf.headers.get('content-disposition') || ''), 'named "BLSOLO 300 - Bamburgh Secondary.pdf"');
   const text = pdf.buf.toString('latin1');
-  ok(/20558595/.test(text) && /13\.5/.test(text) && /2,092\.50/.test(text) && /2,511\.00/.test(text) && /05\/10\/2026 - 23\/10\/2026/.test(text), 'the PDF carries the PO, the days, the amounts and the period in UK dates');
+  ok(/20558595/.test(text) && /\(14\) Tj/.test(text) && /2,170\.00/.test(text) && /2,604\.00/.test(text) && /05\/10\/2026 - 23\/10\/2026/.test(text), 'the PDF carries the PO, the days, the amounts and the period in UK dates');
   const zipRes = await call('GET', `/api/invoicing/batch/${g1.data.batch_id}/zip`, undefined, true);
   ok(zipRes.status === 200 && zipRes.buf.slice(0, 2).toString() === 'PK', 'the batch ZIP downloads');
   ok((zipRes.buf.toString('latin1').match(/BLSOLO 30[012] - Bamburgh Secondary\.pdf/g) || []).length >= 3, 'and holds one PDF per invoice');
@@ -177,7 +202,7 @@ async function main() {
   const prof = (await get(`/api/profitability?from=${OCT.from}&to=${OCT.to}&contract_id=${alpha.id}`)).data;
   ok(prof.rows.length && prof.rows[0].income > 0, 'profitability still calculates for the contract');
   const inv300 = (await get('/api/invoices/' + g1.data.invoices[0].id)).data;
-  ok(Number(inv300.daily_rate) === 155 && inv300.total === 2511, 'BLSOLO 300 still says £155 and £2,511.00');
+  ok(Number(inv300.daily_rate) === 155 && inv300.total === 2604, 'BLSOLO 300 still says £155 and £2,604.00');
   const afterPdf = await call('GET', `/api/invoices/${g1.data.invoices[0].id}/pdf`, undefined, true);
   ok(before.buf.equals(afterPdf.buf), 'and re-downloading gives the identical PDF');
   const nextPv = (await get(`/api/invoicing/preview?from=2027-02-01&to=2027-02-05&contract_ids=${alpha.id}`)).data;
@@ -213,7 +238,9 @@ async function main() {
   await compare('a full month', { from: '2026-11-01', to: '2026-11-30' });
   await compare('one contract only', OCT, alpha.id);
   const fridayPv = (await get(`/api/invoicing/preview?from=2026-10-16&to=2026-10-16&contract_ids=${alpha.id}`)).data;
-  ok(fridayPv.rows[0].days === 1 && fridayPv.rows[0].subtotal === 160, 'a three-run Friday is one day, £160, not one and a half');
+  ok(fridayPv.rows[0].days === 1.5 && fridayPv.rows[0].subtotal === 240, `a three-run Friday is a day and a half, £240 (got ${fridayPv.rows[0].days}, ${fridayPv.rows[0].subtotal})`);
+  const weekPv = (await get(`/api/invoicing/preview?from=2026-10-12&to=2026-10-16&contract_ids=${alpha.id}`)).data;
+  ok(weekPv.rows[0].days === 6, `a week with a three-run Friday and a one-off extra run is 6 days: four days, a day and a half, and the extra half (got ${weekPv.rows[0].days})`);
 
   section('10. The register and its export');
   const reg2 = (await get('/api/invoices?q=blsolo 300')).data;

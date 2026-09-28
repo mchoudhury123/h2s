@@ -411,7 +411,8 @@ Ops.dayDialog = async function (contractId, date, onChange) {
     const simple = isSimpleDay(day);
 
     // ---- what is meant to run today ----
-    const jbox = h('fieldset', h('legend', `Journeys on this date — ${plural(day.planned_trips, 'planned journey')}`));
+    const chargedDays = Number(day.chargeable_days) || 0;
+    const jbox = h('fieldset', h('legend', `Journeys on this date — ${plural(day.planned_trips, 'planned journey')} · charged to the council as ${Number.isInteger(chargedDays) ? chargedDays : chargedDays.toFixed(1)} ${chargedDays === 1 ? 'day' : 'days'}`));
     for (const t of day.trips) {
       const cancelled = day.exceptions.find(e =>
         ['journey_cancelled', 'journey_removed', 'contract_cancelled', 'school_closed'].includes(e.type) && scopeTrips(day, e).some(x => x.seq === t.seq));
@@ -429,7 +430,7 @@ Ops.dayDialog = async function (contractId, date, onChange) {
           (cancelled && cancelled.contract_id
             ? h('button', { class: 'btn xs', onclick: () => remove(cancelled.id) }, 'Undo cancellation')
             : (cancelled ? null : h('button', { class: 'btn xs danger', onclick: () => Ops.cancelRunDialog(c, date, day, tripScope(day, t), refresh, markDirty) }, 'Run cancelled'))),
-          (cancelled || t.source === 'extra') ? null : h('button', { class: 'btn xs', title: 'The run was not needed: not billed to the council and not paid', onclick: () => Ops.removeRunDialog(c, date, day, tripScope(day, t), refresh, markDirty) }, 'Taken off'),
+          (cancelled || t.source === 'extra') ? null : h('button', { class: 'btn xs', title: 'The run was not needed: not charged to the council and not paid', onclick: () => Ops.removeRunDialog(c, date, day, tripScope(day, t), refresh, markDirty) }, 'Taken off'),
           t.source === 'extra' ? h('button', { class: 'btn xs', onclick: () => remove(t.exception_id) }, 'Remove extra journey') : null)));
     }
     jbox.appendChild(h('div', { class: 'pill-row', style: 'margin-top:9px' },
@@ -763,9 +764,9 @@ Ops.cancelRunDialog = function (contract, date, day, scope, refresh, markDirty) 
   };
 };
 
-/* A run taken off was never needed. Unlike a cancellation it is not billed
-   to the council, so the invoice for the period counts that date as a half
-   day, or nothing if every run was taken off. */
+/* A run taken off was never needed. Unlike a cancellation, an absence or
+   cover, it is not charged to the council: the invoice loses half a day for
+   every run taken off. */
 Ops.removeRunDialog = function (contract, date, day, scope, refresh, markDirty) {
   const choices = scopeChoices(day);
   const initial = choices.findIndex(choice => choice.trip_seq === scope.trip_seq && choice.leg === scope.leg);
@@ -776,14 +777,14 @@ Ops.removeRunDialog = function (contract, date, day, scope, refresh, markDirty) 
   const saveBtn = h('button', { class: 'btn primary' }, 'Take run off');
   const dlg = UI.modal({ title: `Take run off — ${contract.code} ${fmt.date(date)}`,
     body: h('div', null, h('div', { class: 'note-box', style: 'margin-bottom:12px' },
-      h('strong', 'Not billed, not paid. '), 'Use this when the run was not needed. If the council cancelled a run late and still pays for it, use Run cancelled instead.'), form),
+      h('strong', 'Not charged, not paid. '), 'Use this when the run was not needed, for example a school holiday. Every run taken off is half a day less on the invoice. If the council cancelled a run late and still pays for it, use Run cancelled instead. Child absences and staff absences never change the invoice, only the wages.'), form),
     footer: [h('button', { class: 'btn', onclick: () => dlg.close() }, 'Back'), saveBtn] });
   saveBtn.onclick = async () => {
     const values = form.read(), chosen = choices[Number(values.which)] || ALL_DAY;
     saveBtn.disabled = true;
     try {
       await api.post('/api/exceptions', { contract_id: contract.id, date, type: 'journey_removed', ...payloadOf(chosen), note: values.note });
-      markDirty(); toast('Run taken off — not billed', 'ok'); dlg.close(); await refresh();
+      markDirty(); toast('Run taken off — not charged', 'ok'); dlg.close(); await refresh();
     } catch (error) { toast(error.message, 'err'); saveBtn.disabled = false; }
   };
 };

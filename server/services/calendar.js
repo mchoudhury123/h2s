@@ -97,23 +97,25 @@ async function loadContext(orgId, from, to, where = '', params = []) {
 
 // ---------------------------------------------------------------- evaluation
 
-// ---------------------------------------------------------------- billing rule
+// ---------------------------------------------------------------- charging rule
 //
 // The one place that decides what the council pays for. Invoicing bills it,
 // profitability reports it, the dashboard and the contract page show it.
+//
+// Whether a run is CHARGED and whether it OPERATED are two different
+// questions. A run on the calendar is charged to the council unless it was
+// taken off (journey_removed). A child not attending, a driver or PA absent
+// with or without cover, a cancelled run the council still pays for, and any
+// pay adjustment change what the staff are paid, never what is charged.
 
-/** The council pays for a run that operated, and for one it cancelled. */
-function billableRun(t) { return t.status === 'operated' || !!t.cancelled; }
+/** The council is charged for every run on the calendar that was not taken off. */
+function chargeableRun(t) { return !t.removed; }
 
 /**
- * What one date is worth in days: 1 when every run is billable, 0.5 when
- * only some are, 0 when none is. Never more than 1, however many runs.
+ * What a date is worth in days: half a day per chargeable run, with no
+ * ceiling. Two runs are a day, a three-run Friday is a day and a half.
  */
-function billableDayValue(trips) {
-  if (!trips.length) return 0;
-  const billable = trips.filter(billableRun).length;
-  return billable === trips.length ? 1 : billable > 0 ? 0.5 : 0;
-}
+function chargeableDays(trips) { return trips.filter(chargeableRun).length / 2; }
 
 /** Does this exception apply to this trip? */
 function appliesToTrip(ex, trip) {
@@ -231,19 +233,24 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
     trips.push(t);
   }
 
-  // Money. A trip's own figure wins; otherwise the day rate is divided by the
-  // journeys on a NORMAL day for this contract, which gives what one journey is
-  // worth. A two-journey day is still split in half, exactly as before, and a
-  // third journey on a Friday is paid on top instead of making all three worth
-  // less. Naming a figure on the journey itself overrides all of this.
+  // Staff pay. A trip's own figure wins; otherwise the day rate is divided by
+  // the journeys on a NORMAL day for this contract, which gives what one
+  // journey is worth. A two-journey day is still split in half, exactly as
+  // before, and a third journey on a Friday is paid on top instead of making
+  // all three worth less. Naming a figure on the journey itself overrides all
+  // of this.
+  //
+  // Council income is a separate sum: every run on the calendar is half a
+  // day of the contract rate, unless the weekly schedule names a figure for
+  // that journey. A one-off extra run is charged the same half day.
   const plannedCount = sched.normalTripCount(c, schedules, date);
   const dayRan = trips.some(t => t.status === 'operated');
   for (const t of trips) {
     const plan = tripPlan.find(p => p.seq === t.seq) || {};
     const isExtra = t.source === 'extra';
     const share = isExtra ? 0 : 1 / plannedCount;
-    t.income_value = plan.income != null ? Number(plan.income)
-      : (isExtra ? 0 : round2((c.income_per_day || 0) * share));
+    t.chargeable = chargeableRun(t);
+    t.income_value = plan.income != null ? Number(plan.income) : round2((c.income_per_day || 0) / 2);
     t.driver_rate = plan.driver_pay != null ? Number(plan.driver_pay)
       : (isExtra ? 0 : round2((c.driver_pay_per_day || 0) * share));
     t.pa_rate = plan.pa_pay != null ? Number(plan.pa_pay)
@@ -270,26 +277,25 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
 
   const operatedTrips = trips.filter(t => t.status === 'operated');
 
-  // Council income for the date, by the one shared rule. A contract on a
-  // fixed day rate earns the whole day once any run is billable. A journey
-  // given its own income figure on the weekly schedule is billed at that
-  // figure. Otherwise the date is worth its day value times the day rate.
-  const billableTrips = trips.filter(billableRun);
-  const dayValue = billableDayValue(trips);
-  const namedIncome = tripPlan.some(p => p.income != null && p.source !== 'extra');
-  const billableDays = c.income_basis === 'per_day' ? (billableTrips.length ? 1 : 0) : dayValue;
-  let income;
-  if (c.income_basis === 'per_day') income = billableTrips.length ? round2(c.income_per_day || 0) : 0;
-  else if (namedIncome) income = round2(billableTrips.reduce((a, t) => a + t.income_value, 0));
-  else income = round2(dayValue * (c.income_per_day || 0));
-  // Spread the date's income across its billable runs, with cumulative
-  // rounding so the run amounts add up exactly to the day.
-  let councilTotal = 0, billedIndex = 0;
+  // Council income for the date, by the one shared rule. Every chargeable
+  // run is half a day of the contract rate, or its own figure from the weekly
+  // schedule, and a date can be worth more than a day. A contract on a fixed
+  // day rate is the one exception: it earns the whole day once, however many
+  // runs there are, as long as at least one is chargeable.
+  const chargeableTrips = trips.filter(chargeableRun);
+  const fixedDay = c.income_basis === 'per_day';
+  const days = fixedDay ? (chargeableTrips.length ? 1 : 0) : chargeableDays(trips);
+  const income = fixedDay
+    ? (chargeableTrips.length ? round2(c.income_per_day || 0) : 0)
+    : round2(chargeableTrips.reduce((a, t) => a + t.income_value, 0));
+  // Each run carries its own share, with cumulative rounding so the run
+  // amounts add up exactly to the day.
+  let councilTotal = 0, chargedIndex = 0;
   for (const t of trips) {
-    if (!billableRun(t)) { t.council_income = 0; continue; }
-    const cumulative = namedIncome
-      ? round2(councilTotal + t.income_value)
-      : round2(income * (++billedIndex / billableTrips.length));
+    if (!chargeableRun(t)) { t.council_income = 0; continue; }
+    const cumulative = fixedDay
+      ? round2(income * (++chargedIndex / chargeableTrips.length))
+      : round2(councilTotal + t.income_value);
     t.council_income = round2(cumulative - councilTotal); councilTotal = cumulative;
   }
 
@@ -299,8 +305,9 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
     planned_trips: planned.length,
     operated_trips: operatedTrips.length,
     cancelled_trips: trips.filter(t => t.cancelled).length,
-    billable_days: billableDays,
-    billable_trips: billableTrips.length,
+    removed_trips: trips.filter(t => t.removed).length,
+    chargeable_days: days,
+    chargeable_trips: chargeableTrips.length,
     children: childStates,
     exceptions: ex,
     notes: ex.filter(e => e.type === 'note'),
@@ -463,5 +470,5 @@ module.exports = {
   contractLiveOn, contractOperatesOn,
   loadContracts, loadChildrenByContract, loadExceptions, loadContext,
   evaluateContractDay, appliesToTrip, coverAmount, buildCalendar, dayOverview,
-  billableRun, billableDayValue,
+  chargeableRun, chargeableDays,
 };

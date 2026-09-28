@@ -207,7 +207,7 @@ Rec.contractEditor = async function (c) {
   if (App.can('finance')) fields.push(
     { type: 'section', label: 'Finance' },
     { name: 'income_per_day', label: 'Contract income per day (£)', type: 'number', step: '0.01' },
-    { name: 'income_basis', label: 'Income basis', type: 'select', placeholder: false, options: [{ value: 'per_journey', label: 'Pro-rata per journey operated' }, { value: 'per_day', label: 'Fixed per operating day' }], help: 'Per journey: a cancelled AM run loses half the day rate.' },
+    { name: 'income_basis', label: 'Income basis', type: 'select', placeholder: false, options: [{ value: 'per_journey', label: 'Half a day per run on the calendar' }, { value: 'per_day', label: 'Fixed per operating day' }], help: 'Per run: every run on the calendar is charged as half a day, so a three-run Friday is a day and a half. Fixed: one day for any date with a run, however many runs. Only a run taken off is not charged.' },
     { name: 'driver_pay_per_day', label: 'Driver pay per day (£)', type: 'number', step: '0.01' },
     { name: 'pa_pay_per_day', label: 'PA pay per day (£)', type: 'number', step: '0.01' },
     { name: 'pay_basis', label: 'Pay basis', type: 'select', placeholder: false, options: [{ value: 'per_journey', label: 'Pro-rata per journey operated' }, { value: 'per_day', label: 'Fixed per operating day' }] },
