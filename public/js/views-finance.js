@@ -60,10 +60,10 @@ App.views.wages = async function ({ query }) {
   ], data.results, {
     empty: 'Nothing to pay for this period',
     onRow: r => Fin.breakdown(r, from, to),
-    footer: h('tr', h('td', { colspan: 6 }, 'TOTAL'),
-      h('td', { class: 'num' }, fmt.money(data.totals.gross)),
-      h('td', { class: 'num' }, data.totals.already_paid ? '-' + fmt.money(data.totals.already_paid) : '—'),
-      h('td', { class: 'num' }, fmt.money(data.totals.total_due)), h('td')),
+    footer: h('tr', h('td', { colspan: 6, class: 'tfoot-title' }, 'TOTAL'),
+      h('td', { class: 'num', 'data-label': 'Gross' }, fmt.money(data.totals.gross)),
+      h('td', { class: 'num', 'data-label': 'Already paid' }, data.totals.already_paid ? '-' + fmt.money(data.totals.already_paid) : '—'),
+      h('td', { class: 'num', 'data-label': 'Amount due' }, fmt.money(data.totals.total_due)), h('td')),
   });
 
   const actions = [

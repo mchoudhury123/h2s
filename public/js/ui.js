@@ -185,7 +185,7 @@ UI.table = function (columns, rows, opts = {}) {
       h('tbody', ...(data.length ? data.map(r => {
         const tr = h('tr', { class: opts.onRow ? 'clickable' : '' }, ...columns.map(c => {
           const cell = c.value ? c.value(r) : (r[c.key] ?? '—');
-          return h('td', { class: (c.num ? 'num ' : '') + (c.nowrap ? 'nowrap' : '') }, cell);
+          return h('td', { class: (c.num ? 'num ' : '') + (c.nowrap ? 'nowrap' : ''), 'data-label': c.label || null }, cell);
         }));
         if (opts.onRow) tr.onclick = e => { if (e.target.closest('a,button,input,select')) return; opts.onRow(r); };
         return tr;

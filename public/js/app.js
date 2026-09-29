@@ -208,7 +208,8 @@ App.renderShell = function () {
   const u = App.state.user;
   const sidebar = h('aside', { class: 'sidebar', id: 'sidebar' },
     h('div', { class: 'brand' },
-      h('div', { class: 'logo' }, h('span', { class: 'ico', html: Icon.logo(30) }), h('span', 'Transport CRM')),
+      h('div', { class: 'logo' }, h('span', { class: 'ico', html: Icon.logo(30) }), h('span', 'Transport CRM'),
+        h('button', { type: 'button', class: 'drawer-close', 'aria-label': 'Close menu', onclick: () => App.toggleSidebar(false) }, h('span', { class: 'ico', html: Icon.svg('close', 18) }))),
       App.businessPicker() || h('div', { class: 'sub' }, App.state.settings.company_name || 'Operations')),
     h('nav', { class: 'nav', id: 'nav' }),
     h('div', { class: 'userbox' },
@@ -222,18 +223,42 @@ App.renderShell = function () {
   const searchInput = h('input', { type: 'search', placeholder: 'Search children, schools, contracts, drivers, PAs, postcodes…', id: 'usearch', autocomplete: 'off' });
   const resultsBox = h('div', { class: 'results', hidden: true, id: 'sresults' });
   const topbar = h('header', { class: 'topbar' },
-    h('button', { class: 'btn menu-btn', 'aria-label': 'Menu', onclick: () => document.getElementById('sidebar').classList.toggle('open') }, h('span', { class: 'ico', html: Icon.svg('menu', 18) })),
+    h('button', { class: 'btn menu-btn', 'aria-label': 'Menu', onclick: () => App.toggleSidebar() }, h('span', { class: 'ico', html: Icon.svg('menu', 18) })),
     h('div', { class: 'searchwrap' },
       h('span', { class: 'sicon', html: Icon.svg('search', 16) }), searchInput, h('kbd', '/'), resultsBox),
     h('a', { class: 'btn', href: '#/calendar' }, h('span', { class: 'ico', html: Icon.svg('calendar', 15) }), 'Calendar'),
-    h('button', { class: 'btn primary', onclick: () => App.quickException() }, h('span', { class: 'ico', html: Icon.svg('plus', 15) }), 'Exception'));
+    h('button', { class: 'btn primary', onclick: () => App.quickException() }, h('span', { class: 'ico', html: Icon.svg('plus', 15) }), h('span', { class: 'lbl' }, 'Exception')));
+
+  // On a phone the sidebar is a drawer. The scrim closes it, and the bar
+  // along the bottom carries the places people go to on the move.
+  const scrim = h('div', { class: 'scrim', id: 'scrim', hidden: true, onclick: () => App.toggleSidebar(false) });
+  const mobileNav = h('nav', { class: 'mobile-nav', id: 'mobile-nav', 'aria-label': 'Main' },
+    ...[
+      { path: '/', label: 'Home', icon: 'dashboard' },
+      { path: '/day/today', label: 'Today', icon: 'today' },
+      { path: '/calendar', label: 'Calendar', icon: 'calendar' },
+      { path: '/wages', label: 'Wages', icon: 'wages' },
+    ].map(i => h('a', { href: i.path === '/day/today' ? '#/day/' + D.today() : '#' + i.path, dataset: { path: i.path } },
+      h('span', { class: 'ico', html: Icon.svg(i.icon, 22) }), h('span', { class: 'lbl' }, i.label))),
+    h('button', { type: 'button', onclick: () => App.toggleSidebar(true) },
+      h('span', { class: 'ico', html: Icon.svg('menu', 22) }), h('span', { class: 'lbl' }, 'Menu')));
 
   root.innerHTML = '';
-  root.appendChild(h('div', { id: 'app' }, sidebar,
-    h('div', { class: 'main' }, topbar, h('main', { class: 'content', id: 'view' }))));
+  root.appendChild(h('div', { id: 'app' }, sidebar, scrim,
+    h('div', { class: 'main' }, topbar, h('main', { class: 'content', id: 'view' })), mobileNav));
 
   App.buildNav();
   App.wireSearch(searchInput, resultsBox);
+};
+
+/** Open or close the sidebar drawer on a phone; a no-op on a wide screen. */
+App.toggleSidebar = function (open) {
+  const sb = document.getElementById('sidebar'), scrim = document.getElementById('scrim');
+  if (!sb) return;
+  const on = open === undefined ? !sb.classList.contains('open') : !!open;
+  sb.classList.toggle('open', on);
+  if (scrim) scrim.hidden = !on;
+  document.body.classList.toggle('drawer-open', on);
 };
 
 App.buildNav = function (counts) {
@@ -262,7 +287,11 @@ App.setActiveNav = function (path) {
     const active = p === '/' ? path === '/' : (p === '/day/today' ? path.startsWith('/day/') : path.startsWith(p.replace('/list/driver', '/list/driver').replace('/list/pa', '/list/pa')));
     a.classList.toggle('active', !!active);
   });
-  document.getElementById('sidebar')?.classList.remove('open');
+  document.querySelectorAll('#mobile-nav a').forEach(a => {
+    const p = a.dataset.path;
+    a.classList.toggle('active', p === '/' ? path === '/' : (p === '/day/today' ? path.startsWith('/day/') : path.startsWith(p)));
+  });
+  App.toggleSidebar(false);
 };
 App.toggleTheme = function () {
   const cur = document.documentElement.getAttribute('data-theme');

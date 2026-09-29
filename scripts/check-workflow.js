@@ -10,7 +10,7 @@ const path = require('path');
 const fs = require('fs');
 
 const CHROME = 'C:/Program Files/Google/Chrome/Application/chrome.exe';
-const BASE = 'http://localhost:4000';
+const BASE = process.env.BASE || 'http://localhost:4000';
 const SHOTS = path.join(__dirname, '..', 'shots');
 const TMP = path.join(require('os').tmpdir(), 'h2s-wf');
 fs.mkdirSync(TMP, { recursive: true });

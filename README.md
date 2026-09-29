@@ -137,6 +137,10 @@ Three things had to change for this to work, and all three are done:
 
 `npm run test:serverless` proves all of this without deploying. It runs the entry point in a real process, kills it, starts another, and checks the session still works, that an uploaded file comes back from a different instance, and that nothing was written to disk.
 
+### On a phone
+
+The same application fits a phone without a separate build. Under 900px the sidebar becomes a drawer and a bar along the bottom carries Home, Today, Calendar, Wages and Menu, so someone on the move can see who is absent and who needs cover, or check what a driver is owed. Under 640px tables become a stack of cards with each value labelled, dialogs slide up as full-width sheets, stat tiles sit two across, and filters share rows. Nothing changes on a desktop.
+
 ### Tests
 
 ```
