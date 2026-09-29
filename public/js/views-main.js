@@ -514,30 +514,34 @@ Ops.dayDialog = async function (contractId, date, onChange) {
         h('strong', normalName),
         h('span', { style: 'color:var(--text-faint);font-size:12px;margin-left:8px' },
           `${fmt.money(perJourney.reduce((a, b) => a + b, 0))} today across ${plural(perJourney.length, 'journey')}`)));
-      if (exs.length) {
-        for (const e of exs) {
-          box.appendChild(h('div', { class: 'note-box ' + (e.cover_staff_id ? 'warn' : 'danger'), style: 'margin-bottom:8px' },
-            h('div', null,
-              h('strong', 'Absent ' + absenceSpan(day, e)), ' — ',
-              e.cover_staff_id ? h('span', null, 'covered by ', h('strong', e.cover_name), ' at ', h('strong', fmt.money(e.cover_pay)),
-                e.paid_immediately ? h('span', { class: 'badge green', style: 'margin-left:6px' }, 'Paid immediately') : h('span', { class: 'badge', style: 'margin-left:6px' }, 'Pay via payroll'))
-                : h('strong', { style: 'color:var(--red)' }, 'NO COVER ASSIGNED')),
-            e.note ? h('div', { style: 'font-size:12px;margin-top:3px' }, e.note) : null,
-            h('div', { class: 'pill-row', style: 'margin-top:6px' },
-              !e.cover_staff_id ? h('button', { class: 'btn xs primary', onclick: () => Ops.coverDialog(c, date, role, e, day, refresh, markDirty) }, 'Assign cover') : null,
-              h('button', { class: 'btn xs', onclick: () => remove(e.id) }, 'Undo absence'))));
-        }
-      } else {
+      for (const e of exs) {
+        box.appendChild(h('div', { class: 'note-box ' + (e.cover_staff_id ? 'warn' : 'danger'), style: 'margin-bottom:8px' },
+          h('div', null,
+            h('strong', 'Absent ' + absenceSpan(day, e)), ' — ',
+            e.cover_staff_id ? h('span', null, 'covered by ', h('strong', e.cover_name), ' at ', h('strong', fmt.money(e.cover_pay)),
+              e.paid_immediately ? h('span', { class: 'badge green', style: 'margin-left:6px' }, 'Paid immediately') : h('span', { class: 'badge', style: 'margin-left:6px' }, 'Pay via payroll'))
+              : h('strong', { style: 'color:var(--red)' }, 'NO COVER ASSIGNED')),
+          e.note ? h('div', { style: 'font-size:12px;margin-top:3px' }, e.note) : null,
+          h('div', { class: 'pill-row', style: 'margin-top:6px' },
+            !e.cover_staff_id ? h('button', { class: 'btn xs primary', onclick: () => Ops.coverDialog(c, date, role, e, day, refresh, markDirty) }, 'Assign cover') : null,
+            h('button', { class: 'btn xs', onclick: () => remove(e.id) }, 'Undo absence'))));
+      }
+      // Each journey can carry its own absence, so a driver off all day can
+      // have one cover in the morning and another in the afternoon. Only the
+      // journeys not yet covered by an absence are offered.
+      const open = day.trips.filter(t => !exs.some(e => scopeTrips(day, e).some(x => x.seq === t.seq)));
+      if (open.length) {
         const acts = h('div', { class: 'pill-row' });
+        if (exs.length) acts.appendChild(h('span', { style: 'font-size:11.5px;color:var(--text-dim);align-self:center' }, 'Also absent:'));
         if (simple) {
-          for (const t of day.trips) {
+          for (const t of open) {
             const sc = tripScope(day, t);
             acts.appendChild(h('button', { class: 'btn xs', onclick: () => Ops.absenceDialog(c, date, role, sc, day, refresh, markDirty) }, 'Absent ' + tripShort(day, t)));
           }
         } else {
-          acts.appendChild(scopePicker(day, 'Absent', sc => Ops.absenceDialog(c, date, role, sc, day, refresh, markDirty), { includeDay: false }));
+          acts.appendChild(scopePicker(day, 'Absent', sc => Ops.absenceDialog(c, date, role, sc, day, refresh, markDirty), { includeDay: false, only: open }));
         }
-        acts.appendChild(h('button', { class: 'btn xs danger', onclick: () => Ops.absenceDialog(c, date, role, { ...ALL_DAY }, day, refresh, markDirty) }, 'Absent all day'));
+        if (!exs.length) acts.appendChild(h('button', { class: 'btn xs danger', onclick: () => Ops.absenceDialog(c, date, role, { ...ALL_DAY }, day, refresh, markDirty) }, 'Absent all day'));
         box.appendChild(acts);
       }
       wrap.appendChild(box);

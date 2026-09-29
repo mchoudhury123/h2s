@@ -149,6 +149,7 @@ npm run test:browser     # every page in a real browser, fails on any console er
 npm run test:workflow    # create records through the forms, through to payroll
 npm run test:schedules   # weekly schedules and child timetables, in a browser
 npm run test:invoicing   # invoice numbering, day counting, snapshots and PDFs
+npm run test:cover       # one driver absent, a different cover on each journey, in a browser
 ```
 
 The browser suites expect Chrome at the default Windows location and the server already running. The walkthrough suites (`test:browser`, `test:workflow` and `test:schedules`) sign in as the seeded sample business, so run them against a local SQLite server after `npm run seed`, or point them at a filled business of your own with `USER_EMAIL` and `USER_PASS`. A live database with only a real, empty firm on it has nothing for them to walk through.
@@ -280,6 +281,8 @@ The example from the brief, exactly as the system handles it:
 > John normally drives and is paid £60 per day. He cannot work Tuesday. Ahmed covers and is paid £75.
 
 Recording that absence with Ahmed as cover means John is not paid for Tuesday, Ahmed is paid £75 for Tuesday only, and John remains the permanent driver on the contract. Cover can be for the whole day or a single journey, and the rate can be overridden.
+
+Each journey carries its own absence, so a driver who is off all day can have one cover in the morning and another in the afternoon: record the AM absence with the first cover, then the PM absence with the second. The day panel keeps offering the journeys not yet covered, and a journey can only be marked absent once for the same role, so an all-day absence cannot be laid over an AM or PM one.
 
 Tick **Paid immediately** and the system writes a payment record at the same time. The next wage calculation shows the £75 earned and the £75 already paid, so the amount due is zero. It cannot be paid twice.
 

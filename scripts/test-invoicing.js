@@ -105,13 +105,21 @@ async function main() {
   const driverOff = await ex(gamma, { date: '2026-10-07', type: 'staff_absence', leg: 'AM', role: 'driver' });
   g = await gammaDays();
   ok(g.days === 9, `a driver absent with no cover leaves GAMMA at 9 days (got ${g.days})`);
+  const driverPm = await ex(gamma, { date: '2026-10-07', type: 'staff_absence', leg: 'PM', role: 'driver', cover_pay: 30 });
+  ok(driverPm.status === 201, 'the PM run of the same day takes its own absence and cover');
+  const twice = await ex(gamma, { date: '2026-10-07', type: 'staff_absence', leg: 'AM', role: 'driver' });
+  ok(twice.status === 400 && /already recorded absent AM/.test(twice.data.error || ''), `the AM run cannot be marked absent twice (got ${twice.status})`);
+  const wholeDay = await ex(gamma, { date: '2026-10-07', type: 'staff_absence', leg: 'DAY', role: 'driver' });
+  ok(wholeDay.status === 400, 'nor can an all-day absence sit on top of the AM and PM ones');
+  g = await gammaDays();
+  ok(g.days === 9, `two half-day absences still leave GAMMA at 9 days (got ${g.days})`);
   const paCover = await ex(gamma, { date: '2026-10-09', type: 'staff_absence', leg: 'DAY', role: 'pa', cover_pay: 50 });
   g = await gammaDays();
   ok(g.days === 9, `a PA absence leaves GAMMA at 9 days (got ${g.days})`);
   const offPm = await ex(gamma, { date: '2026-10-13', type: 'journey_removed', leg: 'PM', note: 'Not needed' });
   g = await gammaDays();
   ok(g.days === 8.5 && g.subtotal === 765, `only a run taken off changes it: 8.5 days, £765.00 (got ${g.days}, ${g.subtotal})`);
-  for (const r of [absentAll, driverOff, paCover, offPm]) await del('/api/exceptions/' + r.data[0].id);
+  for (const r of [absentAll, driverOff, driverPm, paCover, offPm]) await del('/api/exceptions/' + r.data[0].id);
   await del('/api/children/' + kid.id);
   ok((await gammaDays()).days === 9, 'GAMMA is back to 9 days');
 

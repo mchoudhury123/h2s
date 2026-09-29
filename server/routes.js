@@ -944,6 +944,13 @@ route('POST', '/api/exceptions', async ctx => {
           if (!Number.isInteger(data.trip_seq) || data.trip_seq < 1) throw new Error('That is not one of the day\u2019s journeys');
           if (!data.leg) data.leg = 'DAY';
         }
+        if (data.type === 'staff_absence') {
+          const clash = await absenceClash(ctx.org, data, date);
+          if (clash) {
+            throw new Error(`The ${data.role === 'driver' ? 'driver' : 'PA'} is already recorded absent ${absenceWords(clash)} on ${date}. ` +
+              'Undo that absence first, or record the absence for a journey it does not cover.');
+          }
+        }
 
         const id = await insert('exceptions', data, EX_COLS, tx, ctx.org);
         // "Paid immediately" writes a payment straight away so payroll never pays it twice.
@@ -987,6 +994,29 @@ route('DELETE', '/api/exceptions/:id', async ctx => {
   }
   H.json(ctx.res, { ok: true, payment_reversed: !!pay });
 });
+
+/** Plain words for the part of a day an exception covers. */
+function absenceWords(e) {
+  if (e.trip_seq) return e.trip_label || `journey ${e.trip_seq}`;
+  return e.leg === 'DAY' || !e.leg ? 'all day' : e.leg;
+}
+
+/**
+ * A driver or PA can be absent once per journey. A second absence on the same
+ * run would hide the first one and could pay two covers for one journey, so
+ * an AM absence and a PM absence may sit side by side (each with its own
+ * cover) but neither may overlap an all-day one. Returns the clash, if any.
+ */
+async function absenceClash(org, data, date) {
+  const contractId = Number(data.contract_id);
+  const dayCtx = await cal.loadContext(org, date, date, ' AND c.id = ?', [contractId]);
+  if (!dayCtx.contracts.length) return null;
+  const d = cal.evaluateContractDay(dayCtx.contracts[0], date, dayCtx.childMap[contractId] || [], dayCtx.exceptions, dayCtx);
+  const wanted = d.trips.filter(t => cal.appliesToTrip(data, t));
+  return dayCtx.exceptions.find(e => e.type === 'staff_absence' && e.role === data.role
+    && Number(e.contract_id) === contractId && String(e.date).slice(0, 10) === date
+    && wanted.some(t => cal.appliesToTrip(e, t))) || null;
+}
 
 function describeException(r) {
   // A journey number is more specific than a leg, so it wins when both are set.

@@ -41,6 +41,7 @@ async function main() {
   const schoolId = await insert('schools', { name: 'Test School' }, ['name'], null, orgId);
   const driverId = await insert('staff', { type: 'driver', first_name: 'John', last_name: 'Normal', default_day_rate: 60 }, ['type', 'first_name', 'last_name', 'default_day_rate'], null, orgId);
   const coverId = await insert('staff', { type: 'driver', first_name: 'Ahmed', last_name: 'Cover', status: 'pool', default_day_rate: 70 }, ['type', 'first_name', 'last_name', 'status', 'default_day_rate'], null, orgId);
+  const cover2Id = await insert('staff', { type: 'driver', first_name: 'Sam', last_name: 'Second', status: 'pool', default_day_rate: 65 }, ['type', 'first_name', 'last_name', 'status', 'default_day_rate'], null, orgId);
   const paId = await insert('staff', { type: 'pa', first_name: 'Linda', last_name: 'Assist', default_day_rate: 40 }, ['type', 'first_name', 'last_name', 'default_day_rate'], null, orgId);
   const paCoverId = await insert('staff', { type: 'pa', first_name: 'Tracy', last_name: 'Spare', status: 'pool' }, ['type', 'first_name', 'last_name', 'status'], null, orgId);
   const contractId = await insert('contracts', {
@@ -534,6 +535,20 @@ async function main() {
   is((await day('2026-09-09')).income, 100, 'a PA absence with no cover is charged in full too');
   is((await wagesFor('Linda Assist')).totals.amount_due, 180, 'while the PA loses the run');
   await run('DELETE FROM exceptions WHERE organisation_id = ? AND id = ?', [orgId, paAbsent]);
+
+  section('17c-ii. One driver absent all day, a different cover on each journey');
+  const amCover = await addEx({ date: '2026-09-09', type: 'staff_absence', leg: 'AM', contract_id: contractId, role: 'driver', staff_id: driverId, cover_staff_id: coverId, cover_pay: 40 });
+  const pmCover = await addEx({ date: '2026-09-09', type: 'staff_absence', leg: 'PM', contract_id: contractId, role: 'driver', staff_id: driverId, cover_staff_id: cover2Id, cover_pay: 35 });
+  const split = await day('2026-09-09');
+  is(AM(split).status, 'operated', 'the AM run operates');
+  is(AM(split).driver.cover_name, 'Ahmed Cover', 'driven by the morning cover');
+  is(PM(split).status, 'operated', 'the PM run operates too');
+  is(PM(split).driver.cover_name, 'Sam Second', 'driven by the afternoon cover');
+  is(split.income, 100, 'the day is charged in full');
+  is((await wagesFor('Ahmed Cover')).totals.amount_due, 40, 'the morning cover is paid the agreed 40');
+  is((await wagesFor('Sam Second')).totals.amount_due, 35, 'the afternoon cover is paid the agreed 35');
+  is((await wagesFor('John Normal')).totals.amount_due, 240, 'and the absent driver loses the whole day');
+  await run('DELETE FROM exceptions WHERE organisation_id = ? AND id IN (?,?)', [orgId, amCover, pmCover]);
 
   section('17d. Only taking a run off removes it from the invoice');
   const pmOff = await addEx({ date: '2026-09-10', type: 'journey_removed', leg: 'PM', contract_id: contractId, note: 'Not needed' });
