@@ -26,7 +26,7 @@ async function main() {
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
     await page.setContent('<body><div id="test-host"></div><div id="modal-root"></div><div id="toasts"></div></body>');
-    for (const file of ['core.js', 'ui.js', 'views-finance.js']) await page.addScriptTag({ path: require('node:path').join(__dirname, '../public/js', file) });
+    for (const file of ['core.js', 'icons.js', 'ui.js', 'views-finance.js']) await page.addScriptTag({ path: require('node:path').join(__dirname, '../public/js', file) });
     await page.exposeFunction('testApi', async (method, url, body = {}) => {
       const parsed = new URL(url, 'http://test');
       const res = { writeHead(status) { this.status = status; }, end(value) { this.body = JSON.parse(value); } };

@@ -67,9 +67,9 @@ App.views.wages = async function ({ query }) {
   });
 
   const actions = [
-    h('a', { class: 'btn', href: `/api/reports/payroll.csv?from=${from}&to=${to}`, target: '_blank' }, '⬇ Export summary'),
-    h('a', { class: 'btn', href: `/api/reports/wage-breakdown.csv?from=${from}&to=${to}`, target: '_blank' }, '⬇ Export full breakdown'),
-    h('button', { class: 'btn', onclick: () => window.print() }, '🖨 Print'),
+    h('a', { class: 'btn', href: `/api/reports/payroll.csv?from=${from}&to=${to}`, target: '_blank' }, Icon.el('download', 14), 'Export summary'),
+    h('a', { class: 'btn', href: `/api/reports/wage-breakdown.csv?from=${from}&to=${to}`, target: '_blank' }, Icon.el('download', 14), 'Export full breakdown'),
+    h('button', { class: 'btn', onclick: () => window.print() }, Icon.el('print', 14), 'Print'),
     App.can('wages') && data.totals.total_due > 0 ? h('button', { class: 'btn primary', onclick: () => Fin.markPaid(from, to, data) }, 'Mark period as paid') : null,
   ];
 
@@ -333,8 +333,8 @@ App.views.finance = async function ({ query }) {
 
   return h('div', null,
     UI.pageHead('Contract profitability', `${fmt.dateLong(from)} to ${fmt.dateLong(to)} — based on journeys actually operated`,
-      [h('a', { class: 'btn', href: `/api/reports/contract-profitability.csv?from=${from}&to=${to}`, target: '_blank' }, '⬇ Export'),
-       h('button', { class: 'btn', onclick: () => window.print() }, '🖨 Print'),
+      [h('a', { class: 'btn', href: `/api/reports/contract-profitability.csv?from=${from}&to=${to}`, target: '_blank' }, Icon.el('download', 14), 'Export'),
+       h('button', { class: 'btn', onclick: () => window.print() }, Icon.el('print', 14), 'Print'),
        h('a', { class: 'btn', href: '#/expenses' }, 'Expenses')]),
     filters, h('div', { style: 'height:14px' }), stats, h('div', { style: 'height:14px' }), UI.tabs(tabs));
 };
@@ -414,8 +414,8 @@ App.views.compliance = async function ({ query }) {
 
   return h('div', null,
     UI.pageHead('Compliance centre', 'Statuses are calculated automatically from document expiry dates',
-      [h('a', { class: 'btn', href: '/api/reports/compliance.csv', target: '_blank' }, '⬇ Export compliance'),
-       h('a', { class: 'btn', href: '/api/reports/expiring-documents.csv?days=90', target: '_blank' }, '⬇ Export expiring'),
+      [h('a', { class: 'btn', href: '/api/reports/compliance.csv', target: '_blank' }, Icon.el('download', 14), 'Export compliance'),
+       h('a', { class: 'btn', href: '/api/reports/expiring-documents.csv?days=90', target: '_blank' }, Icon.el('download', 14), 'Export expiring'),
        App.can('*') ? h('a', { class: 'btn', href: '#/settings' }, 'Configure') : null]),
     stats, h('div', { style: 'height:14px' }),
     UI.tabs([
@@ -485,7 +485,7 @@ App.views.pool = async function ({ query }) {
     UI.pageHead('Staff pool & availability',
       'Find the closest suitable driver or PA for cover or a new contract',
       [App.can('edit') ? h('button', { class: 'btn primary', onclick: () => Rec.staffEditor(null, type) }, '+ Add to pool') : null,
-       h('a', { class: 'btn', href: '/api/reports/' + (type === 'driver' ? 'drivers' : 'pas') + '.csv', target: '_blank' }, '⬇ Export')]),
+       h('a', { class: 'btn', href: '/api/reports/' + (type === 'driver' ? 'drivers' : 'pas') + '.csv', target: '_blank' }, Icon.el('download', 14), 'Export')]),
     controls, h('div', { style: 'height:14px' }),
     UI.cardTight(`${data.staff.length} ${type === 'driver' ? 'drivers' : 'PAs'}${postcode ? ' sorted by distance from ' + postcode : ''}`,
       UI.table(cols, data.staff, { onRow: s => Router.go('/staff/' + s.id), empty: 'No staff match these criteria' })),
@@ -538,7 +538,7 @@ App.views.reports = async function ({ query }) {
         r.dates ? h('div', { style: 'font-size:11.5px;color:var(--text-faint);margin-bottom:8px' }, `${fmt.date(from)} – ${fmt.date(to)}`) : null,
         h('div', { class: 'pill-row' },
           h('button', { class: 'btn sm primary', onclick: () => Fin.viewReport(r, qs.toString()) }, 'View'),
-          h('a', { class: 'btn sm', href: `/api/reports/${r.id}.csv?${qs}`, target: '_blank' }, '⬇ CSV / Excel')))));
+          h('a', { class: 'btn sm', href: `/api/reports/${r.id}.csv?${qs}`, target: '_blank' }, Icon.el('download', 14), 'CSV / Excel')))));
     }
     host.appendChild(grid);
   };
@@ -565,7 +565,7 @@ Fin.viewReport = async function (report, qs) {
     m.modal.querySelector('.modal-foot')?.remove();
     m.modal.appendChild(h('div', { class: 'modal-foot' },
       h('span', { class: 'left', style: 'color:var(--text-faint);font-size:12px' }, `${data.rows.length} rows`),
-      h('a', { class: 'btn', href: `/api/reports/${report.id}.csv?${qs}`, target: '_blank' }, '⬇ Export CSV'),
+      h('a', { class: 'btn', href: `/api/reports/${report.id}.csv?${qs}`, target: '_blank' }, Icon.el('download', 14), 'Export CSV'),
       h('button', { class: 'btn primary', onclick: () => m.close() }, 'Close')));
   } catch (e) { m.close(); toast(e.message, 'err'); }
 };
@@ -671,7 +671,7 @@ App.views.audit = async function ({ query }) {
   const rows = await api.get('/api/audit', clean({ entity_type: query.type, from: query.from, to: query.to, limit: 500 }));
   return UI.listPage({
     title: 'Audit log', subtitle: `${rows.length} most recent changes`,
-    actions: [h('a', { class: 'btn', href: '/api/reports/audit.csv', target: '_blank' }, '⬇ Export')],
+    actions: [h('a', { class: 'btn', href: '/api/reports/audit.csv', target: '_blank' }, Icon.el('download', 14), 'Export')],
     columns: [
       { key: 'created_at', label: 'When', value: r => fmt.datetime(r.created_at), nowrap: true },
       { key: 'user_name', label: 'User' },

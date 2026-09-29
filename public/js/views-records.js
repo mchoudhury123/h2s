@@ -284,10 +284,10 @@ App.views.childDetail = async function ({ params }) {
     }));
 
   const flags = h('div', { class: 'pill-row', style: 'margin:12px 0' },
-    c.wheelchair ? h('span', { class: 'badge blue' }, '♿ Wheelchair user') : null,
-    hasValue(c.allergies) ? h('span', { class: 'badge red' }, '⚠ Allergy: ' + c.allergies) : null,
-    c.medical_info ? h('span', { class: 'badge amber' }, '⚕ Medical information recorded') : null,
-    c.safeguarding_info ? h('span', { class: 'badge purple' }, '🛡 Safeguarding information') : null,
+    c.wheelchair ? h('span', { class: 'badge blue' }, Icon.el('person', 12), 'Wheelchair user') : null,
+    hasValue(c.allergies) ? h('span', { class: 'badge red' }, Icon.el('alert', 12), 'Allergy: ' + c.allergies) : null,
+    c.medical_info ? h('span', { class: 'badge amber' }, Icon.el('medical', 12), 'Medical information recorded') : null,
+    c.safeguarding_info ? h('span', { class: 'badge purple' }, Icon.el('shield', 12), 'Safeguarding information') : null,
     c.behaviour ? h('span', { class: 'badge amber' }, 'Behaviour plan') : null);
 
   const tabs = [
@@ -534,7 +534,7 @@ App.views.staffDetail = async function ({ params }) {
             ? h('div', null, ...s.vehicles.map(v => h('div', null,
                 h('div', { style: 'padding:9px 14px;font-weight:650;background:var(--surface-2);border-bottom:1px solid var(--border)' }, v.registration),
                 UI.documentsPanel('vehicle', v.id, s.vehicle_documents.filter(d => d.entity_id === v.id).map(d => ({ ...d, calculated_status: docStatusOf(d), days_left: daysLeft(d) })), reload))))
-            : UI.empty('Add a vehicle first', '🚐'))) : null) },
+            : UI.empty('Add a vehicle first', 'vehicles'))) : null) },
     {
       id: 'cover', label: 'Absence & cover', count: s.absences.length + s.recent_cover.length,
       render: () => h('div', null,
@@ -707,9 +707,9 @@ App.views.schoolDetail = async function ({ params }) {
     { id: 'staff', label: 'Staff', count: s.drivers.length + s.pas.length,
       render: () => h('div', { class: 'grid cols-2' },
         UI.cardTight('Drivers', h('div', { class: 'link-list' }, ...(s.drivers.length ? s.drivers.map(d => h('a', { href: '#/staff/' + d.id },
-          h('div', { class: 'll-main' }, h('div', { class: 'll-t' }, `${d.first_name} ${d.last_name}`), h('div', { class: 'll-s' }, d.phone || '')))) : [UI.empty('None', '🚐')]))),
+          h('div', { class: 'll-main' }, h('div', { class: 'll-t' }, `${d.first_name} ${d.last_name}`), h('div', { class: 'll-s' }, d.phone || '')))) : [UI.empty('None', 'drivers')]))),
         UI.cardTight('Passenger assistants', h('div', { class: 'link-list' }, ...(s.pas.length ? s.pas.map(d => h('a', { href: '#/staff/' + d.id },
-          h('div', { class: 'll-main' }, h('div', { class: 'll-t' }, `${d.first_name} ${d.last_name}`), h('div', { class: 'll-s' }, d.phone || '')))) : [UI.empty('None', '🧑‍🤝‍🧑')])))) },
+          h('div', { class: 'll-main' }, h('div', { class: 'll-t' }, `${d.first_name} ${d.last_name}`), h('div', { class: 'll-s' }, d.phone || '')))) : [UI.empty('None', 'pas')])))) },
     { id: 'details', label: 'Details',
       render: () => UI.card('School details', h('div', null, UI.kv([
         ['Name', s.name], ['Address', s.address], ['Postcode', s.postcode],

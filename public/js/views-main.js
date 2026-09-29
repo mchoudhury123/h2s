@@ -80,7 +80,7 @@ App.views.dashboard = async function () {
           h('span', { class: 'dot ' + a.level, style: 'margin-top:5px' }),
           h('span', { class: 'cat' }, a.category),
           h('span', { style: 'flex:1' }, a.text))))
-      : UI.empty('No alerts. Everything is in order.', '✅'));
+      : UI.empty('No alerts. Everything is in order.', 'check-circle'));
 
   const todayCard = UI.cardTight(`Today's operations`,
     d.today.items.length ? h('div', { class: 'oplist' }, ...d.today.items.map(i => {
@@ -92,7 +92,7 @@ App.views.dashboard = async function () {
         h('div', { class: 'ostaff' }, i.summary.length ? i.summary.join(' · ') : 'Running as normal'),
         h('div', { class: 'oacts' },
           App.can('calendar') ? h('button', { class: 'btn xs', onclick: () => Ops.dayDialog(i.contract_id, d.date, () => Router.handle()) }, 'Record exception') : null));
-    })) : UI.empty('No contracts scheduled today', '📅'),
+    })) : UI.empty('No contracts scheduled today', 'calendar'),
     h('a', { class: 'btn sm', href: '#/day/' + d.date }, 'Open day view'));
 
   wrap.appendChild(h('div', { class: 'grid cols-2' }, alertsCard, todayCard));
@@ -287,10 +287,10 @@ Ops.cell = function (day, contract, date, onChange) {
   const off = day.children.filter(c => !c.scheduled).length;
   if (off && day.trips.length) {
     cell.appendChild(h('div', { class: 'cellnote', title: day.children.filter(c => !c.scheduled).map(c => c.name + ' — normal day off').join('\n') },
-      `🏠 ${off} off`));
+      Icon.el('home', 11, 'ico'), `${off} off`));
   }
   const notes = day.exceptions.filter(e => e.type === 'note');
-  if (notes.length) cell.appendChild(h('div', { class: 'cellnote', title: notes.map(n => n.note).join('\n') }, '📝 ' + notes[0].note));
+  if (notes.length) cell.appendChild(h('div', { class: 'cellnote', title: notes.map(n => n.note).join('\n') }, Icon.el('note', 11, 'ico'), notes[0].note));
   cell.onclick = () => Ops.dayDialog(contract.id, date, onChange);
   return cell;
 };
@@ -337,7 +337,7 @@ App.views.day = async function ({ params }) {
     UI.pageHead('Day view — ' + fmt.dateLong(date),
       `${plural(rows.length, 'contract')} · ${plural(journeys, 'journey')} scheduled`,
       [nav, h('a', { class: 'btn', href: '#/calendar' }, 'Calendar view')]),
-    h('div', { class: 'card' }, h('div', { class: 'card-body tight' }, rows.length ? list : UI.empty('No contracts operate on this date', '📅'))));
+    h('div', { class: 'card' }, h('div', { class: 'card-body tight' }, rows.length ? list : UI.empty('No contracts operate on this date', 'calendar'))));
 };
 
 function tripBadge(day, t) {
@@ -620,7 +620,7 @@ Ops.absenceDialog = function (contract, date, role, scope, day, refresh, markDir
     { name: 'note', label: 'Reason / note', span: 'full', placeholder: 'e.g. Sickness, annual leave, hospital appointment' },
   ], {});
 
-  const finder = h('button', { class: 'btn sm', onclick: () => Ops.findCover(contract, date, role, scope.leg || 'DAY', id => { form.controls.cover_staff_id.value = id; }) }, '🔍 Find available staff near this route');
+  const finder = h('button', { class: 'btn sm', onclick: () => Ops.findCover(contract, date, role, scope.leg || 'DAY', id => { form.controls.cover_staff_id.value = id; }) }, Icon.el('search', 14), 'Find available staff near this route');
 
   const saveBtn = h('button', { class: 'btn primary' }, 'Record absence');
   const dlg = UI.modal({
@@ -683,7 +683,7 @@ Ops.coverDialog = function (contract, date, role, exception, day, refresh, markD
         covered.map(t => t.label).join(' · '),
         editing ? h('div', { style: 'margin-top:4px;color:var(--text-dim);font-size:12px' },
           `Currently ${exception.cover_name} at ${fmt.money(exception.cover_pay)}, ${exception.paid_immediately ? 'paid immediately' : 'paid via payroll'}. Changing "paid immediately" adds or removes the payment record to match.`) : null),
-      h('div', { style: 'margin-bottom:10px' }, h('button', { class: 'btn sm', onclick: () => Ops.findCover(contract, date, role, exception.leg, id => { form.controls.cover_staff_id.value = id; }) }, '🔍 Find available staff near this route')),
+      h('div', { style: 'margin-bottom:10px' }, h('button', { class: 'btn sm', onclick: () => Ops.findCover(contract, date, role, exception.leg, id => { form.controls.cover_staff_id.value = id; }) }, Icon.el('search', 14), 'Find available staff near this route')),
       form),
     footer: [h('button', { class: 'btn', onclick: () => dlg.close() }, 'Cancel'), saveBtn],
   });

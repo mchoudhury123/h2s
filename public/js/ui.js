@@ -305,7 +305,7 @@ UI.tabs = function (items, initial) {
   draw();
   return h('div', null, bar, host);
 };
-UI.empty = function (msg, icon) { return h('div', { class: 'empty-state' }, h('div', { class: 'big' }, icon || '📭'), msg); };
+UI.empty = function (msg, icon) { return h('div', { class: 'empty-state' }, h('div', { class: 'big', html: Icon.svg(Icon.name(icon || 'inbox'), 26) }), msg); };
 UI.stat = function ({ label, value, hint, href, tone, onclick }) {
   const el = href ? h('a', { class: 'stat ' + (tone || ''), href }) : h('button', { class: 'stat ' + (tone || ''), onclick: onclick || null, type: 'button' });
   el.appendChild(h('div', { class: 'label' }, label));
@@ -567,7 +567,7 @@ UI.documentEditor = function (entityType, entityId, doc, onChange, initialType) 
 
 /* ---------- history panel ---------- */
 UI.historyPanel = function (rows) {
-  if (!rows || !rows.length) return UI.empty('No changes recorded yet', '🕓');
+  if (!rows || !rows.length) return UI.empty('No changes recorded yet', 'audit');
   return UI.table([
     { key: 'created_at', label: 'When', value: r => fmt.datetime(r.created_at), nowrap: true },
     { key: 'user_name', label: 'User' },

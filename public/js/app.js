@@ -11,7 +11,7 @@ App.renderAuth = function (mode, message, prefill) {
     const showError = msg => { err.textContent = msg; err.hidden = false; };
 
     const card = h('div', { class: 'login-card' },
-      h('div', { class: 'login-brand' }, h('span', { class: 'login-logo' }, '🚐'),
+      h('div', { class: 'login-brand' }, h('span', { class: 'login-logo', html: Icon.logo(44) }),
         h('div', null,
           h('h1', 'Transport CRM'),
           h('div', { class: 'sub' }, 'Home-to-school transport management'))),
@@ -21,8 +21,20 @@ App.renderAuth = function (mode, message, prefill) {
       err,
       tab === 'signin' ? signInForm(showError) : registerForm(showError));
 
+    const point = (icon, title, text) => h('div', { class: 'hero-point' },
+      h('span', { class: 'ico', html: Icon.svg(icon, 17) }), h('div', null, h('strong', title), text));
+    const hero = h('div', { class: 'login-hero' },
+      h('div', { class: 'hero-brand' }, h('span', { class: 'ico', html: Icon.logo(34) }), 'Transport CRM'),
+      h('div', null,
+        h('h2', 'Every journey, every child, every pound, in one place.'),
+        h('p', 'Contracts, calendar, staff, compliance, wages and invoicing for home-to-school transport, kept in step with each other so nothing is entered twice.'),
+        h('div', { class: 'hero-points' },
+          point('calendar', 'Record only what is different', 'Journeys are generated from each contract. Absences, cover and cancellations are one click on the day.'),
+          point('wages', 'Wages that explain themselves', 'Every figure traces back to a date, a contract and a journey, with cover and payments already made deducted.'),
+          point('invoicing', 'Invoices from the same calendar', 'Half a day per run, charged to the council exactly as it was scheduled.'))),
+      h('div', { class: 'hero-foot' }, 'Private to your business. No other firm can see your records.'));
     root.innerHTML = '';
-    root.appendChild(h('div', { class: 'login-page' }, card));
+    root.appendChild(h('div', { class: 'login-page' }, hero, h('div', { class: 'login-side' }, card)));
     if (message) { showError(message); message = null; }
     const first = card.querySelector('input');
     if (first) setTimeout(() => first.focus(), 40);
@@ -127,34 +139,34 @@ App.loadMe = async function () {
 /* ---------- shell ---------- */
 const NAV = [
   { group: 'Operations', items: [
-    { path: '/', label: 'Dashboard', icon: '▦' },
-    { path: '/calendar', label: 'Calendar', icon: '▤' },
-    { path: '/day/today', label: 'Today', icon: '◉' },
+    { path: '/', label: 'Dashboard', icon: 'dashboard' },
+    { path: '/calendar', label: 'Calendar', icon: 'calendar' },
+    { path: '/day/today', label: 'Today', icon: 'today' },
   ] },
   { group: 'Records', items: [
-    { path: '/contracts', label: 'Contracts', icon: '📋' },
-    { path: '/children', label: 'Children', icon: '🧒' },
-    { path: '/staff/list/driver', label: 'Drivers', icon: '🚐' },
-    { path: '/staff/list/pa', label: 'Passenger assistants', icon: '🧑‍🤝‍🧑' },
-    { path: '/schools', label: 'Schools', icon: '🏫' },
-    { path: '/councils', label: 'Councils', icon: '🏛' },
-    { path: '/vehicles', label: 'Vehicles', icon: '🚙' },
+    { path: '/contracts', label: 'Contracts', icon: 'contracts' },
+    { path: '/children', label: 'Children', icon: 'children' },
+    { path: '/staff/list/driver', label: 'Drivers', icon: 'drivers' },
+    { path: '/staff/list/pa', label: 'Passenger assistants', icon: 'pas' },
+    { path: '/schools', label: 'Schools', icon: 'schools' },
+    { path: '/councils', label: 'Councils', icon: 'councils' },
+    { path: '/vehicles', label: 'Vehicles', icon: 'vehicles' },
   ] },
   { group: 'Staffing', items: [
-    { path: '/pool', label: 'Staff pool', icon: '🔍' },
-    { path: '/compliance', label: 'Compliance', icon: '🚦', countKey: 'compliance' },
+    { path: '/pool', label: 'Staff pool', icon: 'pool' },
+    { path: '/compliance', label: 'Compliance', icon: 'compliance', countKey: 'compliance' },
   ] },
   { group: 'Money', items: [
-    { path: '/wages', label: 'Wages', icon: '💷' },
-    { path: '/payroll', label: 'Payroll history', icon: '🧾' },
-    { path: '/finance', label: 'Profitability', icon: '📈' },
-    { path: '/expenses', label: 'Expenses', icon: '🧮' },
-    { path: '/invoicing', label: 'Invoicing', icon: '📄' },
+    { path: '/wages', label: 'Wages', icon: 'wages' },
+    { path: '/payroll', label: 'Payroll history', icon: 'payroll' },
+    { path: '/finance', label: 'Profitability', icon: 'finance' },
+    { path: '/expenses', label: 'Expenses', icon: 'expenses' },
+    { path: '/invoicing', label: 'Invoicing', icon: 'invoicing' },
   ] },
   { group: 'Admin', items: [
-    { path: '/reports', label: 'Reports', icon: '📑' },
-    { path: '/audit', label: 'Audit log', icon: '🕓' },
-    { path: '/settings', label: 'Settings', icon: '⚙' },
+    { path: '/reports', label: 'Reports', icon: 'reports' },
+    { path: '/audit', label: 'Audit log', icon: 'audit' },
+    { path: '/settings', label: 'Settings', icon: 'settings' },
   ] },
 ];
 
@@ -184,29 +196,37 @@ App.businessPicker = function () {
   return h('div', { class: 'sub' }, sel);
 };
 
+/** Two letters for the avatar: first and last initial, or the first two of one name. */
+App.initials = function (name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  return (parts.length > 1 ? parts[0][0] + parts[parts.length - 1][0] : parts[0].slice(0, 2)).toUpperCase();
+};
+
 App.renderShell = function () {
   const root = document.getElementById('root');
   const u = App.state.user;
   const sidebar = h('aside', { class: 'sidebar', id: 'sidebar' },
     h('div', { class: 'brand' },
-      h('div', { class: 'logo' }, '🚐 ', h('span', 'Transport CRM')),
+      h('div', { class: 'logo' }, h('span', { class: 'ico', html: Icon.logo(30) }), h('span', 'Transport CRM')),
       App.businessPicker() || h('div', { class: 'sub' }, App.state.settings.company_name || 'Operations')),
     h('nav', { class: 'nav', id: 'nav' }),
     h('div', { class: 'userbox' },
+      h('div', { class: 'avatar', title: u.name }, App.initials(u.name)),
       h('div', { class: 'who' }, u.name),
       h('div', { class: 'role' }, App.state.settings.company_name || u.organisation_name),
       h('div', { class: 'acts' },
-        h('a', { href: '#', onclick: e => { e.preventDefault(); App.toggleTheme(); } }, 'Theme'),
-        h('a', { href: '#', onclick: async e => { e.preventDefault(); await api.post('/api/logout'); App.signedOut('You have been signed out.'); } }, 'Sign out'))));
+        h('a', { href: '#', onclick: e => { e.preventDefault(); App.toggleTheme(); } }, h('span', { class: 'ico', html: Icon.svg('sun', 14) }), 'Theme'),
+        h('a', { href: '#', onclick: async e => { e.preventDefault(); await api.post('/api/logout'); App.signedOut('You have been signed out.'); } }, h('span', { class: 'ico', html: Icon.svg('logout', 14) }), 'Sign out'))));
 
   const searchInput = h('input', { type: 'search', placeholder: 'Search children, schools, contracts, drivers, PAs, postcodes…', id: 'usearch', autocomplete: 'off' });
   const resultsBox = h('div', { class: 'results', hidden: true, id: 'sresults' });
   const topbar = h('header', { class: 'topbar' },
-    h('button', { class: 'btn menu-btn', onclick: () => document.getElementById('sidebar').classList.toggle('open') }, '☰'),
+    h('button', { class: 'btn menu-btn', 'aria-label': 'Menu', onclick: () => document.getElementById('sidebar').classList.toggle('open') }, h('span', { class: 'ico', html: Icon.svg('menu', 18) })),
     h('div', { class: 'searchwrap' },
-      h('span', { class: 'sicon' }, '🔍'), searchInput, h('kbd', '/'), resultsBox),
-    h('a', { class: 'btn', href: '#/calendar' }, 'Calendar'),
-    h('button', { class: 'btn primary', onclick: () => App.quickException() }, '+ Exception'));
+      h('span', { class: 'sicon', html: Icon.svg('search', 16) }), searchInput, h('kbd', '/'), resultsBox),
+    h('a', { class: 'btn', href: '#/calendar' }, h('span', { class: 'ico', html: Icon.svg('calendar', 15) }), 'Calendar'),
+    h('button', { class: 'btn primary', onclick: () => App.quickException() }, h('span', { class: 'ico', html: Icon.svg('plus', 15) }), 'Exception'));
 
   root.innerHTML = '';
   root.appendChild(h('div', { id: 'app' }, sidebar,
@@ -226,7 +246,7 @@ App.buildNav = function (counts) {
     for (const i of items) {
       const href = i.path === '/day/today' ? '#/day/' + D.today() : '#' + i.path;
       grp.appendChild(h('a', { href, dataset: { path: i.path } },
-        h('span', { class: 'ico' }, i.icon), h('span', i.label),
+        h('span', { class: 'ico', html: Icon.svg(i.icon, 18) }), h('span', i.label),
         i.countKey && counts && counts[i.countKey] ? h('span', { class: 'count' + (counts[i.countKey + '_tone'] === 'amber' ? ' amber' : '') }, counts[i.countKey]) : null));
     }
     nav.appendChild(grp);

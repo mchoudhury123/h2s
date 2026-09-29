@@ -414,7 +414,7 @@ server/
 public/
   index.html
   css/app.css
-  js/                   core, ui, and the four view modules
+  js/                   core, icons (inline SVG set), ui, and the view modules
 scripts/
   test-rules.js         business-rule tests
   test-isolation.js     proves one firm cannot reach another's data

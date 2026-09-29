@@ -185,8 +185,8 @@ Sched.weekEditor = async function (contract, reload) {
           h('div', { class: 'sd-field' }, h('label', 'Departs'), depart),
           h('div', { class: 'sd-field' }, h('label', 'Arrives'), arrive)),
         h('div', { class: 'sd-line sub' }, whoLabel, more,
-          i > 0 ? h('button', { class: 'btn xs', title: 'Move earlier', onclick: () => { const a = model[wd]; [a[i - 1], a[i]] = [a[i], a[i - 1]]; draw(); } }, '↑') : null,
-          i < model[wd].length - 1 ? h('button', { class: 'btn xs', title: 'Move later', onclick: () => { const a = model[wd]; [a[i], a[i + 1]] = [a[i + 1], a[i]]; draw(); } }, '↓') : null,
+          i > 0 ? h('button', { class: 'btn xs', title: 'Move earlier', onclick: () => { const a = model[wd]; [a[i - 1], a[i]] = [a[i], a[i - 1]]; draw(); } }, Icon.el('chevron-up', 12)) : null,
+          i < model[wd].length - 1 ? h('button', { class: 'btn xs', title: 'Move later', onclick: () => { const a = model[wd]; [a[i], a[i + 1]] = [a[i + 1], a[i]]; draw(); } }, Icon.el('chevron-down', 12)) : null,
           h('button', { class: 'btn xs danger', onclick: () => { model[wd].splice(i, 1); draw(); } }, 'Remove')),
         detail));
   }

@@ -172,14 +172,15 @@ const Router = window.Router = {
     if (stale()) return;
     const el = host();
     el.innerHTML = '';
-    el.appendChild(h('div', { class: 'empty-state' }, h('div', { class: 'big' }, '🤔'), 'Page not found: ' + path));
+    el.appendChild(h('div', { class: 'empty-state' }, h('div', { class: 'big', html: Icon.svg('help', 26) }), 'Page not found: ' + path));
   },
 };
 window.addEventListener('hashchange', () => Router.handle());
 
 /* ---------- toasts ---------- */
 window.toast = function (msg, kind) {
-  const el = h('div', { class: 'toast ' + (kind || '') }, msg);
+  const el = h('div', { class: 'toast ' + (kind || '') },
+    h('span', { class: 'ico', html: Icon.svg(kind === 'ok' ? 'check-circle' : kind === 'err' ? 'alert' : 'info', 16) }), h('span', null, msg));
   document.getElementById('toasts').appendChild(el);
   setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity .3s'; setTimeout(() => el.remove(), 300); }, kind === 'err' ? 6000 : 3200);
 };
