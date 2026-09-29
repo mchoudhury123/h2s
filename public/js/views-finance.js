@@ -100,7 +100,7 @@ Fin.breakdown = function (r, from, to) {
     for (const k in byContract) {
       const g = byContract[k];
       box.appendChild(h('div', { class: 'bl' },
-        h('span', { class: 'bd' }, plural(g.dates.size, 'day')),
+        h('span', { class: 'bd' }, plural(g.count / 2, 'day')),
         h('span', { class: 'btx' }, `${g.code} — ${plural(g.count, 'journey', 'journeys')} at ${fmt.money(g.rate)}/day`),
         h('span', { class: 'bam' }, fmt.money(g.amount))));
     }

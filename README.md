@@ -315,7 +315,7 @@ Payments already made                  -£75.00
 AMOUNT DUE                             £713.00
 ```
 
-Each journey is its own line, so the Friday that runs three of them is visibly paid for three.
+Each journey is its own line, so the Friday that runs three of them is visibly paid for three. Days worked are counted the same way the council is charged: half a day per journey, so an AM or a PM alone is half a day, a normal day is one, and that Friday is one and a half.
 
 **Already paid for some days.** Click a name on the wages page, then **Already paid for days…**, and choose a date or a run of dates. The dialog shows what each day earned, what has already been recorded against it and what is still due, and suggests the total. Recording it writes one payment per day for what that day was worth, so any later calculation over any period deducts exactly the days it includes, and the same day can never be paid twice. If a different sum was handed over, enter it and it is spread across the days in proportion; the difference then shows as still due or as an overpayment on the wages page.
 

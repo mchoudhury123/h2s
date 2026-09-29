@@ -239,7 +239,13 @@ async function payDays(orgId, staffId, { from, to, amount, paid_date, method, re
 function ukDate(s) { if (!s) return ''; const [y, m, d] = String(s).slice(0, 10).split('-'); return `${d}/${m}/${y}`; }
 function sum(lines) { return lines.reduce((a, l) => a + (l.amount || 0), 0); }
 function sumBy(arr, fn) { return arr.reduce((a, x) => a + (fn(x) || 0), 0); }
-function countDays(lines) { return new Set(lines.map(l => l.date)).size; }
+/**
+ * Days worked, at half a day per journey, the same rule the council is
+ * charged by: an AM or a PM alone is half a day, a normal day is one, a
+ * three-run Friday is one and a half. A cover line spans the journeys it
+ * covered.
+ */
+function countDays(lines) { return round2(lines.reduce((a, l) => a + (l.journeys || 1), 0) / 2); }
 
 /** Staff cost per contract over a range, used by profitability. */
 async function staffCostForRange(orgId, from, to, contractId = null) {

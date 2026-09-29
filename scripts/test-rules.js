@@ -524,6 +524,7 @@ async function main() {
   is(uncovered.chargeable_days, 1, 'the date is still charged as a full day');
   is(uncovered.income, 100, 'at the full day rate');
   is((await wagesFor('John Normal')).totals.amount_due, 270, 'the driver loses the AM run');
+  is((await wagesFor('John Normal')).totals.normal_days, 4.5, 'and has worked four and a half days, the PM alone being half a day');
   await run('DELETE FROM exceptions WHERE organisation_id = ? AND id = ?', [orgId, noCover]);
   const covered = await addEx({ date: '2026-09-09', type: 'staff_absence', leg: 'DAY', contract_id: contractId, role: 'driver', staff_id: driverId, cover_staff_id: coverId, cover_pay: 75 });
   is((await day('2026-09-09')).income, 100, 'a covered day is charged exactly as a normal one');
@@ -547,6 +548,7 @@ async function main() {
   is(split.income, 100, 'the day is charged in full');
   is((await wagesFor('Ahmed Cover')).totals.amount_due, 40, 'the morning cover is paid the agreed 40');
   is((await wagesFor('Sam Second')).totals.amount_due, 35, 'the afternoon cover is paid the agreed 35');
+  is((await wagesFor('Sam Second')).totals.cover_days, 0.5, 'and one covered journey is half a cover day');
   is((await wagesFor('John Normal')).totals.amount_due, 240, 'and the absent driver loses the whole day');
   await run('DELETE FROM exceptions WHERE organisation_id = ? AND id IN (?,?)', [orgId, amCover, pmCover]);
 
@@ -573,6 +575,7 @@ async function main() {
   is(fri3.chargeable_days, 1.5, 'three runs are a day and a half');
   is(fri3.income, 150, 'charged at one and a half times the day rate');
   is((await day('2026-09-18')).chargeable_days, 1.5, 'the following Friday is a day and a half too, with nothing recorded');
+  is((await wagesFor('John Normal')).totals.normal_days, 5.5, 'and the driver has worked five and a half days that week');
   is((await profit()).income, 550, 'the week is 5.5 days');
   is((await wagesFor('John Normal')).totals.amount_due, 330, 'and the driver is paid for eleven runs');
   const extraRun = await addEx({ date: '2026-09-08', type: 'extra_journey', contract_id: contractId, leg: 'DAY', trip_label: 'Hospital run', trip_kind: 'other' });
