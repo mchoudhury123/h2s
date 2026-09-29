@@ -595,6 +595,33 @@ async function main() {
   await run("UPDATE contracts SET income_basis = 'per_journey' WHERE organisation_id = ? AND id = ?", [orgId, contractId]);
   await run('DELETE FROM contract_schedules WHERE organisation_id = ? AND id = ?', [orgId, threeFridays]);
 
+  section('18. Days already paid are ticked off one day at a time');
+  let owed = await wages.daysOwed(orgId, driverId, WEEK.from, WEEK.to);
+  is(owed.days.length, 5, 'the week is five days');
+  is(owed.days.map(d => d.due), [60, 60, 60, 60, 60], 'each worth a day at 60');
+  is(owed.total_due, 300, 'so 300 is owed');
+  const monToWed = await wages.payDays(orgId, driverId, { from: '2026-09-07', to: '2026-09-09', paid_date: '2026-09-10', method: 'Cash', created_by: 'test' });
+  is(monToWed.paid_days, 3, 'Monday to Wednesday is three days');
+  is(monToWed.total, 180, 'paid at what they earned');
+  is((await wagesFor('John Normal')).totals.already_paid, 180, 'the week now shows 180 already paid');
+  is((await wagesFor('John Normal')).totals.amount_due, 120, 'and 120 still due');
+  is((await wagesFor('John Normal', { from: '2026-09-07', to: '2026-09-08' })).totals.amount_due, 0, 'a calculation over Monday and Tuesday alone owes nothing');
+  is((await wagesFor('John Normal', { from: '2026-09-10', to: '2026-09-11' })).totals.amount_due, 120, 'Thursday and Friday alone owe the full 120');
+  owed = await wages.daysOwed(orgId, driverId, WEEK.from, WEEK.to);
+  is(owed.days.map(d => d.due), [0, 0, 0, 60, 60], 'the paid days show nothing due');
+  let refused = null;
+  try { await wages.payDays(orgId, driverId, { from: '2026-09-07', to: '2026-09-09' }); } catch (e) { refused = e.message; }
+  is(refused, 'Nothing is outstanding for those days', 'the same days cannot be paid twice');
+  const restOfWeek = await wages.payDays(orgId, driverId, { from: '2026-09-07', to: '2026-09-11', amount: 100, note: 'Cash on Friday', created_by: 'test' });
+  is(restOfWeek.paid_days, 2, 'paying the whole week again only touches the two unpaid days');
+  is(restOfWeek.total, 100, 'a different sum is recorded as handed over');
+  const spread = await database.all('SELECT work_date, amount, note FROM payments WHERE organisation_id = ? AND staff_id = ? AND work_date >= ? ORDER BY work_date', [orgId, driverId, '2026-09-10']);
+  is(spread.map(p => [p.work_date.slice(0, 10), Number(p.amount)]), [['2026-09-10', 50], ['2026-09-11', 50]], 'spread across the days in proportion');
+  is(spread[0].note, 'Cash on Friday', 'with the note kept');
+  is((await wagesFor('John Normal')).totals.amount_due, 20, 'leaving the 20 the driver was short-paid');
+  await run('DELETE FROM payments WHERE organisation_id = ? AND staff_id = ?', [orgId, driverId]);
+  is((await wagesFor('John Normal')).totals.amount_due, 300, 'deleting the payments brings the week back');
+
   console.log(`\n${pass} passed, ${fail} failed on ${database.describe}`);
   return fail;
 }

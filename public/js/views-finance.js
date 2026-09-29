@@ -47,7 +47,7 @@ App.views.wages = async function ({ query }) {
     UI.stat({ label: 'Total to pay', value: fmt.money0(data.totals.total_due), tone: 'green' }));
 
   const summary = UI.table([
-    { key: 'name', label: 'Staff', value: r => h('a', { href: '#/staff/' + r.staff.id }, h('strong', r.staff.name)), sort: r => r.staff.name },
+    { key: 'name', label: 'Staff', value: r => h('a', { href: '#', title: 'Open the breakdown', onclick: e => { e.preventDefault(); Fin.breakdown(r, from, to); } }, h('strong', r.staff.name)), sort: r => r.staff.name },
     { label: 'Type', value: r => h('span', { class: 'badge blue' }, r.staff.type === 'driver' ? 'Driver' : 'PA'), sort: r => r.staff.type },
     { label: 'Days', num: true, value: r => r.totals.normal_days, sort: r => r.totals.normal_days },
     { label: 'Journeys', num: true, value: r => r.totals.journeys, sort: r => r.totals.journeys },
@@ -144,10 +144,74 @@ Fin.breakdown = function (r, from, to) {
       box),
     footer: [
       h('a', { class: 'btn left', href: '#/staff/' + r.staff.id, onclick: () => m.close() }, 'Open staff profile'),
+      App.can('wages') ? h('button', { class: 'btn', onclick: () => { m.close(); Fin.payDays(r.staff, from, to); } }, 'Already paid for days…') : null,
       App.can('wages') ? h('button', { class: 'btn', onclick: () => { m.close(); Fin.recordPayment(r.staff, r.totals.amount_due, to); } }, 'Record a payment') : null,
       h('button', { class: 'btn primary', onclick: () => m.close() }, 'Close'),
     ],
   });
+};
+
+/* Tick off a day or a run of days someone has already been paid for. One
+   payment is written per day, so any later calculation deducts exactly the
+   days it covers. */
+Fin.payDays = function (staff, from, to) {
+  const form = UI.form([
+    { name: 'from', label: 'Paid from', type: 'date', value: from, required: true },
+    { name: 'to', label: 'Paid to', type: 'date', value: to, required: true, help: 'One day: put the same date in both.' },
+    { name: 'amount', label: 'Amount paid (£)', type: 'number', step: '0.01', help: 'Suggested from what those days are worth. Change it if a different sum was handed over; it is then spread across the days.' },
+    { name: 'paid_date', label: 'Date paid', type: 'date', value: D.today() },
+    { name: 'method', label: 'Method', type: 'select', options: ['Bank transfer', 'Cash', 'Cheque', 'Other'] },
+    { name: 'reference', label: 'Reference' },
+    { name: 'note', label: 'Note', span: 'full', placeholder: 'e.g. Paid in cash on Friday' },
+  ], {});
+  const preview = h('div', { style: 'margin:10px 0' });
+  const saveBtn = h('button', { class: 'btn primary' }, 'Record as already paid');
+  let owed = null;
+
+  async function load() {
+    const a = form.controls.from.value, b = form.controls.to.value;
+    if (!a || !b) return;
+    if (a > b) { preview.replaceChildren(h('div', { class: 'note-box danger' }, 'The from date is after the to date.')); saveBtn.disabled = true; return; }
+    preview.replaceChildren(h('div', { style: 'color:var(--text-dim);font-size:12px' }, 'Working out what those days are worth…'));
+    try {
+      owed = await api.get('/api/wages/days-owed', { staff_id: staff.id, from: a, to: b });
+    } catch (e) { preview.replaceChildren(h('div', { class: 'note-box danger' }, e.message)); saveBtn.disabled = true; return; }
+    const rows = owed.days.filter(d => d.earned || d.already_paid);
+    const table = h('table', { class: 'table', style: 'font-size:12.5px' },
+      h('thead', h('tr', h('th', 'Date'), h('th', 'Journeys'), h('th', { class: 'num' }, 'Earned'), h('th', { class: 'num' }, 'Already paid'), h('th', { class: 'num' }, 'Still due'))),
+      h('tbody', ...rows.map(d => h('tr', { style: d.due ? '' : 'color:var(--text-faint)' },
+        h('td', fmt.date(d.date)), h('td', d.journeys || '—'),
+        h('td', { class: 'num' }, fmt.money(d.earned)),
+        h('td', { class: 'num' }, d.already_paid ? '-' + fmt.money(d.already_paid) : '—'),
+        h('td', { class: 'num' }, d.due ? h('strong', fmt.money(d.due)) : h('span', { class: 'badge green' }, 'paid'))))),
+      h('tfoot', h('tr', h('td', { colspan: 4 }, h('strong', `Still due for ${plural(owed.days.filter(d => d.due).length, 'day')}`)), h('td', { class: 'num' }, h('strong', fmt.money(owed.total_due))))));
+    preview.replaceChildren(rows.length ? table
+      : h('div', { class: 'note-box' }, `${staff.name} has no journeys between ${fmt.date(a)} and ${fmt.date(b)}.`));
+    form.controls.amount.value = owed.total_due ? owed.total_due.toFixed(2) : '';
+    saveBtn.disabled = !owed.total_due;
+  }
+  form.controls.from.addEventListener('change', load);
+  form.controls.to.addEventListener('change', load);
+
+  const m = UI.modal({
+    title: 'Already paid — ' + staff.name,
+    width: 'wide',
+    body: h('div', null,
+      h('div', { class: 'note-box', style: 'margin-bottom:10px' },
+        'Use this when ', h('strong', staff.name), ' has already been paid for a day or a run of days, for example in cash. ',
+        'Each day is recorded as paid for what it earned, so it drops out of every future wage calculation and cannot be paid twice.'),
+      form, preview),
+    footer: [h('button', { class: 'btn', onclick: () => m.close() }, 'Cancel'), saveBtn],
+  });
+  load();
+  saveBtn.onclick = async () => {
+    if (!form.validate()) return;
+    saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+    try {
+      const r = await api.post('/api/payments/days', { staff_id: staff.id, ...form.read() });
+      toast(`${fmt.money(r.total)} recorded as already paid for ${plural(r.paid_days, 'day')}`, 'ok'); m.close(); Router.handle();
+    } catch (e) { toast(e.message, 'err'); saveBtn.disabled = false; saveBtn.textContent = 'Record as already paid'; }
+  };
 };
 
 Fin.recordPayment = function (staff, amount, workDate) {

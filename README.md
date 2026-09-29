@@ -150,6 +150,7 @@ npm run test:workflow    # create records through the forms, through to payroll
 npm run test:schedules   # weekly schedules and child timetables, in a browser
 npm run test:invoicing   # invoice numbering, day counting, snapshots and PDFs
 npm run test:cover       # one driver absent, a different cover on each journey, in a browser
+npm run test:paydays     # ticking off days a driver was already paid for, in a browser
 ```
 
 The browser suites expect Chrome at the default Windows location and the server already running. The walkthrough suites (`test:browser`, `test:workflow` and `test:schedules`) sign in as the seeded sample business, so run them against a local SQLite server after `npm run seed`, or point them at a filled business of your own with `USER_EMAIL` and `USER_PASS`. A live database with only a real, empty firm on it has nothing for them to walk through.
@@ -313,6 +314,8 @@ AMOUNT DUE                             £713.00
 ```
 
 Each journey is its own line, so the Friday that runs three of them is visibly paid for three.
+
+**Already paid for some days.** Click a name on the wages page, then **Already paid for days…**, and choose a date or a run of dates. The dialog shows what each day earned, what has already been recorded against it and what is still due, and suggests the total. Recording it writes one payment per day for what that day was worth, so any later calculation over any period deducts exactly the days it includes, and the same day can never be paid twice. If a different sum was handed over, enter it and it is spread across the days in proportion; the difference then shows as still due or as an overpayment on the wages page.
 
 "Mark period as paid" records a payment for each person so the same period can never be paid again.
 

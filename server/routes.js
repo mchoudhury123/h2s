@@ -1521,6 +1521,32 @@ route('GET', '/api/wages', async ctx => {
   H.json(ctx.res, await wages.calculateWages(ctx.org, opts));
 });
 
+// What one person is still owed, day by day, so days already paid can be ticked off.
+route('GET', '/api/wages/days-owed', async ctx => {
+  const { staff_id, from, to } = ctx.query;
+  if (!staff_id || !from || !to) return H.error(ctx.res, 'staff_id, from and to are required');
+  if (from > to) return H.error(ctx.res, 'The from date is after the to date');
+  if (cal.dateRange(from, to).length > 92) return H.error(ctx.res, 'Choose a period of three months or less');
+  if (!(await owned('staff', Number(staff_id), ctx.org))) return H.error(ctx.res, 'Staff member not found', 404);
+  H.json(ctx.res, await wages.daysOwed(ctx.org, Number(staff_id), from, to));
+});
+
+// Someone has already been paid for a run of days: one payment per day still owed.
+route('POST', '/api/payments/days', async ctx => {
+  const b = ctx.body;
+  if (!b.staff_id || !b.from || !b.to) return H.error(ctx.res, 'Staff member, from and to dates are required');
+  if (b.from > b.to) return H.error(ctx.res, 'The from date is after the to date');
+  if (cal.dateRange(b.from, b.to).length > 92) return H.error(ctx.res, 'Choose a period of three months or less');
+  if (!(await owned('staff', Number(b.staff_id), ctx.org))) return H.error(ctx.res, 'Staff member not found', 404);
+  let result;
+  try {
+    result = await wages.payDays(ctx.org, Number(b.staff_id), { ...b, created_by: ctx.user.name });
+  } catch (e) { return H.error(ctx.res, e.message); }
+  await audit.logAction(ctx.user, 'staff', Number(b.staff_id), result.staff.name, 'payment',
+    `Recorded ${result.total.toFixed(2)} already paid for ${result.paid_days} ${result.paid_days === 1 ? 'day' : 'days'} from ${b.from} to ${b.to}`);
+  H.json(ctx.res, result, 201);
+});
+
 route('GET', '/api/payments', async ctx => {
   let sql = `SELECT p.*, s.first_name || ' ' || s.last_name AS staff_name, s.type AS staff_type
     FROM payments p JOIN staff s ON s.id = p.staff_id WHERE p.organisation_id = ?`;

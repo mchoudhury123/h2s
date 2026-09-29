@@ -2,7 +2,7 @@
 // Wage calculation engine. Every figure is derived from the journeys a contract
 // was scheduled to run, plus the exceptions recorded against them, and every
 // line traces back to a date, a contract, a trip and a reason.
-const { all } = require('../db');
+const { all, insert, transaction } = require('../db');
 const cal = require('./calendar');
 const { round2 } = cal;
 
@@ -173,6 +173,69 @@ async function calculateWages(orgId, opts) {
   };
 }
 
+/**
+ * What one person is still owed on each day of a range: what the journeys
+ * earned that day, less any payment already recorded against that day.
+ */
+async function daysOwed(orgId, staffId, from, to) {
+  const calc = await calculateWages(orgId, { from, to, staff_ids: [Number(staffId)], include_zero: true });
+  const r = calc.results[0] || null;
+  const byDate = new Map(cal.dateRange(from, to).map(d => [d, { date: d, earned: 0, already_paid: 0, journeys: 0 }]));
+  for (const l of (r ? r.lines : [])) {
+    const d = byDate.get(l.date);
+    if (!d) continue;
+    if (l.kind === 'normal' || l.kind === 'cover') { d.earned += l.amount; if (l.amount) d.journeys += l.journeys || 1; }
+    else if (l.kind === 'already_paid') d.already_paid += -l.amount;
+  }
+  const days = [...byDate.values()].map(d => ({
+    ...d, earned: round2(d.earned), already_paid: round2(d.already_paid),
+    due: round2(Math.max(0, d.earned - d.already_paid)),
+  }));
+  return {
+    staff: r ? r.staff : null, from, to, days,
+    total_earned: round2(days.reduce((a, d) => a + d.earned, 0)),
+    total_already_paid: round2(days.reduce((a, d) => a + d.already_paid, 0)),
+    total_due: round2(days.reduce((a, d) => a + d.due, 0)),
+  };
+}
+
+/**
+ * Record that someone has already been paid for a run of days. One payment is
+ * written per day still owed, so a later calculation over any range deducts
+ * exactly the days it includes and nothing is paid twice. With no amount the
+ * days are paid at what they are worth; a different sum is spread across the
+ * days in proportion.
+ */
+async function payDays(orgId, staffId, { from, to, amount, paid_date, method, reference, note, created_by }) {
+  const owed = await daysOwed(orgId, staffId, from, to);
+  if (!owed.staff) throw new Error('Staff member not found');
+  const days = owed.days.filter(d => d.due > 0);
+  if (!days.length) throw new Error('Nothing is outstanding for those days');
+  let amounts = days.map(d => d.due);
+  const total = amount === undefined || amount === null || amount === '' ? owed.total_due : Number(amount);
+  if (!(total > 0)) throw new Error('The amount paid must be more than zero');
+  if (total !== owed.total_due) {
+    let running = 0;
+    amounts = days.map((d, i) => {
+      if (i === days.length - 1) return round2(total - running);
+      const a = round2(total * d.due / owed.total_due);
+      running = round2(running + a);
+      return a;
+    });
+  }
+  const label = note || `Paid for ${ukDate(from)} to ${ukDate(to)}`;
+  const ids = [];
+  await transaction(async tx => {
+    for (let i = 0; i < days.length; i++) {
+      ids.push(await insert('payments', {
+        staff_id: Number(staffId), work_date: days[i].date, paid_date: paid_date || cal.today(), amount: amounts[i],
+        source: 'manual', method: method || null, reference: reference || null, note: label, created_by: created_by || null,
+      }, ['staff_id', 'work_date', 'paid_date', 'amount', 'source', 'method', 'reference', 'note', 'created_by'], tx, orgId));
+    }
+  });
+  return { staff: owed.staff, from, to, paid_days: days.length, total: round2(amounts.reduce((a, b) => a + b, 0)), payment_ids: ids };
+}
+
 function ukDate(s) { if (!s) return ''; const [y, m, d] = String(s).slice(0, 10).split('-'); return `${d}/${m}/${y}`; }
 function sum(lines) { return lines.reduce((a, l) => a + (l.amount || 0), 0); }
 function sumBy(arr, fn) { return arr.reduce((a, x) => a + (fn(x) || 0), 0); }
@@ -199,4 +262,4 @@ async function staffCostForRange(orgId, from, to, contractId = null) {
   return byContract;
 }
 
-module.exports = { calculateWages, staffCostForRange };
+module.exports = { calculateWages, staffCostForRange, daysOwed, payDays };
