@@ -911,6 +911,20 @@ route('POST', '/api/exceptions', async ctx => {
     if (b[field] && !(await owned(table, Number(b[field]), ctx.org))) return H.error(ctx.res, msg, 404);
   }
 
+  // One absence per journey per role. Checked here, before the transaction
+  // opens: it reads the calendar through the pool, and on a serverless
+  // deployment the pool is a single connection the transaction would be holding.
+  if (b.type === 'staff_absence' && b.role && b.contract_id) {
+    const probe = { ...b, leg: b.leg || 'DAY', trip_seq: (b.trip_seq === '' || b.trip_seq === undefined || b.trip_seq === null) ? null : Number(b.trip_seq) };
+    for (const date of dates) {
+      const clash = await absenceClash(ctx.org, probe, date);
+      if (clash) {
+        return H.error(ctx.res, `The ${b.role === 'driver' ? 'driver' : 'PA'} is already recorded absent ${absenceWords(clash)} on ${date}. ` +
+          'Undo that absence first, or record the absence for a journey it does not cover.');
+      }
+    }
+  }
+
   const created = [];
   try {
     await transaction(async tx => {
@@ -943,13 +957,6 @@ route('POST', '/api/exceptions', async ctx => {
           data.trip_seq = Number(data.trip_seq);
           if (!Number.isInteger(data.trip_seq) || data.trip_seq < 1) throw new Error('That is not one of the day\u2019s journeys');
           if (!data.leg) data.leg = 'DAY';
-        }
-        if (data.type === 'staff_absence') {
-          const clash = await absenceClash(ctx.org, data, date);
-          if (clash) {
-            throw new Error(`The ${data.role === 'driver' ? 'driver' : 'PA'} is already recorded absent ${absenceWords(clash)} on ${date}. ` +
-              'Undo that absence first, or record the absence for a journey it does not cover.');
-          }
         }
 
         const id = await insert('exceptions', data, EX_COLS, tx, ctx.org);
