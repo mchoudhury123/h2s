@@ -984,6 +984,56 @@ route('POST', '/api/exceptions', async ctx => {
   H.json(ctx.res, created, 201);
 });
 
+// Change who covered an absence, what they were paid, whether it was paid
+// immediately, or the note. The immediate-payment record follows the change
+// so payroll can never pay it twice or miss it.
+route('PUT', '/api/exceptions/:id', async ctx => {
+  const id = Number(ctx.params.id);
+  const row = await owned('exceptions', id, ctx.org);
+  if (!row) return H.error(ctx.res, 'Exception not found', 404);
+  if (row.type !== 'staff_absence') return H.error(ctx.res, 'Only a staff absence can be edited. Remove and re-record anything else.');
+  const b = ctx.body;
+  const coverId = b.cover_staff_id ? Number(b.cover_staff_id) : null;
+  if (coverId && !(await owned('staff', coverId, ctx.org))) return H.error(ctx.res, 'That cover staff member is not in your records', 404);
+  if (coverId && coverId === row.staff_id) return H.error(ctx.res, 'The absent person cannot cover their own journey');
+  const coverPay = coverId ? (b.cover_pay === undefined || b.cover_pay === null || b.cover_pay === '' ? row.cover_pay : cal.round2(Number(b.cover_pay))) : null;
+  if (coverId && !(coverPay >= 0)) return H.error(ctx.res, 'Cover pay must be a number');
+  const paidNow = coverId ? (Number(b.paid_immediately) === 1 ? 1 : 0) : 0;
+  const note = b.note === undefined ? row.note : (b.note || null);
+  const existingPay = await get('SELECT * FROM payments WHERE exception_id = ? AND organisation_id = ?', [id, ctx.org]);
+
+  await transaction(async tx => {
+    await update('exceptions', id, { cover_staff_id: coverId, cover_pay: coverPay, paid_immediately: paidNow, note },
+      ['cover_staff_id', 'cover_pay', 'paid_immediately', 'note'], tx, ctx.org);
+    if (paidNow) {
+      if (existingPay) {
+        await update('payments', existingPay.id, { staff_id: coverId, amount: coverPay, work_date: row.date },
+          ['staff_id', 'amount', 'work_date'], tx, ctx.org);
+      } else {
+        await insert('payments', {
+          staff_id: coverId, work_date: row.date, paid_date: cal.today(), amount: coverPay,
+          source: 'cover_immediate', exception_id: id, note: 'Cover paid immediately', created_by: ctx.user.name,
+        }, ['staff_id', 'work_date', 'paid_date', 'amount', 'source', 'exception_id', 'note', 'created_by'], tx, ctx.org);
+      }
+    } else if (existingPay) {
+      await tx.run('DELETE FROM payments WHERE id = ? AND organisation_id = ?', [existingPay.id, ctx.org]);
+    }
+  });
+  const updated = await get(`SELECT e.*, cs.first_name || ' ' || cs.last_name AS cover_name
+    FROM exceptions e LEFT JOIN staff cs ON cs.id = e.cover_staff_id AND cs.organisation_id = e.organisation_id
+    WHERE e.id = ? AND e.organisation_id = ?`, [id, ctx.org]);
+  const what = describeException(updated);
+  const paySummary = paidNow && !existingPay ? ' (paid immediately)'
+    : paidNow && existingPay ? ' (immediate payment updated)'
+      : !paidNow && existingPay ? ' (immediate payment reversed)' : '';
+  await audit.logAction(ctx.user, 'exceptions', id, what, 'update',
+    `Changed ${updated.date}: ${what}${updated.cover_name ? ' by ' + updated.cover_name + ' at ' + Number(updated.cover_pay).toFixed(2) : ''}${paySummary}`);
+  if (updated.contract_id) {
+    await audit.logAction(ctx.user, 'contracts', updated.contract_id, null, 'exception', `Changed ${updated.date} ${updated.leg}: ${what}${paySummary}`);
+  }
+  H.json(ctx.res, { ...updated, payment_changed: !!(paidNow || existingPay) });
+});
+
 route('DELETE', '/api/exceptions/:id', async ctx => {
   const id = Number(ctx.params.id);
   const row = await owned('exceptions', id, ctx.org);

@@ -523,7 +523,7 @@ Ops.dayDialog = async function (contractId, date, onChange) {
               : h('strong', { style: 'color:var(--red)' }, 'NO COVER ASSIGNED')),
           e.note ? h('div', { style: 'font-size:12px;margin-top:3px' }, e.note) : null,
           h('div', { class: 'pill-row', style: 'margin-top:6px' },
-            !e.cover_staff_id ? h('button', { class: 'btn xs primary', onclick: () => Ops.coverDialog(c, date, role, e, day, refresh, markDirty) }, 'Assign cover') : null,
+            h('button', { class: 'btn xs' + (e.cover_staff_id ? '' : ' primary'), onclick: () => Ops.coverDialog(c, date, role, e, day, refresh, markDirty) }, e.cover_staff_id ? 'Edit cover' : 'Assign cover'),
             h('button', { class: 'btn xs', onclick: () => remove(e.id) }, 'Undo absence'))));
       }
       // Each journey can carry its own absence, so a driver off all day can
@@ -651,24 +651,38 @@ Ops.absenceDialog = function (contract, date, role, scope, day, refresh, markDir
   };
 };
 
-/* attach cover to an existing uncovered absence */
+/* Assign cover to an uncovered absence, or change the cover already on one:
+   who, the rate, whether it was paid immediately, the note. The absence is
+   updated in place, so it keeps its id and its immediate-payment record
+   follows the change. */
 Ops.coverDialog = function (contract, date, role, exception, day, refresh, markDirty) {
   const lookups = App.state.lookups;
-  const pool = role === 'driver' ? lookups.drivers : lookups.pas;
+  const editing = !!exception.cover_staff_id;
+  const normalId = role === 'driver' ? contract.driver_id : contract.pa_id;
+  const pool = (role === 'driver' ? lookups.drivers : lookups.pas).filter(p => p.id !== normalId);
   const covered = scopeTrips(day, exception);
   const suggested = Math.round(covered.reduce((a, t) => a + (role === 'driver' ? t.driver_rate : t.pa_rate), 0) * 100) / 100;
   const form = UI.form([
-    { name: 'cover_staff_id', label: 'Cover staff member', type: 'select', required: true, options: pool.map(p => ({ value: p.id, label: `${p.name}${p.status === 'pool' ? ' (pool)' : ''}` })) },
-    { name: 'cover_pay', label: 'Cover pay (£)', type: 'number', step: '0.01', value: suggested, help: `Suggested from the ${plural(covered.length, 'journey')} being covered.` },
-    { name: 'paid_immediately', label: 'Paid immediately — exclude from the next payroll', type: 'checkbox', span: 'full' },
-    { name: 'note', label: 'Note', span: 'full', value: exception.note || '' },
-  ], {});
-  const saveBtn = h('button', { class: 'btn primary' }, 'Assign cover');
+    { name: 'cover_staff_id', label: 'Cover staff member', type: 'select', required: !editing,
+      placeholder: editing ? '— remove cover, journey will not run —' : false,
+      options: pool.map(p => ({ value: p.id, label: `${p.name}${p.status === 'pool' ? ' (pool)' : ''}` })) },
+    { name: 'cover_pay', label: 'Cover pay (£)', type: 'number', step: '0.01', help: `Suggested from the ${plural(covered.length, 'journey')} being covered: ${fmt.money(suggested)}.` },
+    { name: 'paid_immediately', label: 'Paid immediately (cash/bank today) — exclude from the next payroll', type: 'checkbox', span: 'full' },
+    { name: 'note', label: 'Reason / note', span: 'full' },
+  ], {
+    cover_staff_id: exception.cover_staff_id || '',
+    cover_pay: exception.cover_pay != null ? exception.cover_pay : suggested,
+    paid_immediately: exception.paid_immediately ? 1 : 0,
+    note: exception.note || '',
+  });
+  const saveBtn = h('button', { class: 'btn primary' }, editing ? 'Save changes' : 'Assign cover');
   const dlg = UI.modal({
-    title: 'Assign cover — ' + contract.code,
+    title: (editing ? 'Edit cover — ' : 'Assign cover — ') + contract.code,
     body: h('div', null,
-      h('div', { class: 'note-box', style: 'margin-bottom:10px' }, `Covering ${absenceSpan(day, exception)}: `,
-        covered.map(t => t.label).join(' · ')),
+      h('div', { class: 'note-box', style: 'margin-bottom:10px' }, `Covering ${absenceSpan(day, exception)} on ${fmt.dateLong(date)}: `,
+        covered.map(t => t.label).join(' · '),
+        editing ? h('div', { style: 'margin-top:4px;color:var(--text-dim);font-size:12px' },
+          `Currently ${exception.cover_name} at ${fmt.money(exception.cover_pay)}, ${exception.paid_immediately ? 'paid immediately' : 'paid via payroll'}. Changing "paid immediately" adds or removes the payment record to match.`) : null),
       h('div', { style: 'margin-bottom:10px' }, h('button', { class: 'btn sm', onclick: () => Ops.findCover(contract, date, role, exception.leg, id => { form.controls.cover_staff_id.value = id; }) }, '🔍 Find available staff near this route')),
       form),
     footer: [h('button', { class: 'btn', onclick: () => dlg.close() }, 'Cancel'), saveBtn],
@@ -678,13 +692,13 @@ Ops.coverDialog = function (contract, date, role, exception, day, refresh, markD
     const v = form.read();
     saveBtn.disabled = true;
     try {
-      await api.del('/api/exceptions/' + exception.id);
-      await api.post('/api/exceptions', {
-        contract_id: contract.id, date, type: 'staff_absence', role,
-        leg: exception.leg, trip_seq: exception.trip_seq, trip_label: exception.trip_label,
-        cover_staff_id: v.cover_staff_id, cover_pay: v.cover_pay, paid_immediately: v.paid_immediately, note: v.note,
+      await api.put('/api/exceptions/' + exception.id, {
+        cover_staff_id: v.cover_staff_id || null,
+        cover_pay: v.cover_staff_id ? v.cover_pay : null,
+        paid_immediately: v.cover_staff_id ? v.paid_immediately : 0,
+        note: v.note,
       });
-      markDirty(); toast('Cover assigned', 'ok'); dlg.close(); refresh();
+      markDirty(); toast(editing ? (v.cover_staff_id ? 'Cover updated' : 'Cover removed') : 'Cover assigned', 'ok'); dlg.close(); refresh();
     } catch (e) { toast(e.message, 'err'); saveBtn.disabled = false; }
   };
 };
