@@ -404,6 +404,26 @@ async function setStatus(orgId, id, status, reason, reuseNumber = false) {
   return { invoice: await one(orgId, id), before: inv.status };
 }
 
+/**
+ * Delete an invoice outright. Unlike a void, nothing stays in the register:
+ * the record goes and its number is handed back, so the next invoice
+ * generated takes that number again. For an invoice that should never have
+ * been issued, such as one generated before the details were right.
+ */
+async function remove(orgId, id) {
+  const inv = await one(orgId, id);
+  if (!inv) return { error: 'Invoice not found' };
+  await transaction(async tx => {
+    await tx.run('DELETE FROM invoices WHERE id = ? AND organisation_id = ?', [id, orgId]);
+    const pool = await releasedNumbers(orgId);
+    if (!pool.includes(inv.number)) pool.push(inv.number);
+    await tx.run(`INSERT INTO settings (organisation_id, key, value) VALUES (?,?,?)
+      ON CONFLICT (organisation_id, key) DO UPDATE SET value = excluded.value`,
+      [orgId, 'invoice_released_numbers', JSON.stringify(pool.sort((a, b) => a - b))]);
+  });
+  return { invoice: inv, released: true };
+}
+
 // ---------------------------------------------------------------- pdf
 
 function ukDate(s) { if (!s) return ''; const [y, m, d] = String(s).slice(0, 10).split('-'); return `${d}/${m}/${y}`; }
@@ -507,6 +527,7 @@ async function withSnapshots(orgId, q) {
 function pdfForMany(invoices) { const pdf = new Pdf(); for (const inv of invoices) { pdf.addPage(); drawInvoice(pdf, inv); } return pdf.render(); }
 
 module.exports = {
+  remove,
   settings, saveSettings, chargeableDays, preview, generate, list, one, byBatch, setStatus, withSnapshots,
   pdfFor, pdfForMany, zipFor, fileName, ukDate, money, daysText, STATUSES, chargeableRun, releasedNumbers,
 };

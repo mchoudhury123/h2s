@@ -149,6 +149,15 @@ async function main() {
   const g2 = await post('/api/invoicing/generate', { ...NOV, items: [{ contract_id: alpha.id }, { contract_id: gamma.id }] });
   ok(g2.status === 201 && JSON.stringify(g2.data.invoices.map(i => i.number)) === '[303,304]', 'second batch is 303, 304');
 
+  section('3b. A deleted invoice hands its number back and the next one takes it');
+  const gone = await del('/api/invoices/' + g2.data.invoices[0].id);
+  ok(gone.status === 200 && gone.data.number === 303, `deleting BLSOLO 303 releases number 303 (got ${JSON.stringify(gone.data)})`);
+  ok(!(await get('/api/invoices')).data.some(i => i.number === 303), 'and it is no longer in the register');
+  ok(JSON.stringify((await get('/api/invoicing/settings')).data.released_numbers) === '[303]', 'the settings list 303 as handed back');
+  const g2b = await post('/api/invoicing/generate', { ...NOV, items: [{ contract_id: alpha.id }] });
+  ok(g2b.status === 201 && g2b.data.invoices[0].number === 303, `the next invoice generated is 303 again (got ${g2b.data.invoices && g2b.data.invoices[0].number})`);
+  ok((await get('/api/invoicing/settings')).data.next_number === 305, 'and the counter is untouched at 305');
+
   section('4. Two batches fired at the same time never share a number');
   const [c1, c2] = await Promise.all([
     post('/api/invoicing/generate', { from: '2026-12-01', to: '2026-12-11', items: [{ contract_id: alpha.id }, { contract_id: beta.id }, { contract_id: gamma.id }] }),

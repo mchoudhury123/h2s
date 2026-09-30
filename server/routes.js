@@ -1439,6 +1439,15 @@ route('PUT', '/api/invoices/:id', async ctx => {
   H.json(ctx.res, { ...r.invoice, released: !!r.released });
 });
 
+// Delete an invoice and hand its number back for the next one generated.
+route('DELETE', '/api/invoices/:id', async ctx => {
+  const r = await invoicing.remove(ctx.org, Number(ctx.params.id));
+  if (r.error) return H.error(ctx.res, r.error, 404);
+  await audit.logAction(ctx.user, 'invoice', r.invoice.id, r.invoice.invoice_no, 'delete',
+    `Deleted ${r.invoice.invoice_no} and handed number ${r.invoice.number} back for the next invoice (was ${r.invoice.status}, ${invoicing.daysText(r.invoice.days)} days, ${invoicing.money(r.invoice.total)}, ${invoicing.ukDate(r.invoice.period_from)} to ${invoicing.ukDate(r.invoice.period_to)})`);
+  H.json(ctx.res, { ok: true, number: r.invoice.number, invoice_no: r.invoice.invoice_no });
+});
+
 route('GET', '/api/invoicing/batch/:batchId/zip', async ctx => {
   const rows = await invoicing.byBatch(ctx.org, ctx.params.batchId);
   if (!rows.length) return H.error(ctx.res, 'Batch not found', 404);

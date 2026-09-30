@@ -254,7 +254,11 @@ Inv.registerPanel = function (L, query) {
       { label: '', sortable: false, value: i => h('div', { class: 'pill-row' },
         h('a', { class: 'btn xs', href: `/api/invoices/${i.id}/pdf`, target: '_blank' }, 'PDF'),
         i.status === 'issued' ? h('button', { class: 'btn xs', onclick: () => UI.confirm(`Mark ${i.invoice_no} as paid?`, async () => { try { await api.put('/api/invoices/' + i.id, { status: 'paid' }); toast('Marked as paid', 'ok'); load(); } catch (e) { toast(e.message, 'err'); } }, { yes: 'Mark paid', danger: false }) }, 'Mark paid') : null,
-        i.status !== 'void' ? h('button', { class: 'btn xs danger', onclick: () => Inv.voidDialog(i, load) }, 'Void') : null) },
+        i.status !== 'void' ? h('button', { class: 'btn xs danger', onclick: () => Inv.voidDialog(i, load) }, 'Void') : null,
+        h('button', { class: 'btn xs danger', title: 'Remove this invoice from the register and use its number again', onclick: () => UI.confirm(
+          `Delete ${i.invoice_no}? It leaves the register completely and number ${i.number} is used again by the next invoice generated. Use Void instead if the number must never be reused.`,
+          async () => { try { const r = await api.del('/api/invoices/' + i.id); toast(`${r.invoice_no} deleted. Number ${r.number} will be used by the next invoice.`, 'ok'); load(); } catch (e) { toast(e.message, 'err'); } },
+          { title: 'Delete invoice', yes: 'Delete and reuse the number' }) }, 'Delete')) },
     ], rows, { empty: 'No invoices match', sortKey: 'number', sortDir: -1 }));
     body.appendChild(foot);
   };
