@@ -130,14 +130,14 @@ async function main() {
   await run('DELETE FROM contracts WHERE organisation_id = ? AND id = ?', [orgId, otherContractId]);
 
   // ---------- 5. absence with no cover ----------
-  section('5. Staff absence with no cover stops the journey');
+  section('5. Staff absence with no cover: the run still goes ahead, only the absent person is unpaid');
   await run('DELETE FROM payments WHERE organisation_id = ?', [orgId]); await run('DELETE FROM exceptions WHERE organisation_id = ? AND id = ?', [orgId, absenceId]);
   const noCoverId = await addEx({ date: '2026-09-09', type: 'staff_absence', leg: 'AM', contract_id: contractId, role: 'driver', staff_id: driverId });
-  is(AM(await day('2026-09-09')).status, 'not_operated', 'AM does not run without a driver');
-  is(AM(await day('2026-09-09')).reason, 'Driver absent - no cover', 'reason names the problem');
+  is(AM(await day('2026-09-09')).status, 'operated', 'AM still runs without a driver recorded');
+  is(AM(await day('2026-09-09')).driver.status, 'absent_no_cover', 'with the missing driver flagged');
   is(PM(await day('2026-09-09')).status, 'operated', 'PM is unaffected by an AM-only absence');
   is((await wagesFor('John Normal')).totals.amount_due, 270, 'John loses only the AM half-day');
-  is((await wagesFor('Linda Assist')).totals.amount_due, 180, 'the PA is not paid for a journey that did not run');
+  is((await wagesFor('Linda Assist')).totals.amount_due, 200, 'the PA did the job and is paid in full');
   await run('DELETE FROM exceptions WHERE organisation_id = ? AND id = ?', [orgId, noCoverId]);
 
   // ---------- 6. PA cover for a single leg ----------
@@ -520,7 +520,7 @@ async function main() {
   section('17c. Driver or PA absence, with or without cover, never changes the invoice');
   const noCover = await addEx({ date: '2026-09-09', type: 'staff_absence', leg: 'AM', contract_id: contractId, role: 'driver', staff_id: driverId });
   const uncovered = await day('2026-09-09');
-  is(AM(uncovered).status, 'not_operated', 'the AM run does not operate without a driver');
+  is(AM(uncovered).status, 'operated', 'the AM run still goes ahead without a driver recorded');
   is(uncovered.chargeable_days, 1, 'the date is still charged as a full day');
   is(uncovered.income, 100, 'at the full day rate');
   is((await wagesFor('John Normal')).totals.amount_due, 270, 'the driver loses the AM run');

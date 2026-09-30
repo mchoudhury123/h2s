@@ -222,17 +222,11 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
     }
 
     for (const role of ['driver', 'pa']) t[role] = staffForTrip(c, role, plan, ex);
-    // Nobody can drive an absent driver's run, so it does not operate. A PA
-    // absent with no cover does not stop the run: the driver still does the
-    // job and is paid for it, the PA is not, and the day is flagged so the
-    // missing PA is visible.
-    if (t.status === 'operated') {
-      if (t.driver.status === 'absent_no_cover') { t.status = 'not_operated'; t.reason = 'Driver absent - no cover'; }
-      if (t.status === 'not_operated') {
-        for (const cc of t.children) cc.status = 'not_operated';
-        t.children_travelling = 0;
-      }
-    }
+    // A staff absence with no cover does not stop the run. Whoever turned up
+    // still did the job and is paid for it; the absent person is not; the
+    // council is charged as usual; and the journey is flagged "No driver" or
+    // "No PA" so the gap stays visible. Only a cancellation, a run taken off
+    // or a run with nobody to carry stops a journey.
     trips.push(t);
   }
 
