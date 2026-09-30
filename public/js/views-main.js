@@ -175,7 +175,7 @@ App.views.calendar = async function ({ query }) {
       h('div', { class: 'card-head', style: 'border-top:1px solid var(--border);border-bottom:0' },
         h('div', { class: 'legend' },
           h('span', null, h('span', { class: 'leg', style: 'display:inline-flex' }, 'Operated'), ' as scheduled'),
-          h('span', null, h('span', { class: 'leg partial', style: 'display:inline-flex' }, 'Partial'), ' child absent'),
+          h('span', null, h('span', { class: 'leg partial', style: 'display:inline-flex' }, 'Partial'), ' child absent or no PA'),
           h('span', null, h('span', { class: 'leg cover', style: 'display:inline-flex' }, 'Cover'), ' cover staff used'),
           h('span', null, h('span', { class: 'leg bad', style: 'display:inline-flex' }, 'Not run'), ' cancelled or uncovered'),
           h('span', { style: 'color:var(--text-faint)' }, '· Click any day to record an exception')))));
@@ -279,9 +279,10 @@ Ops.cell = function (day, contract, date, onChange) {
       cls += ' cover';
       const who = t.driver.status === 'covered' ? t.driver.cover_name : t.pa.cover_name;
       text = 'Cover: ' + (who || '').split(' ')[0];
-    } else if (t.children_absent > 0) { cls += ' partial'; text = `${t.children_absent} absent`; }
+    } else if (t.pa.required && t.pa.status === 'absent_no_cover') { cls += ' partial'; text = 'No PA'; }
+    else if (t.children_absent > 0) { cls += ' partial'; text = `${t.children_absent} absent`; }
     else if (t.source === 'extra') { cls += ' cover'; text = t.label; }
-    cell.appendChild(h('div', { class: cls, title: `${t.label}${t.depart_time ? ' · departs ' + fmt.time(t.depart_time) : ''}` },
+    cell.appendChild(h('div', { class: cls, title: `${t.label}${t.depart_time ? ' · departs ' + fmt.time(t.depart_time) : ''}${t.pa.required && t.pa.status === 'absent_no_cover' ? ' · ran without a PA' : ''}` },
       h('span', { class: 'lt' }, tripShort(day, t)), h('span', { class: 'lx' }, text)));
   }
   const off = day.children.filter(c => !c.scheduled).length;
@@ -344,6 +345,7 @@ function tripBadge(day, t) {
   let cls = 'green', text = 'Operated';
   if (t.status !== 'operated') { cls = 'red'; text = t.reason || 'Not run'; }
   else if (t.driver.status === 'covered' || t.pa.status === 'covered') { cls = 'purple'; text = 'Cover'; }
+  else if (t.pa.required && t.pa.status === 'absent_no_cover') { cls = 'amber'; text = 'Ran without a PA'; }
   else if (t.children_absent) { cls = 'amber'; text = `${t.children_absent} absent`; }
   else if (t.source === 'extra') { cls = 'blue'; text = 'Extra'; }
   return h('span', { class: 'badge ' + cls, title: `${t.label}${t.depart_time ? ' · departs ' + fmt.time(t.depart_time) : ''}` },

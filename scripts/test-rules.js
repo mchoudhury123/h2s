@@ -534,6 +534,10 @@ async function main() {
   await run('DELETE FROM exceptions WHERE organisation_id = ? AND id = ?', [orgId, covered]);
   const paAbsent = await addEx({ date: '2026-09-09', type: 'staff_absence', leg: 'PM', contract_id: contractId, role: 'pa', staff_id: paId });
   is((await day('2026-09-09')).income, 100, 'a PA absence with no cover is charged in full too');
+  is(PM(await day('2026-09-09')).status, 'operated', 'the run still goes ahead without a PA');
+  is(PM(await day('2026-09-09')).pa.status, 'absent_no_cover', 'with the missing PA flagged');
+  is((await wagesFor('John Normal')).totals.amount_due, 300, 'the driver is paid for it');
+  is((await wagesFor('John Normal')).totals.normal_days, 5, 'and counts the full day');
   is((await wagesFor('Linda Assist')).totals.amount_due, 180, 'while the PA loses the run');
   await run('DELETE FROM exceptions WHERE organisation_id = ? AND id = ?', [orgId, paAbsent]);
 

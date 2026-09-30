@@ -81,7 +81,7 @@ App.views.wages = async function ({ query }) {
     UI.card('How these figures are produced', h('div', { style: 'color:var(--text-dim);font-size:13px' },
       h('p', { style: 'margin:0 0 6px' }, 'Every contract generates its scheduled AM and PM journeys automatically for its operating days. The calculation then applies each recorded exception:'),
       h('ul', { style: 'margin:0;padding-left:20px' },
-        h('li', 'A staff absence removes that person\'s pay for the affected journeys.'),
+        h('li', 'A staff absence removes that person\'s pay for the affected journeys. A run without a PA still goes ahead, so the driver is paid; a run without a driver does not.'),
         h('li', 'A cover assignment pays the cover staff member the agreed rate, which can be overridden per journey.'),
         h('li', 'Cancelled journeys, school closures and days where every child is absent are not paid.'),
         h('li', 'Anything marked "paid immediately" is deducted so it is never paid twice.')))));

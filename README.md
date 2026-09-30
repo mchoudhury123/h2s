@@ -289,6 +289,8 @@ Recording that absence with Ahmed as cover means John is not paid for Tuesday, A
 
 Each journey carries its own absence, so a driver who is off all day can have one cover in the morning and another in the afternoon: record the AM absence with the first cover, then the PM absence with the second. The day panel keeps offering the journeys not yet covered, and a journey can only be marked absent once for the same role, so an all-day absence cannot be laid over an AM or PM one.
 
+A driver absent with no cover stops the run: nobody drives it, nobody is paid for it, and the council is still charged. A PA absent with no cover does not stop the run: the driver still does the job and is paid for it, the PA is not, and the calendar marks the journey "No PA" so the gap is visible.
+
 Cover already recorded can be changed from the same panel with **Edit cover**: a different person, a different rate, paid immediately or via payroll, or the note. The absence is updated in place, and its immediate-payment record is added, updated or reversed to match. Choosing no cover removes it, and the journey shows as not run.
 
 Tick **Paid immediately** and the system writes a payment record at the same time. The next wage calculation shows the £75 earned and the £75 already paid, so the amount due is zero. It cannot be paid twice.
