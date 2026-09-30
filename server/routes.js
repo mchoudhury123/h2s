@@ -1622,13 +1622,31 @@ route('POST', '/api/payments', async ctx => {
   H.json(ctx.res, await owned('payments', id, ctx.org), 201);
 });
 
+// Undo a run of days recorded as paid together: every payment in the batch goes.
+route('DELETE', '/api/payments/batch/:batch', async ctx => {
+  const batch = String(ctx.params.batch || '');
+  const rows = await all('SELECT * FROM payments WHERE organisation_id = ? AND batch = ?', [ctx.org, batch]);
+  if (!rows.length) return H.error(ctx.res, 'Those payments are no longer recorded', 404);
+  await run('DELETE FROM payments WHERE organisation_id = ? AND batch = ?', [ctx.org, batch]);
+  const total = cal.round2(rows.reduce((a, p) => a + Number(p.amount), 0));
+  const dates = rows.map(p => String(p.work_date).slice(0, 10)).sort();
+  await audit.logAction(ctx.user, 'staff', rows[0].staff_id, null, 'payment',
+    `Undid ${total.toFixed(2)} recorded as already paid for ${rows.length} ${rows.length === 1 ? 'day' : 'days'} ${dates[0]} to ${dates[dates.length - 1]}`);
+  H.json(ctx.res, { ok: true, removed: rows.length, total });
+});
+
+// Undo one payment record. Cover that was marked paid immediately goes back to payroll.
 route('DELETE', '/api/payments/:id', async ctx => {
   const id = Number(ctx.params.id);
   const p = await owned('payments', id, ctx.org);
   if (!p) return H.error(ctx.res, 'Payment not found', 404);
-  await run('DELETE FROM payments WHERE id = ? AND organisation_id = ?', [id, ctx.org]);
-  await audit.logAction(ctx.user, 'staff', p.staff_id, null, 'payment', `Deleted payment of ${p.amount} for ${p.work_date}`);
-  H.json(ctx.res, { ok: true });
+  await transaction(async tx => {
+    await tx.run('DELETE FROM payments WHERE id = ? AND organisation_id = ?', [id, ctx.org]);
+    if (p.exception_id) await tx.run('UPDATE exceptions SET paid_immediately = 0 WHERE id = ? AND organisation_id = ?', [p.exception_id, ctx.org]);
+  });
+  await audit.logAction(ctx.user, 'staff', p.staff_id, null, 'payment',
+    `Undid payment of ${Number(p.amount).toFixed(2)} for ${String(p.work_date).slice(0, 10)}${p.exception_id ? ' (cover back to payroll)' : ''}`);
+  H.json(ctx.res, { ok: true, exception_reset: !!p.exception_id });
 });
 
 // Mark a calculated payroll as paid: records one payment per staff member so it is never paid twice.
@@ -1659,6 +1677,22 @@ route('POST', '/api/payroll-runs', async ctx => {
     }
   });
   H.json(ctx.res, { id: runId, paid: payable.length, total: calc.totals.total_due }, 201);
+});
+
+// Undo a payroll run: its payments go, so the period is owed again.
+route('DELETE', '/api/payroll-runs/:id', async ctx => {
+  const id = Number(ctx.params.id);
+  const runRow = await owned('payroll_runs', id, ctx.org);
+  if (!runRow) return H.error(ctx.res, 'Payroll run not found', 404);
+  const pays = await all('SELECT * FROM payments WHERE organisation_id = ? AND payroll_run_id = ?', [ctx.org, id]);
+  await transaction(async tx => {
+    await tx.run('DELETE FROM payments WHERE organisation_id = ? AND payroll_run_id = ?', [ctx.org, id]);
+    await tx.run('DELETE FROM payroll_run_lines WHERE organisation_id = ? AND payroll_run_id = ?', [ctx.org, id]);
+    await tx.run('DELETE FROM payroll_runs WHERE organisation_id = ? AND id = ?', [ctx.org, id]);
+  });
+  await audit.logAction(ctx.user, 'payroll_runs', id, runRow.description, 'delete',
+    `Undid payroll ${runRow.from_date} to ${runRow.to_date}: ${Number(runRow.total).toFixed(2)} across ${pays.length} staff owed again`);
+  H.json(ctx.res, { ok: true, removed: pays.length, total: Number(runRow.total) });
 });
 
 route('GET', '/api/payroll-runs', async ctx => H.json(ctx.res, await all(

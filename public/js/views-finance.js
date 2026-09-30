@@ -123,10 +123,44 @@ Fin.breakdown = function (r, from, to) {
   }
 
   const paid = group('already_paid');
+  const canUndo = App.can('wages');
+  // Undoing closes this dialog and reloads the page, so the figures are fresh.
+  const undo = (message, call, done) => UI.confirm(message, async () => {
+    const res = await call();
+    toast(done(res), 'ok');
+    Router.handle();
+  }, { title: 'Undo payment', yes: 'Yes, undo it' });
   if (paid.length) {
     box.appendChild(h('div', { class: 'bl sub', style: 'margin-top:8px' }, h('span', { class: 'btx' }, 'Payments already made'), h('span', { class: 'bam' }, '-' + fmt.money(r.totals.already_paid))));
     for (const l of paid) box.appendChild(h('div', { class: 'bl neg' },
-      h('span', { class: 'bd' }, fmt.date(l.date)), h('span', { class: 'btx' }, l.description), h('span', { class: 'bam' }, fmt.money(l.amount))));
+      h('span', { class: 'bd' }, fmt.date(l.date)), h('span', { class: 'btx' }, l.description,
+        canUndo && l.payment_id && !l.payroll_run_id ? h('button', { class: 'btn xs', style: 'margin-left:8px', title: 'Remove this payment record so the amount is owed again', onclick: () => { m.close(); undo(
+          `Undo the payment of ${fmt.money(-l.amount)} recorded for ${fmt.date(l.date)}? ${r.staff.name} will be owed it again${l.exception_id ? ', and the cover goes back to payroll' : ''}.`,
+          () => api.del('/api/payments/' + l.payment_id), () => 'Payment undone'); } }, 'Undo') : null),
+      h('span', { class: 'bam' }, fmt.money(l.amount))));
+    // Days paid together, and payroll runs, can be undone in one go.
+    const batches = new Map(), runs = new Map();
+    for (const l of paid) {
+      if (l.batch) (batches.get(l.batch) || batches.set(l.batch, []).get(l.batch)).push(l);
+      if (l.payroll_run_id) (runs.get(l.payroll_run_id) || runs.set(l.payroll_run_id, []).get(l.payroll_run_id)).push(l);
+    }
+    const groupRow = h('div', { class: 'pill-row', style: 'margin-top:8px' });
+    for (const [batch, lines] of batches) {
+      if (lines.length < 2) continue;
+      const dates = lines.map(l => l.date).sort();
+      const total = fmt.money(-lines.reduce((a, l) => a + l.amount, 0));
+      groupRow.appendChild(h('button', { class: 'btn xs danger', onclick: () => { m.close(); undo(
+        `Undo all ${plural(lines.length, 'day')} (${total}) recorded as already paid for ${fmt.date(dates[0])} to ${fmt.date(dates[dates.length - 1])}? ${r.staff.name} will be owed them again.`,
+        () => api.del('/api/payments/batch/' + encodeURIComponent(batch)), res => `${plural(res.removed, 'day')} undone`); } },
+      `Undo the ${plural(lines.length, 'day')} paid together (${fmt.date(dates[0])} – ${fmt.date(dates[dates.length - 1])})`));
+    }
+    for (const [runId, lines] of runs) {
+      groupRow.appendChild(h('button', { class: 'btn xs danger', onclick: () => { m.close(); undo(
+        `Undo this payroll run? Every member of staff paid in it, not only ${r.staff.name}, will be owed for that period again.`,
+        () => api.del('/api/payroll-runs/' + runId), res => `Payroll run undone for ${plural(res.removed, 'member', 'members')} of staff`); } },
+      `Undo payroll run (${fmt.money(-lines.reduce((a, l) => a + l.amount, 0))} here)`));
+    }
+    if (canUndo && groupRow.children.length) box.appendChild(groupRow);
   }
 
   box.appendChild(h('div', { class: 'bl total' }, h('span', { class: 'btx' }, 'AMOUNT DUE'), h('span', { class: 'bam' }, fmt.money(r.totals.amount_due))));
@@ -253,7 +287,12 @@ App.views.payrollRuns = async function () {
       { key: 'staff_count', label: 'Staff', num: true },
       { key: 'total', label: 'Total', num: true, value: r => fmt.money(r.total) },
       { key: 'created_by', label: 'Recorded by' },
-      { label: '', sortable: false, value: r => h('a', { class: 'btn xs', href: `#/wages?from=${r.from_date}&to=${r.to_date}` }, 'Re-open period') },
+      { label: '', sortable: false, value: r => h('div', { class: 'pill-row', style: 'justify-content:flex-end' },
+        h('a', { class: 'btn xs', href: `#/wages?from=${r.from_date}&to=${r.to_date}` }, 'Re-open period'),
+        App.can('wages') ? h('button', { class: 'btn xs danger', onclick: () => UI.confirm(
+          `Undo this payroll run of ${fmt.money(r.total)} for ${fmt.date(r.from_date)} to ${fmt.date(r.to_date)}? Its payment records are removed, so the ${plural(r.staff_count, 'member', 'members')} of staff will show as owed for that period again.`,
+          async () => { const res = await api.del('/api/payroll-runs/' + r.id); toast(`Payroll run undone for ${plural(res.removed, 'member', 'members')} of staff`, 'ok'); Router.handle(); },
+          { title: 'Undo payroll run', yes: 'Yes, undo it' }) }, 'Undo') : null) },
     ],
     rows, searchFields: ['description', 'created_by'], empty: 'No payroll has been recorded yet',
   });

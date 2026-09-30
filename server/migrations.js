@@ -209,6 +209,8 @@ async function applyMigrations(driver, log) {
   await addColumn(driver, 'sessions', 'organisation_id', 'INTEGER', log);
   // Invoicing: the PO number lives on the contract.
   await addColumn(driver, 'contracts', 'po_number', 'TEXT', log);
+  // Days paid together can be undone together.
+  await addColumn(driver, 'payments', 'batch', 'TEXT', log);
   for (const stmt of schema.statements(driver.dialect)) await driver.exec(stmt);
 }
 

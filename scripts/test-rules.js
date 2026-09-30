@@ -605,6 +605,8 @@ async function main() {
   is(owed.total_due, 300, 'so 300 is owed');
   const monToWed = await wages.payDays(orgId, driverId, { from: '2026-09-07', to: '2026-09-09', paid_date: '2026-09-10', method: 'Cash', created_by: 'test' });
   is(monToWed.paid_days, 3, 'Monday to Wednesday is three days');
+  is(typeof monToWed.batch === 'string' && monToWed.batch.length > 6, true, 'the three payments share a batch so they can be undone together');
+  is((await database.all('SELECT COUNT(*) AS n FROM payments WHERE organisation_id = ? AND batch = ?', [orgId, monToWed.batch]))[0].n, 3, 'all three carry it');
   is(monToWed.total, 180, 'paid at what they earned');
   is((await wagesFor('John Normal')).totals.already_paid, 180, 'the week now shows 180 already paid');
   is((await wagesFor('John Normal')).totals.amount_due, 120, 'and 120 still due');

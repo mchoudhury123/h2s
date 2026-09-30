@@ -273,6 +273,9 @@ const TABLES = [
     source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('cover_immediate','manual','payroll')),
     exception_id {{INT}} REFERENCES exceptions(id) ON DELETE SET NULL,
     payroll_run_id {{INT}},
+    -- Payments recorded together (a run of days paid at once) share a batch,
+    -- so they can be undone together.
+    batch TEXT,
     method TEXT, reference TEXT, note TEXT,
     created_by TEXT,
     created_at TEXT NOT NULL DEFAULT {{NOW}}

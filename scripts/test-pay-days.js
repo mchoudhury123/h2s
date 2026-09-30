@@ -80,8 +80,46 @@ async function main() {
     await page.waitForFunction(() => document.querySelector('.modal tfoot td.num').textContent === '£0.00');
     assert.equal(await page.evaluate(() => [...window.dialog().querySelectorAll('button')].find(b => b.textContent === 'Record as already paid').disabled), true);
 
+    await page.evaluate(() => UI.closeAll());
+
+    // Undo: the breakdown offers the three days paid together as one button.
+    await page.evaluate(({ driver }) => { api.del = url => window.testApi('DELETE', url); window.driverId = driver; }, { driver });
+    const wagesRow = await page.evaluate(week => api.get('/api/wages', { from: week.from, to: week.to }).then(w => w.results[0]), WEEK);
+    assert.equal(wagesRow.lines.filter(l => l.kind === 'already_paid').length, 3, 'three paid lines in the breakdown');
+    await page.evaluate(({ row, week }) => Fin.breakdown(row, week.from, week.to), { row: wagesRow, week: WEEK });
+    await page.waitForFunction(() => document.querySelector('.modal .breakdown'));
+    assert.equal(await page.evaluate(() => [...document.querySelectorAll('.modal .breakdown button')].filter(b => b.textContent === 'Undo').length), 3, 'each paid line has its own Undo');
+    await page.evaluate(() => [...document.querySelectorAll('.modal .breakdown button')].find(b => /Undo the 3 days paid together/.test(b.textContent)).click());
+    await page.waitForFunction(() => [...document.querySelectorAll('.modal button')].some(b => b.textContent === 'Yes, undo it'));
+    await page.evaluate(() => [...document.querySelectorAll('.modal button')].find(b => b.textContent === 'Yes, undo it').click());
+    await page.waitForFunction(() => document.querySelectorAll('.modal').length === 0 && /3 days undone/.test(window.lastToast || ''));
+    assert.equal((await db.all('SELECT id FROM payments WHERE organisation_id = ?', [org])).length, 0, 'the three payments are gone');
+    const w3 = await wages.calculateWages(org, { ...WEEK });
+    assert.equal(w3.results[0].totals.amount_due, 300, 'and the week is owed in full again');
+
+    // Undoing one cover payment that was paid immediately puts the cover back on payroll.
+    const cover = await db.insert('staff', { type: 'driver', first_name: 'Cover', last_name: 'Driver', status: 'pool' }, ['type', 'first_name', 'last_name', 'status'], null, org);
+    const contractId = (await db.all('SELECT id FROM contracts WHERE organisation_id = ?', [org]))[0].id;
+    const ex = await page.evaluate(({ contractId, cover }) => api.post('/api/exceptions', { contract_id: contractId, date: '2026-09-17', type: 'staff_absence', role: 'driver', leg: 'DAY', cover_staff_id: cover, cover_pay: 55, paid_immediately: 1 }), { contractId, cover });
+    let pays = await db.all('SELECT id, exception_id FROM payments WHERE organisation_id = ?', [org]);
+    assert.equal(pays.length, 1, 'cover paid immediately writes a payment');
+    const undone = await page.evaluate(id => api.del('/api/payments/' + id), pays[0].id);
+    assert.equal(undone.exception_reset, true);
+    assert.equal((await db.all('SELECT paid_immediately FROM exceptions WHERE id = ?', [ex[0].id]))[0].paid_immediately, 0, 'the absence no longer says paid immediately');
+    const w4 = await wages.calculateWages(org, { ...WEEK, include_zero: true });
+    assert.equal(w4.results.find(r => r.staff.name === 'Cover Driver').totals.amount_due, 55, 'so payroll owes the cover');
+
+    // A payroll run can be undone as a whole.
+    const runRes = await page.evaluate(week => api.post('/api/payroll-runs', { from: week.from, to: week.to }), WEEK);
+    assert.equal(runRes.paid, 2, 'payroll pays the driver and the cover');
+    assert.equal((await wages.calculateWages(org, { ...WEEK })).totals.total_due, 0, 'nothing is due after payroll');
+    const runUndo = await page.evaluate(id => api.del('/api/payroll-runs/' + id), runRes.id);
+    assert.equal(runUndo.removed, 2);
+    assert.equal((await db.all('SELECT id FROM payroll_runs WHERE organisation_id = ?', [org])).length, 0, 'the run is gone');
+    assert.equal((await wages.calculateWages(org, { ...WEEK })).totals.total_due, 240 + 55, 'and everyone is owed again');
+
     assert.deepEqual(errors, []);
-    console.log('Pay days browser checks passed: per-day preview, narrowed period, one payment per day, paid days ticked off, no double payment.');
+    console.log('Pay days browser checks passed: per-day preview, narrowed period, one payment per day, paid days ticked off, no double payment, undo of a batch, a cover payment and a payroll run.');
   } finally { await browser.close(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => db.close());

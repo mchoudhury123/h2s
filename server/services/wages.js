@@ -129,6 +129,8 @@ async function calculateWages(orgId, opts) {
       contract_id: p.paid_contract_id || null, contract_code: p.paid_contract_code || null,
       description: `${label} on ${ukDate(p.paid_date)}${p.paid_contract_code ? ' for ' + p.paid_contract_code : ''}${p.reference ? ' (ref ' + p.reference + ')' : ''}`,
       rate: null, amount: -round2(p.amount), payment_id: p.id, source: p.source,
+      paid_date: p.work_date && p.paid_date ? String(p.paid_date).slice(0, 10) : null,
+      batch: p.batch || null, payroll_run_id: p.payroll_run_id || null, exception_id: p.exception_id || null,
     });
   }
 
@@ -224,16 +226,17 @@ async function payDays(orgId, staffId, { from, to, amount, paid_date, method, re
     });
   }
   const label = note || `Paid for ${ukDate(from)} to ${ukDate(to)}`;
+  const batch = 'days-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
   const ids = [];
   await transaction(async tx => {
     for (let i = 0; i < days.length; i++) {
       ids.push(await insert('payments', {
         staff_id: Number(staffId), work_date: days[i].date, paid_date: paid_date || cal.today(), amount: amounts[i],
-        source: 'manual', method: method || null, reference: reference || null, note: label, created_by: created_by || null,
-      }, ['staff_id', 'work_date', 'paid_date', 'amount', 'source', 'method', 'reference', 'note', 'created_by'], tx, orgId));
+        source: 'manual', batch, method: method || null, reference: reference || null, note: label, created_by: created_by || null,
+      }, ['staff_id', 'work_date', 'paid_date', 'amount', 'source', 'batch', 'method', 'reference', 'note', 'created_by'], tx, orgId));
     }
   });
-  return { staff: owed.staff, from, to, paid_days: days.length, total: round2(amounts.reduce((a, b) => a + b, 0)), payment_ids: ids };
+  return { staff: owed.staff, from, to, paid_days: days.length, total: round2(amounts.reduce((a, b) => a + b, 0)), payment_ids: ids, batch };
 }
 
 function ukDate(s) { if (!s) return ''; const [y, m, d] = String(s).slice(0, 10).split('-'); return `${d}/${m}/${y}`; }
