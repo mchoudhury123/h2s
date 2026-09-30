@@ -1635,6 +1635,29 @@ route('DELETE', '/api/payments/batch/:batch', async ctx => {
   H.json(ctx.res, { ok: true, removed: rows.length, total });
 });
 
+// Undo several payment records in one go. Cover marked paid immediately goes back to payroll.
+route('POST', '/api/payments/undo', async ctx => {
+  const ids = [...new Set((Array.isArray(ctx.body.ids) ? ctx.body.ids : []).map(Number).filter(n => Number.isInteger(n) && n > 0))];
+  if (!ids.length) return H.error(ctx.res, 'Choose at least one payment to undo');
+  const rows = await all(`SELECT * FROM payments WHERE organisation_id = ? AND id IN (${ids.map(() => '?').join(',')})`, [ctx.org, ...ids]);
+  if (!rows.length) return H.error(ctx.res, 'Those payments are no longer recorded', 404);
+  await transaction(async tx => {
+    for (const p of rows) {
+      await tx.run('DELETE FROM payments WHERE id = ? AND organisation_id = ?', [p.id, ctx.org]);
+      if (p.exception_id) await tx.run('UPDATE exceptions SET paid_immediately = 0 WHERE id = ? AND organisation_id = ?', [p.exception_id, ctx.org]);
+    }
+  });
+  const total = cal.round2(rows.reduce((a, p) => a + Number(p.amount), 0));
+  const byStaff = new Map();
+  for (const p of rows) byStaff.set(p.staff_id, (byStaff.get(p.staff_id) || 0) + Number(p.amount));
+  for (const [staffId, amount] of byStaff) {
+    const n = rows.filter(p => p.staff_id === staffId).length;
+    await audit.logAction(ctx.user, 'staff', staffId, null, 'payment',
+      `Undid ${n} ${n === 1 ? 'payment' : 'payments'} totalling ${cal.round2(amount).toFixed(2)}`);
+  }
+  H.json(ctx.res, { ok: true, removed: rows.length, total, cover_reset: rows.filter(p => p.exception_id).length });
+});
+
 // Undo one payment record. Cover that was marked paid immediately goes back to payroll.
 route('DELETE', '/api/payments/:id', async ctx => {
   const id = Number(ctx.params.id);

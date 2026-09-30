@@ -441,6 +441,14 @@ App.views.staffList = async function ({ params, query }) {
 };
 
 App.views.staffDetail = async function ({ params }) {
+  const payPicked = new Map();
+  const payUndoBtn = h('button', { class: 'btn sm danger', disabled: true, onclick: () => {
+    const rows = [...payPicked.values()];
+    const total = fmt.money(rows.reduce((a, p) => a + Number(p.amount), 0));
+    UI.confirm(`Undo ${plural(rows.length, 'payment record')} totalling ${total}? The amounts will be included in the next wage calculation again.`,
+      async () => { const res = await api.post('/api/payments/undo', { ids: rows.map(p => p.id) }); toast(`${plural(res.removed, 'payment')} undone`, 'ok'); reload(); },
+      { title: 'Undo payments', yes: 'Yes, undo them' });
+  } }, 'Undo selected');
   const s = await api.get('/api/staff/' + params.id);
   const reload = () => Router.handle();
   const isDriver = s.type === 'driver';
@@ -556,18 +564,26 @@ App.views.staffDetail = async function ({ params }) {
         ], s.recent_cover, { sortKey: 'date', sortDir: -1, empty: 'Has not covered any journeys' })),
         App.can('wages') ? h('div', null, h('div', { style: 'height:14px' }),
           UI.cardTight('Payments recorded', UI.table([
+            { label: '', sortable: false, width: '30px', value: p => h('input', { type: 'checkbox', class: 'pay-pick', 'aria-label': 'Select payment', onchange: e => { if (e.target.checked) payPicked.set(p.id, p); else payPicked.delete(p.id); refreshPayUndo(); } }) },
             { key: 'work_date', label: 'Work date', value: p => fmt.date(p.work_date), nowrap: true },
             { key: 'paid_date', label: 'Paid on', value: p => fmt.date(p.paid_date), nowrap: true },
             { key: 'amount', label: 'Amount', num: true, value: p => fmt.money(p.amount) },
             { key: 'source', label: 'Source', value: p => h('span', { class: 'badge ' + (p.source === 'cover_immediate' ? 'amber' : '') }, fmt.titleCase(p.source)) },
             { key: 'note', label: 'Note' },
             { label: '', sortable: false, value: p => h('button', { class: 'btn xs danger', onclick: () => UI.confirm('Delete this payment record? It will then be included in the next wage calculation again.', async () => { await api.del('/api/payments/' + p.id); toast('Payment record deleted', 'ok'); reload(); }) }, 'Delete') },
-          ], s.payments, { sortKey: 'work_date', sortDir: -1, empty: 'No payments recorded' }))) : null),
+          ], s.payments, { sortKey: 'work_date', sortDir: -1, empty: 'No payments recorded' }), payUndoBtn)) : null),
     },
   ];
   if (App.can('audit') || App.can('*')) tabs.push({ id: 'history', label: 'History', render: () => UI.cardTight(null, UI.historyPanel(s.history)) });
 
   return h('div', null, head, stats, h('div', { style: 'height:14px' }), UI.tabs(tabs));
+
+  // Several payment records can be ticked and undone together; the amounts are then owed again.
+  function refreshPayUndo() {
+    const amount = [...payPicked.values()].reduce((a, p) => a + Number(p.amount), 0);
+    payUndoBtn.disabled = !payPicked.size;
+    payUndoBtn.textContent = payPicked.size ? `Undo selected (${payPicked.size}, ${fmt.money(amount)})` : 'Undo selected';
+  }
 };
 function daysLeft(d) { return d.expiry_date ? Math.round((Date.parse(d.expiry_date) - Date.parse(D.today())) / 86400000) : null; }
 function docStatusOf(d) {

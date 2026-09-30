@@ -88,11 +88,26 @@ async function main() {
     assert.equal(wagesRow.lines.filter(l => l.kind === 'already_paid').length, 3, 'three paid lines in the breakdown');
     await page.evaluate(({ row, week }) => Fin.breakdown(row, week.from, week.to), { row: wagesRow, week: WEEK });
     await page.waitForFunction(() => document.querySelector('.modal .breakdown'));
-    assert.equal(await page.evaluate(() => [...document.querySelectorAll('.modal .breakdown button')].filter(b => b.textContent === 'Undo').length), 3, 'each paid line has its own Undo');
-    await page.evaluate(() => [...document.querySelectorAll('.modal .breakdown button')].find(b => /Undo the 3 days paid together/.test(b.textContent)).click());
+    assert.equal(await page.evaluate(() => document.querySelectorAll('.modal .breakdown input.pay-pick').length), 3, 'each paid line can be ticked');
+    assert.equal(await page.evaluate(() => [...document.querySelectorAll('.modal .breakdown button')].some(b => /Undo the 3 days paid together/.test(b.textContent))), true, 'and the batch has a one-click undo');
+    // Tick two of the three and undo them together.
+    await page.evaluate(() => { const boxes = [...document.querySelectorAll('.modal .breakdown input.pay-pick')]; for (const b of boxes.slice(0, 2)) { b.checked = true; b.dispatchEvent(new Event('change')); } });
+    assert.match(await page.evaluate(() => [...document.querySelectorAll('.modal .breakdown button')].find(b => /^Undo selected/.test(b.textContent)).textContent), /Undo selected \(2, £120\.00\)/);
+    await page.evaluate(() => [...document.querySelectorAll('.modal .breakdown button')].find(b => /^Undo selected/.test(b.textContent)).click());
     await page.waitForFunction(() => [...document.querySelectorAll('.modal button')].some(b => b.textContent === 'Yes, undo it'));
     await page.evaluate(() => [...document.querySelectorAll('.modal button')].find(b => b.textContent === 'Yes, undo it').click());
-    await page.waitForFunction(() => document.querySelectorAll('.modal').length === 0 && /3 days undone/.test(window.lastToast || ''));
+    await page.waitForFunction(() => document.querySelectorAll('.modal').length === 0 && /2 payments undone/.test(window.lastToast || ''));
+    assert.equal((await db.all('SELECT id FROM payments WHERE organisation_id = ?', [org])).length, 1, 'one payment is left');
+    assert.equal((await wages.calculateWages(org, { ...WEEK })).results[0].totals.amount_due, 240, 'and two days are owed again');
+    // Select all (the one left) and undo it too.
+    const rowAgain = await page.evaluate(week => api.get('/api/wages', { from: week.from, to: week.to }).then(w => w.results[0]), WEEK);
+    await page.evaluate(({ row, week }) => Fin.breakdown(row, week.from, week.to), { row: rowAgain, week: WEEK });
+    await page.waitForFunction(() => document.querySelector('.modal .breakdown'));
+    await page.evaluate(() => [...document.querySelectorAll('.modal .breakdown button')].find(b => /^Select/.test(b.textContent)).click());
+    await page.evaluate(() => [...document.querySelectorAll('.modal .breakdown button')].find(b => /^Undo selected/.test(b.textContent)).click());
+    await page.waitForFunction(() => [...document.querySelectorAll('.modal button')].some(b => b.textContent === 'Yes, undo it'));
+    await page.evaluate(() => [...document.querySelectorAll('.modal button')].find(b => b.textContent === 'Yes, undo it').click());
+    await page.waitForFunction(() => document.querySelectorAll('.modal').length === 0 && /1 payment undone/.test(window.lastToast || ''));
     assert.equal((await db.all('SELECT id FROM payments WHERE organisation_id = ?', [org])).length, 0, 'the three payments are gone');
     const w3 = await wages.calculateWages(org, { ...WEEK });
     assert.equal(w3.results[0].totals.amount_due, 300, 'and the week is owed in full again');
@@ -119,7 +134,7 @@ async function main() {
     assert.equal((await wages.calculateWages(org, { ...WEEK })).totals.total_due, 240 + 55, 'and everyone is owed again');
 
     assert.deepEqual(errors, []);
-    console.log('Pay days browser checks passed: per-day preview, narrowed period, one payment per day, paid days ticked off, no double payment, undo of a batch, a cover payment and a payroll run.');
+    console.log('Pay days browser checks passed: per-day preview, narrowed period, one payment per day, paid days ticked off, no double payment, undo of ticked payments, a cover payment and a payroll run.');
   } finally { await browser.close(); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => db.close());

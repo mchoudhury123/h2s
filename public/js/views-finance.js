@@ -132,12 +132,37 @@ Fin.breakdown = function (r, from, to) {
   }, { title: 'Undo payment', yes: 'Yes, undo it' });
   if (paid.length) {
     box.appendChild(h('div', { class: 'bl sub', style: 'margin-top:8px' }, h('span', { class: 'btx' }, 'Payments already made'), h('span', { class: 'bam' }, '-' + fmt.money(r.totals.already_paid))));
-    for (const l of paid) box.appendChild(h('div', { class: 'bl neg' },
-      h('span', { class: 'bd' }, fmt.date(l.date)), h('span', { class: 'btx' }, l.description,
-        canUndo && l.payment_id && !l.payroll_run_id ? h('button', { class: 'btn xs', style: 'margin-left:8px', title: 'Remove this payment record so the amount is owed again', onclick: () => { m.close(); undo(
-          `Undo the payment of ${fmt.money(-l.amount)} recorded for ${fmt.date(l.date)}? ${r.staff.name} will be owed it again${l.exception_id ? ', and the cover goes back to payroll' : ''}.`,
-          () => api.del('/api/payments/' + l.payment_id), () => 'Payment undone'); } }, 'Undo') : null),
-      h('span', { class: 'bam' }, fmt.money(l.amount))));
+    // Tick any number of payments and undo them together. Payroll lines are
+    // undone as a run, below, so they cannot be ticked.
+    const picked = new Map();
+    const undoBtn = h('button', { class: 'btn xs danger', disabled: true }, 'Undo selected');
+    const refreshUndo = () => {
+      const amount = [...picked.values()].reduce((a, l) => a + -l.amount, 0);
+      undoBtn.disabled = !picked.size;
+      undoBtn.textContent = picked.size ? `Undo selected (${picked.size}, ${fmt.money(amount)})` : 'Undo selected';
+    };
+    const boxes = [];
+    for (const l of paid) {
+      const tickable = canUndo && l.payment_id && !l.payroll_run_id;
+      const tick = tickable ? h('input', { type: 'checkbox', class: 'pay-pick', 'aria-label': 'Select payment for ' + fmt.date(l.date), onchange: e => { if (e.target.checked) picked.set(l.payment_id, l); else picked.delete(l.payment_id); refreshUndo(); } }) : null;
+      if (tick) boxes.push(tick);
+      box.appendChild(h('div', { class: 'bl neg' },
+        h('span', { class: 'bd' }, tick, fmt.date(l.date)), h('span', { class: 'btx' }, l.description),
+        h('span', { class: 'bam' }, fmt.money(l.amount))));
+    }
+    undoBtn.onclick = () => {
+      const lines = [...picked.values()];
+      const total = fmt.money(lines.reduce((a, l) => a + -l.amount, 0));
+      const cover = lines.filter(l => l.exception_id).length;
+      m.close();
+      undo(`Undo ${plural(lines.length, 'payment')} totalling ${total}? ${r.staff.name} will be owed that again${cover ? `, and ${plural(cover, 'cover payment')} go back to payroll` : ''}.`,
+        () => api.post('/api/payments/undo', { ids: lines.map(l => l.payment_id) }), res => `${plural(res.removed, 'payment')} undone`);
+    };
+    if (boxes.length) {
+      box.appendChild(h('div', { class: 'pill-row', style: 'margin-top:8px' },
+        h('button', { class: 'btn xs', onclick: () => { const all = boxes.every(b => b.checked); for (const b of boxes) { b.checked = !all; b.dispatchEvent(new Event('change')); } } }, boxes.length > 1 ? 'Select all' : 'Select'),
+        undoBtn));
+    }
     // Days paid together, and payroll runs, can be undone in one go.
     const batches = new Map(), runs = new Map();
     for (const l of paid) {
