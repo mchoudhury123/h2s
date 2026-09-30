@@ -91,7 +91,7 @@ Inv.generatePanel = function (L, query) {
           chipsBox),
         h('div', { class: 'inv-block wide inv-actions' },
           previewBtn,
-          h('span', { style: 'color:var(--text-dim);font-size:12.5px' }, 'Previewing assigns no numbers. Every run on the calendar is half a day, so a three-run Friday is a day and a half. Only a run taken off is not charged: absences, cover and cancellations change the wages, not the invoice.'))))));
+          h('span', { style: 'color:var(--text-dim);font-size:12.5px' }, 'Previewing assigns no numbers. Every run on the calendar is half a day, so a three-run Friday is a day and a half. Only a run taken off or a school closure is not charged: absences, cover and cancelled runs change the wages, not the invoice.'))))));
   wrap.appendChild(results);
   return wrap;
 };
@@ -154,7 +154,7 @@ Inv.previewTable = function (pv, state, host) {
           h('div', { style: 'font-size:12px;color:var(--text-dim)' }, r.school_name || 'No school'),
           r.po_number ? h('div', { style: 'font-size:12px' }, 'PO ', h('strong', r.po_number)) : h('span', { class: 'badge red' }, 'No PO number')),
         h('div', { class: 'inv-break' },
-          h('div', null, `${plural(b.scheduled_days, 'date')} · ${plural(b.trips, 'run')} · ${b.trips_removed} taken off · ${b.trips_added} added · ${b.trips_cancelled} cancelled (charged)` + (b.trips_not_operated ? ` · ${b.trips_not_operated} not operated (charged)` : '')),
+          h('div', null, `${plural(b.scheduled_days, 'date')} · ${plural(b.trips, 'run')} · ${b.trips_removed} taken off · ${b.trips_closed || 0} school closed (not charged) · ${b.trips_added} added · ${b.trips_cancelled} cancelled (charged)` + (b.trips_not_operated ? ` · ${b.trips_not_operated} not operated (charged)` : '')),
           h('div', { style: 'margin-top:3px' }, `${plural(b.chargeable_trips, 'chargeable run')} = `, h('strong', daysText(b.chargeable_days) + ' days'), ' ', showBtn)),
         h('div', { class: 'inv-days' }, h('label', 'Days'), daysIn, reasonIn),
         h('div', { class: 'inv-money' },

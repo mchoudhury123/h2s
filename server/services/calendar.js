@@ -104,12 +104,14 @@ async function loadContext(orgId, from, to, where = '', params = []) {
 //
 // Whether a run is CHARGED and whether it OPERATED are two different
 // questions. A run on the calendar is charged to the council unless it was
-// taken off (journey_removed). A child not attending, a driver or PA absent
-// with or without cover, a cancelled run the council still pays for, and any
-// pay adjustment change what the staff are paid, never what is charged.
+// taken off (journey_removed) or the school was closed (school_closed): the
+// council does not pay for a day the school was shut. A child not attending,
+// a driver or PA absent with or without cover, a run the council cancelled
+// late (still paid for), and any pay adjustment change what the staff are
+// paid, never what is charged.
 
-/** The council is charged for every run on the calendar that was not taken off. */
-function chargeableRun(t) { return !t.removed; }
+/** The council is charged for every run on the calendar that was not taken off and not a school closure. */
+function chargeableRun(t) { return !t.removed && !t.closed; }
 
 /**
  * What a date is worth in days: half a day per chargeable run, with no
@@ -186,11 +188,14 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
       || ex.find(e => e.type === 'contract_cancelled' && appliesToTrip(e, plan));
     const journeyCancelled = ex.find(e => e.type === 'journey_cancelled' && appliesToTrip(e, plan));
     // A run taken off was never needed: no council income, no staff pay, not
-    // billed. A cancelled run keeps its council income and is billed.
+    // billed. A school closure is the same for the invoice: the council does
+    // not pay for a day the school was shut. A cancelled run keeps its
+    // council income and is billed. None of them pay the staff.
     const removed = ex.find(e => e.type === 'journey_removed' && appliesToTrip(e, plan));
     const cancellation = removed ? null : (closedHere || cancelled || journeyCancelled);
     t.cancelled = !!cancellation;
     t.removed = !!removed;
+    t.closed = !removed && !!closedHere;
     t.cancellation_exception_id = cancellation ? cancellation.id : (removed ? removed.id : null);
     if (removed) { t.status = 'not_operated'; t.reason = 'Run taken off'; }
     else if (closedHere) { t.status = 'not_operated'; t.reason = 'School closed'; }
@@ -303,6 +308,7 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
     operated_trips: operatedTrips.length,
     cancelled_trips: trips.filter(t => t.cancelled).length,
     removed_trips: trips.filter(t => t.removed).length,
+    closed_trips: trips.filter(t => t.closed).length,
     chargeable_days: days,
     chargeable_trips: chargeableTrips.length,
     children: childStates,

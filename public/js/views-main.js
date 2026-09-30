@@ -567,7 +567,7 @@ Ops.dayDialog = async function (contractId, date, onChange) {
       h('button', { class: 'btn xs', onclick: () => Ops.noteDialog(c, date, day, refresh, markDirty) }, 'Add note'),
       App.can('finance') ? h('button', { class: 'btn xs', onclick: () => Ops.payOverrideDialog(c, date, day, refresh, markDirty) }, 'Pay override') : null));
     cbox.appendChild(h('div', { style: 'margin-top:8px;font-size:12px;color:var(--text-faint)' },
-      'Cancelled runs and school closures retain council income. Staff are not paid for the cancelled runs.'));
+      'A cancelled run is still charged to the council. A school closure is not: every closed run comes off the invoice. Staff are not paid for either.'));
     wrap.appendChild(cbox);
 
     // ---- everything recorded on this day ----
@@ -800,7 +800,7 @@ Ops.removeRunDialog = function (contract, date, day, scope, refresh, markDirty) 
   const saveBtn = h('button', { class: 'btn primary' }, 'Take run off');
   const dlg = UI.modal({ title: `Take run off — ${contract.code} ${fmt.date(date)}`,
     body: h('div', null, h('div', { class: 'note-box', style: 'margin-bottom:12px' },
-      h('strong', 'Not charged, not paid. '), 'Use this when the run was not needed, for example a school holiday. Every run taken off is half a day less on the invoice. If the council cancelled a run late and still pays for it, use Run cancelled instead. Child absences and staff absences never change the invoice, only the wages.'), form),
+      h('strong', 'Not charged, not paid. '), 'Use this when the run was not needed. Every run taken off is half a day less on the invoice. For a day the school was shut, use School closed / holiday instead, which is also not charged. If the council cancelled a run late and still pays for it, use Run cancelled. Child absences and staff absences never change the invoice, only the wages.'), form),
     footer: [h('button', { class: 'btn', onclick: () => dlg.close() }, 'Back'), saveBtn] });
   saveBtn.onclick = async () => {
     const values = form.read(), chosen = choices[Number(values.which)] || ALL_DAY;
@@ -818,7 +818,7 @@ Ops.schoolClosureDialog = function (contract, date, day, refresh, markDirty) {
     { name: 'scope', label: 'Applies to', type: 'select', placeholder: false, options: [{ value: 'school', label: `The whole school (${contract.school_name}) — every contract` }, { value: 'contract', label: `This contract only (${contract.code})` }] },
     { name: 'which', label: 'Which journeys', type: 'select', placeholder: false, options: choices.map((c, i) => ({ value: i, label: c.label })) },
     { name: 'note', label: 'Reason', span: 'full', value: 'School closed' },
-    { name: 'repeat_days', label: 'Repeat for this many consecutive days', type: 'number', min: 1, max: 30, value: 1, help: 'Use for half-terms and holidays. Council income is retained, cancelled runs have no staff pay, and no child is marked absent.' },
+    { name: 'repeat_days', label: 'Repeat for this many consecutive days', type: 'number', min: 1, max: 30, value: 1, help: 'Use for inset days, half-terms and holidays. Closed runs are not charged to the council and not paid to staff, and no child is marked absent.' },
   ], {});
   const saveBtn = h('button', { class: 'btn primary' }, 'Record closure');
   const dlg = UI.modal({ title: 'School closed — ' + fmt.date(date), body: form, footer: [h('button', { class: 'btn', onclick: () => dlg.close() }, 'Cancel'), saveBtn] });

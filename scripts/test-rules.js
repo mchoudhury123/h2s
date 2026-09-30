@@ -155,7 +155,9 @@ async function main() {
   is(AM(await day('2026-09-11')).status, 'not_operated', 'AM does not run');
   is(PM(await day('2026-09-11')).reason, 'School closed', 'PM reason is the closure');
   is((await wagesFor('John Normal')).totals.amount_due, 240, 'no pay for a closed day');
-  is((await finance.profitability(orgId, { ...WEEK, contract_id: contractId })).rows[0].income, 500, 'school closure retains council income');
+  is((await day('2026-09-11')).chargeable_days, 0, 'a closed day is not charged to the council');
+  is((await day('2026-09-11')).income, 0, 'and earns nothing');
+  is((await finance.profitability(orgId, { ...WEEK, contract_id: contractId })).rows[0].income, 400, 'so the week is four days of income, not five');
   await run('DELETE FROM exceptions WHERE organisation_id = ? AND id = ?', [orgId, closureId]);
 
   // ---------- 8. pay override ----------
@@ -491,6 +493,8 @@ async function main() {
   is(closedFri.children.every(c => c.scheduled), true, 'the children were still expected in — they are not absent');
   is(closedFri.trips.reduce((a, t) => a + t.children_absent, 0), 0, 'nobody is marked absent');
   is((await wagesFor('John Normal')).totals.amount_due, 240, 'and the day is not paid');
+  is(closedFri.chargeable_days, 0, 'nor charged: the council does not pay for a closed school');
+  is(closedFri.trips.every(t => t.closed && !t.chargeable), true, 'each run is marked closed and not chargeable');
   await run('DELETE FROM exceptions WHERE organisation_id = ? AND id = ?', [orgId, holiday]);
   await run('DELETE FROM contract_schedules WHERE organisation_id = ? AND id = ?', [orgId, autumnId]);
   is((await day('2026-09-11')).planned_trips, 2, 'removing the pattern returns the contract to a standard week');
@@ -555,6 +559,17 @@ async function main() {
   is((await wagesFor('Sam Second')).totals.cover_days, 0.5, 'and one covered journey is half a cover day');
   is((await wagesFor('John Normal')).totals.amount_due, 240, 'and the absent driver loses the whole day');
   await run('DELETE FROM exceptions WHERE organisation_id = ? AND id IN (?,?)', [orgId, amCover, pmCover]);
+
+  section('17c-iii. A cancelled run is charged; a school closure is not');
+  const lateCancel = await addEx({ date: '2026-09-10', type: 'journey_cancelled', leg: 'DAY', contract_id: contractId, note: 'Council cancelled late' });
+  is((await day('2026-09-10')).chargeable_days, 1, 'a run the council cancelled late is still charged');
+  is((await day('2026-09-10')).income, 100, 'at the full rate');
+  await run('DELETE FROM exceptions WHERE organisation_id = ? AND id = ?', [orgId, lateCancel]);
+  const insetDay = await addEx({ date: '2026-09-10', type: 'school_closed', leg: 'DAY', school_id: schoolId, note: 'Inset day' });
+  is((await day('2026-09-10')).chargeable_days, 0, 'an inset day is not charged');
+  is((await day('2026-09-10')).income, 0, 'and earns nothing');
+  is((await profit()).income, 400, 'so the week loses that day of income');
+  await run('DELETE FROM exceptions WHERE organisation_id = ? AND id = ?', [orgId, insetDay]);
 
   section('17d. Only taking a run off removes it from the invoice');
   const pmOff = await addEx({ date: '2026-09-10', type: 'journey_removed', leg: 'PM', contract_id: contractId, note: 'Not needed' });

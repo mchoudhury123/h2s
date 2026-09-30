@@ -113,7 +113,7 @@ const { chargeableRun } = cal;
 /** An empty breakdown, for a contract with nothing on the calendar. */
 function emptyBreakdown() {
   return {
-    scheduled_days: 0, trips: 0, chargeable_trips: 0, trips_removed: 0, trips_cancelled: 0,
+    scheduled_days: 0, trips: 0, chargeable_trips: 0, trips_removed: 0, trips_closed: 0, trips_cancelled: 0,
     trips_added: 0, trips_not_operated: 0, chargeable_days: 0, income: 0, dates: [],
   };
 }
@@ -121,6 +121,7 @@ function emptyBreakdown() {
 /** One run's line in the working: what happened to it, and whether it is charged. */
 function describeRun(t) {
   if (t.removed) return `${t.label}: taken off, not charged`;
+  if (t.closed) return `${t.label}: school closed, not charged`;
   const what = t.status === 'operated' ? 'operated'
     : t.cancelled ? 'cancelled'
       : `not operated (${(t.reason || 'not run').toLowerCase()})`;
@@ -149,6 +150,7 @@ async function chargeableDays(orgId, from, to, contractIds = null) {
       b.trips += day.trips.length;
       b.chargeable_trips += chargeable.length;
       b.trips_removed += day.trips.filter(t => t.removed).length;
+      b.trips_closed += day.trips.filter(t => t.closed).length;
       b.trips_cancelled += chargeable.filter(t => t.cancelled).length;
       b.trips_added += day.trips.filter(t => t.source === 'extra').length;
       b.trips_not_operated += chargeable.filter(t => !t.cancelled && t.status !== 'operated').length;
@@ -156,7 +158,8 @@ async function chargeableDays(orgId, from, to, contractIds = null) {
       b.income = round2(b.income + day.income);
       b.dates.push({
         date, runs: day.trips.length, chargeable: chargeable.length, value: day.chargeable_days, income: day.income,
-        removed: day.trips.length - chargeable.length,
+        removed: day.trips.filter(t => t.removed).length,
+        closed: day.trips.filter(t => t.closed).length,
         cancelled: chargeable.filter(t => t.cancelled).length,
         added: day.trips.filter(t => t.source === 'extra').length,
         detail: day.trips.map(describeRun).join('; '),

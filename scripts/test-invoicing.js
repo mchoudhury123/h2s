@@ -119,7 +119,15 @@ async function main() {
   const offPm = await ex(gamma, { date: '2026-10-13', type: 'journey_removed', leg: 'PM', note: 'Not needed' });
   g = await gammaDays();
   ok(g.days === 8.5 && g.subtotal === 765, `only a run taken off changes it: 8.5 days, £765.00 (got ${g.days}, ${g.subtotal})`);
-  for (const r of [absentAll, driverOff, driverPm, paCover, offPm]) await del('/api/exceptions/' + r.data[0].id);
+  const closed = await ex(gamma, { date: '2026-10-14', type: 'school_closed', leg: 'DAY', note: 'Inset day' });
+  g = await gammaDays();
+  ok(g.days === 7.5 && g.subtotal === 675, `a school closure is not charged either: 7.5 days, £675.00 (got ${g.days}, ${g.subtotal})`);
+  ok(/school closed, not charged/.test(g.breakdown.dates.find(d => d.date === '2026-10-14').detail), 'and the working says so');
+  ok(g.breakdown.trips_closed === 2, 'two runs are counted as closed');
+  const cancelledLate = await ex(gamma, { date: '2026-10-15', type: 'journey_cancelled', leg: 'DAY', note: 'Council cancelled late' });
+  g = await gammaDays();
+  ok(g.days === 7.5, `a cancelled run is still charged, so 7.5 days stays (got ${g.days})`);
+  for (const r of [absentAll, driverOff, driverPm, paCover, offPm, closed, cancelledLate]) await del('/api/exceptions/' + r.data[0].id);
   await del('/api/children/' + kid.id);
   ok((await gammaDays()).days === 9, 'GAMMA is back to 9 days');
 
