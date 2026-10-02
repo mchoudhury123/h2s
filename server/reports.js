@@ -236,7 +236,7 @@ const BUILDERS = {
 function c(key, label, value) { return value ? { key, label, value: r => value(r[key]) } : { key, label }; }
 
 async function wageReport(org, q, type, title) {
-  const calc = await wages.calculateWages(org, { from: q.from, to: q.to, type: type || undefined, staff_ids: q.staff_ids ? String(q.staff_ids).split(',').map(Number) : undefined });
+  const calc = await wages.calculateWages(org, { from: q.from, to: q.to, type: type || undefined, all_staff: true, staff_ids: q.staff_ids ? String(q.staff_ids).split(',').map(Number) : undefined });
   const rows = calc.results.map(r => ({
     name: r.staff.name, type: r.staff.type.toUpperCase(),
     normal_days: r.totals.normal_days, journeys: r.totals.journeys, normal_earnings: r.totals.normal_earnings,

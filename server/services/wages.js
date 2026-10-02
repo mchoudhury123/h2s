@@ -8,7 +8,9 @@ const { round2 } = cal;
 
 /**
  * Calculate wages for a date range.
- * opts: { from, to, staff_ids?, contract_id?, type? ('driver'|'pa'), include_zero? }
+ * opts: { from, to, staff_ids?, contract_id?, type? ('driver'|'pa'), include_zero?, all_staff? }
+ * all_staff lists every active and pool member of staff, including anyone
+ * who did no runs in the period, so nobody is missing from the wages page.
  */
 async function calculateWages(orgId, opts) {
   if (!orgId) throw new Error('An organisation id is required');
@@ -29,6 +31,10 @@ async function calculateWages(orgId, opts) {
     }
     return ledger.get(staffId);
   }
+  // Everyone on the books gets a row, even with nothing to pay. Someone marked
+  // inactive only appears if they actually have lines in the period.
+  const onTheBooks = s => s.status === 'active' || s.status === 'pool';
+  if (opts.all_staff) for (const s of staffRows) if (onTheBooks(s)) entry(s.id);
 
   for (const c of ctx.contracts) {
     if (opts.contract_id && c.id !== opts.contract_id) continue;
@@ -159,7 +165,8 @@ async function calculateWages(orgId, opts) {
 
   if (opts.type) results = results.filter(r => r.staff.type === opts.type);
   if (opts.staff_ids && opts.staff_ids.length) results = results.filter(r => opts.staff_ids.includes(r.staff.id));
-  if (!opts.include_zero) results = results.filter(r => r.lines.some(l => l.amount !== 0));
+  if (opts.all_staff) results = results.filter(r => r.lines.some(l => l.amount !== 0) || onTheBooks(r.staff));
+  else if (!opts.include_zero) results = results.filter(r => r.lines.some(l => l.amount !== 0));
   results.sort((a, b) => a.staff.type.localeCompare(b.staff.type) || a.staff.name.localeCompare(b.staff.name));
 
   return {
@@ -171,6 +178,8 @@ async function calculateWages(orgId, opts) {
       already_paid: round2(sumBy(results, r => r.totals.already_paid)),
       total_due: round2(sumBy(results, r => r.totals.amount_due)),
       staff_count: results.length,
+      // Listed is everyone shown; due is the people actually owed something.
+      staff_due: results.filter(r => r.totals.amount_due > 0).length,
     },
   };
 }

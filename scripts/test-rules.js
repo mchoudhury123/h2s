@@ -646,6 +646,24 @@ async function main() {
   await run('DELETE FROM payments WHERE organisation_id = ? AND staff_id = ?', [orgId, driverId]);
   is((await wagesFor('John Normal')).totals.amount_due, 300, 'deleting the payments brings the week back');
 
+  section('19. The wages list shows everyone on the books, runs or not');
+  const idleId = await insert('staff', { type: 'driver', first_name: 'Ian', last_name: 'Idle', status: 'active' }, ['type', 'first_name', 'last_name', 'status'], null, orgId);
+  const goneId = await insert('staff', { type: 'driver', first_name: 'Gary', last_name: 'Gone', status: 'inactive' }, ['type', 'first_name', 'last_name', 'status'], null, orgId);
+  const plain = await wages.calculateWages(orgId, { ...WEEK });
+  is(plain.results.some(r => r.staff.name === 'Ian Idle'), false, 'without the option, someone with no runs is left out as before');
+  const everyone = await wages.calculateWages(orgId, { ...WEEK, all_staff: true });
+  const names = everyone.results.map(r => r.staff.name);
+  is(names.includes('Ian Idle'), true, 'an active driver with no runs is listed');
+  is(names.includes('Sam Second') && names.includes('Tracy Spare'), true, 'pool staff with no runs are listed too');
+  is(names.includes('Gary Gone'), false, 'someone marked inactive with no runs is not');
+  is(everyone.results.find(r => r.staff.name === 'Ian Idle').totals.amount_due, 0, 'with nothing due');
+  is(everyone.results.find(r => r.staff.name === 'Ian Idle').lines.length, 0, 'and no lines');
+  is(everyone.totals.total_due, plain.totals.total_due, 'the money is unchanged by listing them');
+  is(everyone.totals.staff_due, plain.totals.staff_count, 'staff due counts only the people owed something');
+  is(everyone.totals.staff_count > everyone.totals.staff_due, true, 'while the list is longer');
+  is((await wages.calculateWages(orgId, { ...WEEK, all_staff: true, type: 'pa' })).results.every(r => r.staff.type === 'pa'), true, 'the type filter still applies');
+  await run('DELETE FROM staff WHERE organisation_id = ? AND id IN (?,?)', [orgId, idleId, goneId]);
+
   console.log(`\n${pass} passed, ${fail} failed on ${database.describe}`);
   return fail;
 }

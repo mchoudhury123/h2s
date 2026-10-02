@@ -299,7 +299,7 @@ To find cover, the staff pool searches by proximity to the route, compliance sta
 
 ### Wage calculation
 
-Choose a date range and calculate for one person, one contract, selected staff, all drivers, all PAs or the whole company.
+Choose a date range and calculate for one person, one contract, selected staff, all drivers, all PAs or the whole company. Everyone on the books is listed, active and pool staff alike, including anyone who did no runs in the period, marked "No runs" with nothing due, so nobody can be missed. A view of a single contract stays limited to the people who worked it.
 
 Every figure is explained. A breakdown shows normal journeys grouped by contract and rate, each cover journey with its date and rate, every journey that was not paid and why, and every payment already made. The bottom line is the amount due.
 

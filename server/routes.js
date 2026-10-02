@@ -1576,6 +1576,9 @@ route('GET', '/api/wages', async ctx => {
   const opts = { from, to, include_zero: ctx.query.include_zero === '1' };
   if (ctx.query.type) opts.type = ctx.query.type;
   if (ctx.query.contract_id) opts.contract_id = Number(ctx.query.contract_id);
+  // The wages page lists everyone on the books, runs or not. A view of one
+  // contract stays limited to the people who worked that contract.
+  if (!opts.contract_id && ctx.query.all_staff !== '0') opts.all_staff = true;
   if (ctx.query.staff_ids) opts.staff_ids = String(ctx.query.staff_ids).split(',').map(Number).filter(Boolean);
   H.json(ctx.res, await wages.calculateWages(ctx.org, opts));
 });

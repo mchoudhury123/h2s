@@ -39,7 +39,7 @@ App.views.wages = async function ({ query }) {
   const data = await api.get('/api/wages', clean({ from, to, staff_ids: staffId, contract_id: contractId, type }));
 
   const totals = h('div', { class: 'stats' },
-    UI.stat({ label: 'Staff to pay', value: data.totals.staff_count }),
+    UI.stat({ label: 'Staff to pay', value: data.totals.staff_due ?? data.totals.staff_count, hint: data.totals.staff_count > (data.totals.staff_due ?? data.totals.staff_count) ? `${data.totals.staff_count} staff listed` : null }),
     UI.stat({ label: 'Driver wages', value: fmt.money0(data.totals.drivers) }),
     UI.stat({ label: 'PA wages', value: fmt.money0(data.totals.pas) }),
     UI.stat({ label: 'Gross earned', value: fmt.money0(data.totals.gross), hint: 'Before deducting payments already made' }),
@@ -48,7 +48,9 @@ App.views.wages = async function ({ query }) {
 
   const summary = UI.table([
     { key: 'name', label: 'Staff', value: r => h('a', { href: '#', title: 'Open the breakdown', onclick: e => { e.preventDefault(); Fin.breakdown(r, from, to); } }, h('strong', r.staff.name)), sort: r => r.staff.name },
-    { label: 'Type', value: r => h('span', { class: 'badge blue' }, r.staff.type === 'driver' ? 'Driver' : 'PA'), sort: r => r.staff.type },
+    { label: 'Type', value: r => h('span', { class: 'pill-row' }, h('span', { class: 'badge blue' }, r.staff.type === 'driver' ? 'Driver' : 'PA'),
+      r.staff.status === 'pool' ? h('span', { class: 'badge' }, 'Pool') : null,
+      !r.lines.length ? h('span', { class: 'badge', title: 'On the books, with no journeys or payments in this period' }, 'No runs') : null), sort: r => r.staff.type },
     { label: 'Days', num: true, value: r => r.totals.normal_days, sort: r => r.totals.normal_days },
     { label: 'Journeys', num: true, value: r => r.totals.journeys, sort: r => r.totals.journeys },
     { label: 'Normal earnings', num: true, value: r => fmt.money(r.totals.normal_earnings), sort: r => r.totals.normal_earnings },
@@ -58,7 +60,7 @@ App.views.wages = async function ({ query }) {
     { label: 'Amount due', num: true, value: r => h('strong', fmt.money(r.totals.amount_due)), sort: r => r.totals.amount_due },
     { label: '', sortable: false, value: r => h('button', { class: 'btn xs primary', onclick: () => Fin.breakdown(r, from, to) }, 'Breakdown') },
   ], data.results, {
-    empty: 'Nothing to pay for this period',
+    empty: 'No staff to show for this period',
     onRow: r => Fin.breakdown(r, from, to),
     footer: h('tr', h('td', { colspan: 6, class: 'tfoot-title' }, 'TOTAL'),
       h('td', { class: 'num', 'data-label': 'Gross' }, fmt.money(data.totals.gross)),
@@ -293,7 +295,7 @@ Fin.recordPayment = function (staff, amount, workDate) {
 
 Fin.markPaid = function (from, to, data) {
   UI.confirm(
-    `Record ${fmt.money(data.totals.total_due)} as paid to ${data.totals.staff_count} staff for ${fmt.date(from)} to ${fmt.date(to)}? Each amount is logged as a payment so it will not appear in a future wage calculation.`,
+    `Record ${fmt.money(data.totals.total_due)} as paid to ${data.totals.staff_due ?? data.totals.staff_count} staff for ${fmt.date(from)} to ${fmt.date(to)}? Each amount is logged as a payment so it will not appear in a future wage calculation.`,
     async () => {
       try { const r = await api.post('/api/payroll-runs', { from, to }); toast(`Payroll recorded: ${r.paid} staff, ${fmt.money(r.total)}`, 'ok'); Router.handle(); }
       catch (e) { toast(e.message, 'err'); }
