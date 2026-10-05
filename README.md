@@ -139,7 +139,7 @@ Three things had to change for this to work, and all three are done:
 
 ### On a phone
 
-The same application fits a phone without a separate build. Under 900px the sidebar becomes a drawer and a bar along the bottom carries Home, Today, Calendar, Wages and Menu, so someone on the move can see who is absent and who needs cover, or check what a driver is owed. Under 640px tables become a stack of cards with each value labelled, dialogs slide up as full-width sheets, stat tiles sit two across, and filters share rows. Nothing changes on a desktop.
+The same application fits a phone without a separate build. Under 900px the sidebar becomes a drawer and a bar along the bottom carries Home, Today, Calendar, Wages and Menu, so someone on the move can see who is absent and who needs cover, or check what a driver is owed. Under 640px tables become a stack of cards with each value labelled, dialogs slide up as full-width sheets, stat tiles sit two across, and filters share rows. Exports work on a phone too: every CSV, invoice PDF and ZIP link is fetched and handed to the share sheet, or saved through a download, instead of being opened in a tab the phone may not show. Nothing changes on a desktop.
 
 ### Tests
 

@@ -371,6 +371,20 @@ App.quickException = async function () {
   };
 };
 
+/* ---------- exports on a phone ----------
+   Any link to a report, invoice PDF or ZIP is intercepted on a handheld and
+   fetched instead of followed, so the file reaches the share sheet or the
+   downloads folder. On a desktop the link behaves exactly as before. */
+document.addEventListener('click', e => {
+  const a = e.target.closest('a[href]');
+  if (!a || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey) return;
+  const href = a.getAttribute('href') || '';
+  if (!/^\/api\/(reports|invoices|invoicing)\//.test(href)) return;
+  if (!UI.isHandheld()) return;
+  e.preventDefault();
+  UI.download(href).catch(err => toast(err.message || 'Download failed', 'err'));
+});
+
 /* ---------- routes ---------- */
 Router.on('/', App.views.dashboard);
 Router.on('/calendar', App.views.calendar);

@@ -8,6 +8,39 @@ window.hasFile = hasFile;
 UI.openModals = new Set();
 UI.closeAll = function () { for (const close of [...UI.openModals]) close(); };
 
+/* ---------- downloads on a phone ----------
+   A desktop browser follows an export link and saves the file. A phone, and
+   especially a site added to the home screen, often opens a blank tab or
+   nothing at all. So on a touch device the file is fetched here, then handed
+   to the share sheet (Files, email, WhatsApp) or saved through a download
+   link, whichever the browser allows. */
+UI.isHandheld = function () {
+  try { return window.matchMedia('(pointer: coarse)').matches || window.matchMedia('(max-width: 900px)').matches; } catch (e) { return false; }
+};
+UI.download = async function (url, suggestedName) {
+  toast('Preparing the file…');
+  const res = await fetch(url, { credentials: 'same-origin' });
+  if (!res.ok) {
+    let message = res.statusText || 'Download failed';
+    try { const j = await res.json(); if (j.error) message = j.error; } catch (e) {}
+    throw new Error(message);
+  }
+  const blob = await res.blob();
+  const cd = res.headers.get('content-disposition') || '';
+  const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
+  const name = (m && decodeURIComponent(m[1]).trim()) || suggestedName || url.split('/').pop().split('?')[0] || 'download';
+  const file = new File([blob], name, { type: blob.type || 'application/octet-stream' });
+  if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: name }); toast(`${name} ready to save or send`, 'ok'); return; }
+    catch (e) { if (e && e.name === 'AbortError') return; /* otherwise fall through to a plain download */ }
+  }
+  const href = URL.createObjectURL(blob);
+  const a = h('a', { href, download: name, style: 'display:none' });
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(href); a.remove(); }, 4000);
+  toast(`Downloading ${name}`, 'ok');
+};
+
 /* ---------- modal ---------- */
 UI.modal = function ({ title, body, footer, width, onClose }) {
   const root = document.getElementById('modal-root');
