@@ -323,6 +323,21 @@ class Firm {
     "the children offered for A's journeys are A's own");
 
   // ---------------------------------------------------------------
+  section('9c. Dated driver and PA changes stay inside one firm');
+  // The seat is handed to nobody from 2030: the contract's only driver already holds it.
+  const change = { role: 'driver', staff_id: null, effective_from: '2030-01-07', note: 'B handover' };
+  ok((await b.post(`/api/contracts/${b.ids.contract}/staff`, change)).status === 201, 'B can record a handover on its own contract');
+  ok((await a.post(`/api/contracts/${b.ids.contract}/staff`, change)).status === 404, "A cannot record a handover on B's contract");
+  ok((await a.post(`/api/contracts/${a.ids.contract}/staff`, { ...change, staff_id: b.ids.driver })).status === 400, "A cannot hand its own contract to B's driver");
+  ok((await a.get(`/api/contracts/${b.ids.contract}/staff`)).status === 404, "A cannot read B's handovers");
+  const bStaff = (await b.get(`/api/contracts/${b.ids.contract}/staff`)).data;
+  ok(bStaff.driver.length === 2, "B's handover and its opening row are still there after A's attempts");
+  ok((await a.del(`/api/contracts/${a.ids.contract}/staff/${bStaff.driver[0].id}`)).status === 404,
+    "A cannot delete B's handover through its own contract");
+  ok((await b.get(`/api/contracts/${b.ids.contract}/staff`)).data.driver.length === 2, "B's handover survived");
+  ok((await b.del(`/api/contracts/${b.ids.contract}/staff/${bStaff.driver[0].id}`)).status === 200, 'B can remove its own handover');
+
+  // ---------------------------------------------------------------
   section('10. Signing out and back in keeps the firms apart');
   await a.post('/api/logout');
   const afterLogout = await a.get('/api/children');

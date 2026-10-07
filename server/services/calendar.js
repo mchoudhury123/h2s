@@ -6,6 +6,7 @@
 // Wednesday, and each trip is tracked and paid in its own right.
 const { all, inClause } = require('../db');
 const sched = require('./schedule');
+const staffing = require('./staffing');
 
 function toDate(s) { const [y, m, d] = s.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d)); }
 function fmt(d) { return d.toISOString().slice(0, 10); }
@@ -40,7 +41,7 @@ function contractOperatesOn(c, date, schedules) {
 
 async function loadContracts(orgId, where = '', params = []) {
   requireOrg(orgId);
-  return all(`SELECT c.*, s.name AS school_name, s.postcode AS school_postcode, cl.name AS council_name,
+  const rows = await all(`SELECT c.*, s.name AS school_name, s.postcode AS school_postcode, cl.name AS council_name,
       d.first_name || ' ' || d.last_name AS driver_name, p.first_name || ' ' || p.last_name AS pa_name
     FROM contracts c
     LEFT JOIN schools s ON s.id = c.school_id
@@ -48,6 +49,11 @@ async function loadContracts(orgId, where = '', params = []) {
     LEFT JOIN staff d ON d.id = c.driver_id
     LEFT JOIN staff p ON p.id = c.pa_id
     WHERE c.organisation_id = ? ${where} ORDER BY c.code`, [orgId, ...params]);
+  // Dated driver and PA changes travel with the contract, so every date reads
+  // the person who held the seat on it rather than whoever holds it now.
+  const history = await staffing.loadStaffHistory(orgId, rows.map(c => c.id));
+  for (const c of rows) c.staff_history = history.get(c.id);
+  return rows;
 }
 
 async function loadChildrenByContract(orgId, contractIds) {
@@ -226,7 +232,7 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
       t.reason = riders.length > 0 ? 'All children absent' : 'No children scheduled';
     }
 
-    for (const role of ['driver', 'pa']) t[role] = staffForTrip(c, role, plan, ex);
+    for (const role of ['driver', 'pa']) t[role] = staffForTrip(c, role, plan, ex, date);
     // A staff absence with no cover does not stop the run. Whoever turned up
     // still did the job and is paid for it; the absent person is not; the
     // council is charged as usual; and the journey is flagged "No driver" or
@@ -322,10 +328,15 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
   return result;
 }
 
-/** Who is meant to work one trip, and whether anyone covered them. */
-function staffForTrip(c, role, plan, ex) {
-  const normalId = role === 'driver' ? c.driver_id : c.pa_id;
-  const normalName = role === 'driver' ? c.driver_name : c.pa_name;
+/**
+ * Who is meant to work one trip, and whether anyone covered them. The normal
+ * person is whoever held the seat on that date: a driver who handed over on
+ * the 13th is still the driver on the 12th.
+ */
+function staffForTrip(c, role, plan, ex, date) {
+  const holder = staffing.assignedOn(c, role, date);
+  const normalId = holder.staff_id;
+  const normalName = holder.staff_name;
   const required = role === 'driver' ? true : !!c.requires_pa;
   const info = {
     role, required, normal_staff_id: normalId, normal_name: normalName,
@@ -412,7 +423,12 @@ async function buildCalendar(orgId, from, to, filter = {}) {
   const params = [];
   if (filter.contract_id) { where += ' AND c.id = ?'; params.push(filter.contract_id); }
   if (filter.school_id) { where += ' AND c.school_id = ?'; params.push(filter.school_id); }
-  if (filter.staff_id) { where += ' AND (c.driver_id = ? OR c.pa_id = ?)'; params.push(filter.staff_id, filter.staff_id); }
+  if (filter.staff_id) {
+    // Someone who held a seat on any date in the past belongs on their calendar too.
+    where += ` AND (c.driver_id = ? OR c.pa_id = ?
+      OR c.id IN (SELECT contract_id FROM contract_staff WHERE organisation_id = ? AND staff_id = ?))`;
+    params.push(filter.staff_id, filter.staff_id, orgId, filter.staff_id);
+  }
 
   const ctx = await loadContext(orgId, from, to, where, params);
   const dates = dateRange(from, to);
@@ -420,7 +436,7 @@ async function buildCalendar(orgId, from, to, filter = {}) {
 
   for (const c of ctx.contracts) {
     if (filter.staff_id) {
-      const isNormal = c.driver_id === filter.staff_id || c.pa_id === filter.staff_id;
+      const isNormal = staffing.everAssigned(c, filter.staff_id);
       const isCover = ctx.exceptions.some(e => e.contract_id === c.id && e.cover_staff_id === filter.staff_id);
       if (!isNormal && !isCover) continue;
     }

@@ -57,15 +57,38 @@ App.views.contractDetail = async function ({ params }) {
     [
       App.can('calendar') ? h('button', { class: 'btn primary', onclick: () => Ops.dayDialog(c.id, D.today(), reload) }, 'Record exception today') : null,
       h('a', { class: 'btn', href: `#/calendar?contract=${c.id}` }, 'Calendar'),
+      App.can('edit') ? h('button', { class: 'btn', onclick: () => Rec.staffChange(c, reload) }, 'Change driver / PA') : null,
       App.can('edit') ? h('button', { class: 'btn', onclick: () => Rec.contractEditor(c) }, 'Edit') : null,
     ],
     [statusBadge(c.status)]);
 
+  // Who holds each seat today. After a handover the contract names the latest
+  // person, while the calendar and wages read whoever held it on each date.
+  const seat = role => {
+    const st = (c.staffing && c.staffing[role]) || {};
+    const latestId = role === 'driver' ? c.driver_id : c.pa_id;
+    const id = st.staff_id !== undefined ? st.staff_id : latestId;
+    const name = st.staff_id !== undefined ? st.staff_name : (role === 'driver' ? c.driver_name : c.pa_name);
+    const compliance = role === 'driver' ? c.driver_compliance : c.pa_compliance;
+    const required = role === 'driver' || !!c.requires_pa;
+    let hint = id && id === latestId ? 'Compliance: ' + fmt.titleCase(compliance || '—') : (required ? `Assign a ${role === 'driver' ? 'driver' : 'PA'}` : '');
+    if (st.upcoming) hint = `${st.upcoming.staff_name || 'Nobody'} takes over on ${fmt.date(st.upcoming.effective_from)}`;
+    else if (st.since) hint = `Since ${fmt.date(st.since)}${st.previous ? ` · before that ${st.previous.staff_name || 'nobody'}` : ''}`;
+    return {
+      label: role === 'driver' ? 'Driver' : 'Passenger assistant',
+      value: required ? (name || 'None') : 'Not required',
+      hint,
+      // Compliance belongs to the latest holder, so it only colours the tile when that is who is shown.
+      tone: required && !id ? 'red' : (id && id === latestId && compliance === 'red' ? 'red' : ''),
+      href: id ? '#/staff/' + id : `#/pool?type=${role}`,
+    };
+  };
+
   // headline figures
   const stats = h('div', { class: 'stats' },
     UI.stat({ label: 'Children', value: c.child_count, hint: 'Travelling on this route', href: '#/children?contract=' + c.id }),
-    UI.stat({ label: 'Driver', value: c.driver_name || 'None', hint: c.driver_id ? 'Compliance: ' + fmt.titleCase(c.driver_compliance || '—') : 'Assign a driver', tone: c.driver_id ? (c.driver_compliance === 'red' ? 'red' : '') : 'red', href: c.driver_id ? '#/staff/' + c.driver_id : '#/pool?type=driver' }),
-    UI.stat({ label: 'Passenger assistant', value: c.requires_pa ? (c.pa_name || 'None') : 'Not required', hint: c.pa_id ? 'Compliance: ' + fmt.titleCase(c.pa_compliance || '—') : (c.requires_pa ? 'Assign a PA' : ''), tone: c.requires_pa && !c.pa_id ? 'red' : '', href: c.pa_id ? '#/staff/' + c.pa_id : '#/pool?type=pa' }),
+    UI.stat(seat('driver')),
+    UI.stat(seat('pa')),
     UI.stat({
       label: 'Journeys per week',
       value: c.week.days.reduce((a, d) => a + d.trip_count, 0),
@@ -103,7 +126,8 @@ App.views.contractDetail = async function ({ params }) {
           ['Seats', c.vehicle_seats], ['Wheelchair accessible', c.vehicle_id ? (c.wheelchair_accessible ? 'Yes' : 'No') : null],
           ['AM notes', c.am_notes], ['PM notes', c.pm_notes],
         ]),
-        c.notes ? h('div', { class: 'note-box', style: 'margin-top:12px' }, c.notes) : null))),
+        c.notes ? h('div', { class: 'note-box', style: 'margin-top:12px' }, c.notes) : null)),
+      Rec.staffHistoryCard(c, reload)),
   });
 
   tabs.push({
@@ -218,6 +242,16 @@ Rec.contractEditor = async function (c) {
     title: c ? 'Edit ' + c.code : 'New contract',
     fields, values: c || { status: 'active', requires_pa: 1, days_of_week: '1,2,3,4,5', income_basis: 'per_journey', pay_basis: 'per_journey' },
     onSave: async v => {
+      // Swapping the person here applies to every date, past days included.
+      // A handover from a date belongs in "Change driver / PA" on the contract page.
+      const swapped = c && [['driver_id', 'driver'], ['pa_id', 'PA']].filter(([f]) => c[f] && String(v[f] || '') !== String(c[f] || ''));
+      if (swapped && swapped.length) {
+        const ok = await new Promise(resolve => UI.confirm(
+          `Changing the ${swapped.map(x => x[1]).join(' and ')} here rewrites who is recorded on every date of this contract, including days already worked and paid. ` +
+          'To hand over from a date, with the outgoing person keeping their earlier days, cancel and use "Change driver / PA" on the contract page. Rewrite every date?',
+          () => resolve(true), { title: 'Every date will change', yes: 'Rewrite every date', danger: true }));
+        if (!ok) throw new Error('Not saved. Use "Change driver / PA" on the contract page to hand over from a date.');
+      }
       const saved = c ? await api.put('/api/contracts/' + c.id, v) : await api.post('/api/contracts', v);
       UI.invalidateLookups();
       toast(c ? 'Contract updated — changes flow through to children, calendar and wages' : 'Contract created', 'ok');
@@ -225,6 +259,113 @@ Rec.contractEditor = async function (c) {
     },
     extraFooter: c && App.can('edit') ? h('button', { class: 'btn danger left', onclick: () => UI.confirmDelete(`Delete ${c.code}? This cannot be undone.`, async () => { await api.del('/api/contracts/' + c.id); App.state.lookups = null; toast('Contract deleted', 'ok'); Router.go('/contracts'); }) }, 'Delete') : null,
   });
+};
+
+/* ---------- dated driver and PA changes ----------
+   A handover is recorded from a date. The outgoing person keeps every earlier
+   day on the calendar and in wages; the incoming one is paid from the date. */
+const STAFF_OPENING_NOTE = 'Before any recorded change';
+
+Rec.staffHistoryCard = function (c, reload) {
+  const rows = ['driver', 'pa'].flatMap(role => ((c.staff_history && c.staff_history[role]) || []).map(v => ({ ...v, role })));
+  if (!rows.length) return null;
+  const today = D.today();
+  // Full width under the two detail cards, so the dates and notes have room.
+  const card = UI.cardTight('Driver and PA changes',
+    UI.table([
+      { key: 'role', label: 'Seat', value: v => v.role === 'driver' ? 'Driver' : 'PA' },
+      { key: 'staff_name', label: 'Person', value: v => v.staff_id ? h('a', { href: '#/staff/' + v.staff_id }, v.staff_name) : h('span', { class: 'badge red' }, 'Nobody') },
+      { key: 'effective_from', label: 'From', nowrap: true, value: v => v.note === STAFF_OPENING_NOTE ? 'Start of contract'
+        : h('span', null, fmt.date(v.effective_from), v.effective_from > today ? h('span', { class: 'badge amber', style: 'margin-left:6px' }, 'Upcoming') : null), sort: v => v.effective_from },
+      { key: 'note', label: 'Note', value: v => v.note === STAFF_OPENING_NOTE ? h('span', { style: 'color:var(--text-dim)' }, 'Held the seat before the first change') : (v.note || '') },
+    ], rows, { sortKey: 'effective_from', sortDir: -1 }),
+    App.can('edit') ? h('button', { class: 'btn xs', onclick: () => Rec.staffChange(c, reload) }, 'Change') : null);
+  card.style.gridColumn = '1 / -1';
+  return card;
+};
+
+Rec.staffChange = async function (c, reload) {
+  const L = await UI.lookups();
+  let data;
+  try { data = await api.get(`/api/contracts/${c.id}/staff`); }
+  catch (e) { return toast(e.message, 'err'); }
+  const people = { driver: L.drivers, pa: L.pas };
+
+  const roleSel = h('select', null,
+    h('option', { value: 'driver' }, `Driver (now ${data.summary.driver.staff_name || 'nobody'})`),
+    h('option', { value: 'pa' }, `PA (now ${data.summary.pa.staff_name || 'nobody'})`));
+  const whoSel = h('select');
+  const fromInput = h('input', { type: 'date', value: D.today() });
+  const noteInput = h('input', { type: 'text', placeholder: 'e.g. John leaving, Sam takes the route', autocomplete: 'off' });
+  const fillWho = () => {
+    whoSel.innerHTML = '';
+    whoSel.appendChild(h('option', { value: '' }, '— nobody —'));
+    for (const x of people[roleSel.value]) whoSel.appendChild(h('option', { value: x.id }, `${x.name}${x.status === 'pool' ? ' (pool)' : ''}`));
+  };
+  const historyBox = h('div', { class: 'sd-versions', style: 'margin-top:12px' });
+  const drawHistory = () => {
+    const rows = data[roleSel.value] || [];
+    historyBox.innerHTML = '';
+    if (!rows.length) {
+      historyBox.appendChild(h('span', { style: 'color:var(--text-dim)' }, 'No handover recorded yet: the person on the contract applies to every date.'));
+      return;
+    }
+    historyBox.appendChild(h('strong', 'Recorded: '));
+    for (const v of rows) {
+      historyBox.appendChild(h('span', { class: 'badge ' + (v.in_force ? 'green' : '') },
+        `${v.staff_name || 'Nobody'} ${v.opening ? 'before the first change' : 'from ' + fmt.date(v.effective_from)}${v.in_force ? ' (in force)' : ''}`,
+        App.can('edit') && !v.opening ? h('button', {
+          class: 'x', style: 'font-size:14px;padding:0 3px', title: 'Remove this change',
+          onclick: () => UI.confirm(
+            `Remove the change dated ${fmt.date(v.effective_from)}? Days from that date go back to whoever held the seat before it, which changes wages not yet paid for those days.`,
+            async () => {
+              try { await api.del(`/api/contracts/${c.id}/staff/${v.id}`); toast('Change removed', 'ok'); UI.invalidateLookups(); dlg.close(); reload(); }
+              catch (e) { toast(e.message, 'err'); }
+            }),
+        }, '×') : null));
+    }
+  };
+  roleSel.onchange = () => { fillWho(); drawHistory(); };
+  fillWho();
+  drawHistory();
+
+  const field = (label, input, help) => h('div', { class: 'field' }, h('label', label), input, help ? h('div', { class: 'help' }, help) : null);
+  const saveBtn = h('button', { class: 'btn primary' }, 'Record handover');
+  const dlg = UI.modal({
+    title: `Change driver or PA — ${c.code}`,
+    body: h('div', null,
+      h('div', { class: 'note-box', style: 'margin-bottom:12px' },
+        h('strong', 'Hand the seat over from a date.'),
+        h('div', { style: 'margin-top:4px' },
+          'The outgoing person keeps every day before it on the calendar and in wages, and is paid for those days as normal. The new person is paid from the date you give. Nothing already worked or paid is rewritten.')),
+      h('div', { class: 'form-grid' },
+        field('Which seat', roleSel),
+        field('Who takes it', whoSel, 'Choose nobody to leave the seat empty from that date.'),
+        field('From', fromInput, 'The first day the new person works it.'),
+        field('Note', noteInput)),
+      historyBox),
+    footer: [h('button', { class: 'btn', onclick: () => dlg.close() }, 'Cancel'), saveBtn],
+  });
+
+  saveBtn.onclick = async () => {
+    const from = fromInput.value;
+    if (!from) { fromInput.focus(); return toast('Choose the date the change takes effect', 'err'); }
+    const save = async () => {
+      saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+      try {
+        await api.post(`/api/contracts/${c.id}/staff`, { role: roleSel.value, staff_id: whoSel.value || null, effective_from: from, note: noteInput.value || null });
+        UI.invalidateLookups();
+        toast('Handover recorded — the calendar and wages follow it from that date', 'ok');
+        dlg.close();
+        reload();
+      } catch (e) { toast(e.message, 'err'); saveBtn.disabled = false; saveBtn.textContent = 'Record handover'; }
+    };
+    if (from < D.today()) {
+      UI.confirm(
+        `${fmt.date(from)} is in the past. Days from that date will be worked out again with the new person, which changes wages not yet paid for those days. Days before it are untouched. Continue?`,
+        save, { yes: 'Record anyway', danger: false });
+    } else await save();
+  };
 };
 
 /* =========================================================
@@ -460,7 +601,7 @@ App.views.staffDetail = async function ({ params }) {
      h('a', { class: 'btn', href: `#/calendar?staff=${s.id}` }, 'Calendar')],
     [rag(s.compliance.status), statusBadge(s.status)]);
 
-  const activeContracts = s.contracts.filter(c => c.status === 'active');
+  const activeContracts = s.contracts.filter(c => c.status === 'active' && c.current !== false);
   const stats = h('div', { class: 'stats' },
     UI.stat({ label: 'Active contracts', value: activeContracts.length, hint: activeContracts.map(c => c.code).join(', ') || 'None assigned' }),
     UI.stat({ label: 'Children transported', value: s.children.length }),
@@ -485,7 +626,7 @@ App.views.staffDetail = async function ({ params }) {
       render: () => h('div', null,
         UI.cardTight('Assigned contracts', UI.table([
           { key: 'code', label: 'Contract', value: c => h('a', { href: '#/contracts/' + c.id }, h('strong', c.code)) },
-          { key: 'role', label: 'Role', value: c => h('span', { class: 'badge blue' }, c.role === 'driver' ? 'Driver' : 'PA') },
+          { key: 'role', label: 'Role', value: c => h('span', null, h('span', { class: 'badge blue' }, c.role === 'driver' ? 'Driver' : 'PA'), c.current === false ? h('span', { class: 'badge', style: 'margin-left:4px', title: 'Held this seat before a recorded handover' }, 'Former') : null) },
           { key: 'school_name', label: 'School', value: c => c.school_id ? h('a', { href: '#/schools/' + c.school_id }, c.school_name) : '—' },
           { key: 'council_name', label: 'Council' },
           { key: 'child_count', label: 'Children', num: true },

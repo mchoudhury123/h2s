@@ -664,6 +664,65 @@ async function main() {
   is((await wages.calculateWages(orgId, { ...WEEK, all_staff: true, type: 'pa' })).results.every(r => r.staff.type === 'pa'), true, 'the type filter still applies');
   await run('DELETE FROM staff WHERE organisation_id = ? AND id IN (?,?)', [orgId, idleId, goneId]);
 
+  section('20. A driver handover from a date leaves the outgoing driver\'s pay alone');
+  const staffing = require('../server/services/staffing');
+  const contractRow = async () => (await cal.loadContracts(orgId, ' AND c.id = ?', [contractId]))[0];
+  const handover = await staffing.recordChange(orgId, await contractRow(), { role: 'driver', staff_id: cover2Id, effective_from: '2026-09-10', note: 'John leaving', created_by: 'test' });
+  is(handover.was.staff_name, 'John Normal', 'the change records who held the seat before it');
+  const c20 = await contractRow();
+  is(c20.driver_id, cover2Id, 'the contract now names the incoming driver');
+  is(c20.staff_history.driver.map(v => [v.effective_from, v.staff_id]), [['2026-09-10', cover2Id], ['2026-09-01', driverId]], 'two dated rows: the handover and an opening row from the contract start keeping John');
+  is(AM(await day('2026-09-09')).driver.normal_staff_id, driverId, 'Wednesday is still John');
+  is(AM(await day('2026-09-10')).driver.normal_staff_id, cover2Id, 'Thursday is Sam');
+  is(AM(await day('2026-09-10')).driver.normal_name, 'Sam Second', 'by name');
+  is((await wagesFor('John Normal')).totals.amount_due, 180, 'John is owed Monday to Wednesday');
+  is((await wagesFor('Sam Second')).totals.amount_due, 120, 'Sam is owed Thursday and Friday');
+  is((await wagesFor('Sam Second')).totals.normal_days, 2, 'as two normal days, not cover');
+  is((await wagesFor('Linda Assist')).totals.amount_due, 200, 'the PA is untouched');
+  is((await day('2026-09-10')).income, 100, 'and so is the council charge');
+  is((await cal.buildCalendar(orgId, WEEK.from, WEEK.to, { staff_id: driverId })).rows.some(r => r.contract.id === contractId), true, "the contract stays on John's calendar");
+  is((await cal.buildCalendar(orgId, WEEK.from, WEEK.to, { staff_id: cover2Id })).rows.some(r => r.contract.id === contractId), true, "and is on Sam's");
+  is(staffing.assignedOn(c20, 'driver', '2026-09-09').staff_id, driverId, "an absence recorded for Wednesday is John's");
+  is(staffing.assignedOn(c20, 'driver', '2026-09-10').staff_id, cover2Id, "one for Thursday is Sam's");
+  const samOff = await addEx({ date: '2026-09-11', type: 'staff_absence', leg: 'DAY', contract_id: contractId, role: 'driver', staff_id: cover2Id, cover_staff_id: coverId, cover_pay: 70 });
+  is((await wagesFor('Sam Second')).totals.amount_due, 60, 'Sam absent on Friday loses that day');
+  is((await wagesFor('Ahmed Cover')).totals.cover_earnings, 70, 'and his cover is paid');
+  is((await wagesFor('John Normal')).totals.amount_due, 180, 'John is unchanged by it');
+  await run('DELETE FROM exceptions WHERE organisation_id = ? AND id = ?', [orgId, samOff]);
+  const paidJohn = await wages.payDays(orgId, driverId, { from: '2026-09-07', to: '2026-09-09', created_by: 'test' });
+  is(paidJohn.total, 180, 'John can be paid his three days');
+  is((await wagesFor('John Normal')).totals.amount_due, 0, 'and then nothing is due');
+  let afterHandover = null;
+  try { await wages.payDays(orgId, driverId, { from: '2026-09-10', to: '2026-09-11' }); } catch (e) { afterHandover = e.message; }
+  is(afterHandover, 'Nothing is outstanding for those days', 'John cannot be paid for days after the handover');
+  await run('DELETE FROM payments WHERE organisation_id = ? AND staff_id = ?', [orgId, driverId]);
+  let again = null;
+  try { await staffing.recordChange(orgId, await contractRow(), { role: 'driver', staff_id: cover2Id, effective_from: '2026-09-14', created_by: 'test' }); } catch (e) { again = e.message; }
+  is(again, 'Sam Second already holds the driver seat on 2026-09-14', 'the same person cannot be handed the seat twice');
+  let wrongType = null;
+  try { await staffing.recordChange(orgId, await contractRow(), { role: 'driver', staff_id: paId, effective_from: '2026-09-14', created_by: 'test' }); } catch (e) { wrongType = e.message; }
+  is(wrongType, 'Linda Assist is a PA, not a driver', 'a PA cannot be made the driver');
+  const before10 = staffing.summary(c20, c20.staff_history, '2026-09-09');
+  is([before10.driver.staff_name, before10.driver.upcoming.staff_name, before10.driver.upcoming.effective_from], ['John Normal', 'Sam Second', '2026-09-10'], 'on the 9th the page says John, with Sam next from the 10th');
+  const from10 = staffing.summary(c20, c20.staff_history, '2026-09-10');
+  is([from10.driver.staff_name, from10.driver.since, from10.driver.previous.staff_name, from10.driver.previous.until], ['Sam Second', '2026-09-10', 'John Normal', '2026-09-09'], 'from the 10th it says Sam since the 10th, John until the 9th');
+  is(from10.pa.changes, 0, 'the PA seat has no changes');
+  // The contract form picks a different driver: that corrects the latest holder only.
+  await staffing.correctLatest(orgId, contractId, 'driver', coverId);
+  await run('UPDATE contracts SET driver_id = ? WHERE organisation_id = ? AND id = ?', [coverId, orgId, contractId]);
+  is(AM(await day('2026-09-10')).driver.normal_staff_id, coverId, 'correcting the driver on the form changes the latest holder');
+  is(AM(await day('2026-09-09')).driver.normal_staff_id, driverId, 'and not the earlier one');
+  await staffing.recordChange(orgId, await contractRow(), { role: 'driver', staff_id: null, effective_from: '2026-09-11', created_by: 'test' });
+  is(AM(await day('2026-09-11')).driver.status, 'unassigned', 'a seat handed to nobody shows unassigned from that date');
+  is((await contractRow()).driver_id, null, 'and the contract has no driver');
+  is(AM(await day('2026-09-10')).driver.normal_staff_id, coverId, 'while the day before keeps its driver');
+  for (const v of (await contractRow()).staff_history.driver.filter(v => v.effective_from >= '2026-09-10')) {
+    await staffing.removeChange(orgId, await contractRow(), v.id);
+  }
+  is((await contractRow()).driver_id, driverId, 'removing the changes hands the seat back to John');
+  is((await contractRow()).staff_history.driver.length, 0, 'and the opening row goes with the last change');
+  is((await wagesFor('John Normal')).totals.amount_due, 300, 'who is owed the whole week again');
+
   console.log(`\n${pass} passed, ${fail} failed on ${database.describe}`);
   return fail;
 }

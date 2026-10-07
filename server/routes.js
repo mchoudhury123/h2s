@@ -13,6 +13,7 @@ const auth = require('./services/auth');
 const audit = require('./services/audit');
 const cal = require('./services/calendar');
 const sched = require('./services/schedule');
+const staffing = require('./services/staffing');
 const compliance = require('./services/compliance');
 const wages = require('./services/wages');
 const finance = require('./services/finance');
@@ -302,8 +303,16 @@ crud('staff', 'staff', {
       FROM contracts c
       LEFT JOIN schools s ON s.id = c.school_id
       LEFT JOIN councils cl ON cl.id = c.council_id
-      WHERE c.organisation_id = ? AND (c.driver_id = ? OR c.pa_id = ?) ORDER BY c.status, c.code`, [org, id, id]);
-    for (const c of row.contracts) c.role = c.driver_id === id ? 'driver' : 'pa';
+      WHERE c.organisation_id = ? AND (c.driver_id = ? OR c.pa_id = ?
+        OR c.id IN (SELECT contract_id FROM contract_staff WHERE organisation_id = ? AND staff_id = ?))
+      ORDER BY c.status, c.code`, [org, id, id, org, id]);
+    // A contract they held once but handed over is listed as former.
+    const held = await all('SELECT DISTINCT contract_id, role FROM contract_staff WHERE organisation_id = ? AND staff_id = ?', [org, id]);
+    for (const c of row.contracts) {
+      c.current = c.driver_id === id || c.pa_id === id;
+      const past = held.find(x => x.contract_id === c.id);
+      c.role = c.driver_id === id ? 'driver' : c.pa_id === id ? 'pa' : (past ? past.role : 'driver');
+    }
     row.children = await all(`SELECT ch.id, ch.first_name, ch.last_name, ch.wheelchair, ch.sen_needs, ch.pickup_time, ch.dropoff_time,
         c.code AS contract_code, c.id AS contract_id, s.name AS school_name
       FROM children ch
@@ -448,6 +457,10 @@ crud('contracts', 'contracts', {
     const scheduleVersions = (await sched.loadSchedules(org, [id])).get(id) || [];
     row.week = sched.weekSummary(row, scheduleVersions, cal.today());
     row.schedule_versions = scheduleVersions.length;
+    // Who holds each seat today, who is next and who came before.
+    const staffHistory = (await staffing.loadStaffHistory(org, [id])).get(id);
+    row.staff_history = staffHistory;
+    row.staffing = staffing.summary(row, staffHistory, cal.today());
     row.history = await audit.history(org, 'contracts', id, 50);
     return row;
   },
@@ -469,6 +482,14 @@ crud('contracts', 'contracts', {
     // Changing a contract's school re-points its children so the hierarchy stays consistent.
     if (before && row.school_id !== before.school_id && row.school_id) {
       await run('UPDATE children SET school_id = ? WHERE contract_id = ? AND organisation_id = ?', [row.school_id, row.id, org]);
+    }
+    // A driver or PA picked on the form is a correction of the latest holder.
+    // Dated handovers already recorded keep their earlier people; to hand a
+    // seat over from a date, the contract page's "Change driver / PA" is used.
+    if (before) {
+      for (const [role, col] of [['driver', 'driver_id'], ['pa', 'pa_id']]) {
+        if ((row[col] || null) !== (before[col] || null)) await staffing.correctLatest(org, row.id, role, row[col]);
+      }
     }
   },
   resolve: async (org, col, v) => {
@@ -925,6 +946,16 @@ route('POST', '/api/exceptions', async ctx => {
     }
   }
 
+  // The absent person is whoever held the seat on that date, which after a
+  // handover is not necessarily the contract's current driver or PA. Loaded
+  // here, before the transaction, through the pool.
+  let absenceContract = null;
+  if (b.type === 'staff_absence') {
+    if (!b.role) return H.error(ctx.res, 'Select whether the driver or the PA is absent');
+    absenceContract = (await cal.loadContracts(ctx.org, ' AND c.id = ?', [Number(b.contract_id)]))[0];
+    if (!absenceContract) return H.error(ctx.res, 'Contract not found', 404);
+  }
+
   const created = [];
   try {
     await transaction(async tx => {
@@ -933,12 +964,8 @@ route('POST', '/api/exceptions', async ctx => {
         delete data.dates;
         delete data.organisation_id;
         if (data.type === 'staff_absence') {
-          if (!data.role) throw new Error('Select whether the driver or the PA is absent');
-          const c = await tx.get(
-            'SELECT driver_id, pa_id, code, driver_pay_per_day, pa_pay_per_day FROM contracts WHERE id = ? AND organisation_id = ?',
-            [Number(data.contract_id), ctx.org]);
-          if (!c) throw new Error('Contract not found');
-          data.staff_id = data.role === 'driver' ? c.driver_id : c.pa_id;
+          const c = absenceContract;
+          data.staff_id = staffing.assignedOn(c, data.role, date).staff_id;
           if (data.cover_staff_id && data.cover_pay === undefined) {
             const base = data.role === 'driver' ? c.driver_pay_per_day : c.pa_pay_per_day;
             data.cover_pay = cal.round2(base * (data.leg === 'DAY' || !data.leg ? 1 : 0.5));
@@ -1242,6 +1269,73 @@ route('DELETE', '/api/contracts/:id/schedule/:scheduleId', async ctx => {
   await run('DELETE FROM contract_schedules WHERE id = ? AND organisation_id = ?', [row.id, ctx.org]);
   await audit.logAction(ctx.user, 'contracts', id, contract.code, 'schedule',
     `Removed the weekly pattern that started ${compliance.ukDate(row.effective_from)}`);
+  H.json(ctx.res, { ok: true });
+});
+
+// ---------------------------------------------------------------- dated driver and PA changes
+
+function staffingPayload(contract, history, on) {
+  const inForce = role => staffing.versionOn(history[role], on);
+  const rows = role => history[role].map(v => ({
+    ...v, in_force: !!inForce(role) && inForce(role).id === v.id, opening: v.note === staffing.OPENING_NOTE,
+  }));
+  return {
+    contract_id: contract.id, date: on,
+    driver: rows('driver'), pa: rows('pa'),
+    summary: staffing.summary(contract, history, on),
+  };
+}
+
+/** Every dated driver and PA change on a contract, and who is in force on a date. */
+route('GET', '/api/contracts/:id/staff', async ctx => {
+  const id = Number(ctx.params.id);
+  const contract = (await cal.loadContracts(ctx.org, ' AND c.id = ?', [id]))[0];
+  if (!contract) return H.error(ctx.res, 'Contract not found', 404);
+  const on = DATE_RX.test(ctx.query.date || '') ? ctx.query.date : cal.today();
+  H.json(ctx.res, staffingPayload(contract, contract.staff_history, on));
+});
+
+/**
+ * Hands a seat over from a date. The outgoing person keeps every earlier
+ * day, the incoming one is paid from the date given, and nothing already
+ * worked, paid or invoiced is rewritten. A change already recorded for the
+ * same date is replaced.
+ */
+route('POST', '/api/contracts/:id/staff', async ctx => {
+  const id = Number(ctx.params.id);
+  const contract = (await cal.loadContracts(ctx.org, ' AND c.id = ?', [id]))[0];
+  if (!contract) return H.error(ctx.res, 'Contract not found', 404);
+  const b = ctx.body || {};
+  let result;
+  try {
+    result = await staffing.recordChange(ctx.org, contract, {
+      role: b.role, staff_id: b.staff_id, effective_from: b.effective_from, note: b.note, created_by: ctx.user.name,
+    });
+  } catch (e) { return H.error(ctx.res, friendly(e), 400); }
+
+  const from = String(b.effective_from).slice(0, 10);
+  const after = (await cal.loadContracts(ctx.org, ' AND c.id = ?', [id]))[0];
+  const now = staffing.assignedOn(after, b.role, from);
+  const who = b.role === 'driver' ? 'Driver' : 'PA';
+  await audit.logAction(ctx.user, 'contracts', id, contract.code, 'staffing',
+    `${who} from ${compliance.ukDate(from)}: ${now.staff_name || 'nobody'}` +
+    `${result.was.staff_name ? ` (was ${result.was.staff_name})` : ''}${b.note ? ` — ${b.note}` : ''}`);
+  H.json(ctx.res, {
+    id: result.id,
+    rewrites_history: from < cal.today(),
+    ...staffingPayload(after, after.staff_history, cal.today()),
+  }, 201);
+});
+
+/** Removes one recorded change. Dates from it follow whichever earlier change applies. */
+route('DELETE', '/api/contracts/:id/staff/:rowId', async ctx => {
+  const id = Number(ctx.params.id);
+  const contract = await owned('contracts', id, ctx.org);
+  if (!contract) return H.error(ctx.res, 'Contract not found', 404);
+  const row = await staffing.removeChange(ctx.org, contract, ctx.params.rowId);
+  if (!row) return H.error(ctx.res, 'That change was not found', 404);
+  await audit.logAction(ctx.user, 'contracts', id, contract.code, 'staffing',
+    `Removed the ${row.role === 'driver' ? 'driver' : 'PA'} change dated ${compliance.ukDate(String(row.effective_from).slice(0, 10))}`);
   H.json(ctx.res, { ok: true });
 });
 

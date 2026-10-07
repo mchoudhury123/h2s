@@ -163,6 +163,26 @@ const TABLES = [
     notes TEXT
   )`,
   `CREATE INDEX IF NOT EXISTS idx_contract_trips_day ON contract_trips(schedule_id, weekday, seq)`,
+  // Who holds the driver and PA seats on a contract, dated. A contract's own
+  // driver_id and pa_id name the latest holder; a handover is a row here taking
+  // effect on a date, and the journey engine reads the person in force on each
+  // date. The outgoing driver keeps every day before the change, the incoming
+  // one is paid from it, and nothing already worked is rewritten. A null
+  // staff_id means nobody holds the seat from that date.
+  `CREATE TABLE IF NOT EXISTS contract_staff (
+    id {{PK}},
+    organisation_id ${ORG},
+    contract_id {{INT}} NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK (role IN ('driver','pa')),
+    staff_id {{INT}} REFERENCES staff(id) ON DELETE SET NULL,
+    effective_from TEXT NOT NULL,
+    note TEXT,
+    created_by TEXT,
+    created_at TEXT NOT NULL DEFAULT {{NOW}}
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_contract_staff_from
+     ON contract_staff(contract_id, role, effective_from)`,
+  `CREATE INDEX IF NOT EXISTS idx_contract_staff_staff ON contract_staff(organisation_id, staff_id)`,
   `CREATE TABLE IF NOT EXISTS children (
     id {{PK}},
     organisation_id ${ORG},
@@ -388,7 +408,7 @@ function statements(dialect) {
 
 // Order matters for deletes and for copying rows between databases.
 const TABLE_ORDER = ['organisations', 'settings', 'users', 'user_organisations', 'councils', 'schools', 'staff', 'vehicles',
-  'contracts', 'contract_schedules', 'contract_trips', 'children', 'contract_trip_children',
+  'contracts', 'contract_staff', 'contract_schedules', 'contract_trips', 'children', 'contract_trip_children',
   'child_timetables', 'child_timetable_days', 'documents', 'exceptions', 'payroll_runs', 'payments',
   'payroll_run_lines', 'expenses', 'invoices', 'audit_log'];
 

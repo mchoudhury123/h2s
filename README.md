@@ -144,7 +144,7 @@ The same application fits a phone without a separate build. Under 900px the side
 ### Tests
 
 ```
-npm test                 # 176 business-rule tests
+npm test                 # 304 business-rule tests
 npm run test:performance  # schema checks, dropdown queries/cache and button responsiveness
 npm run test:isolation   # 92 checks that one firm cannot reach another's data
 npm run test:auth        # registration, sign-in and separation, in a browser
@@ -155,6 +155,7 @@ npm run test:schedules   # weekly schedules and child timetables, in a browser
 npm run test:invoicing   # invoice numbering, day counting, snapshots and PDFs
 npm run test:cover       # one driver absent, a different cover on each journey, in a browser
 npm run test:paydays     # ticking off days a driver was already paid for, in a browser
+npm run test:handover    # one driver replaces another from a date, through the dialog, in a browser
 ```
 
 The browser suites expect Chrome at the default Windows location and the server already running. The walkthrough suites (`test:browser`, `test:workflow` and `test:schedules`) sign in as the seeded sample business, so run them against a local SQLite server after `npm run seed`, or point them at a filled business of your own with `USER_EMAIL` and `USER_PASS`. A live database with only a real, empty firm on it has nothing for them to walk through.
@@ -184,7 +185,7 @@ Council  →  Contract / route  →  School  →  Children
           Staff pay  →  Contract profitability
 ```
 
-**Information is entered once.** A child's school, driver, PA, vehicle and route all come from the contract they travel on. Reassign the driver on a contract and every child's profile, the calendar, the wage calculation and the school page all change at the same moment, because none of them store a copy.
+**Information is entered once.** A child's school, driver, PA, vehicle and route all come from the contract they travel on. Reassign the driver on a contract and every child's profile, the calendar, the wage calculation and the school page all change at the same moment, because none of them store a copy. A driver who hands a route over is recorded as a dated change, so the days they already worked stay theirs.
 
 **Journeys are never created by hand.** A contract has operating days, a start date and an end date, and it may have a weekly schedule saying how many journeys each weekday really has. From those the system generates the journeys for every date, forever. Nobody confirms a normal day.
 
@@ -260,6 +261,10 @@ The profile also shows who they travel with, their assigned driver and PA, and t
 Contract code, council, school, every child travelling, assigned driver and PA, vehicle, route, standard timings, operating days, start and end dates, status, and the normal weekly schedule with the number of journeys on each day. Financially: income per day, driver pay, PA pay, other direct costs, expected profit and margin, plus actual performance for the current month drawn from journeys that really operated.
 
 Three children in one vehicle each keep their own profile and all appear under the same contract.
+
+**Handing a route over.** When one driver or PA replaces another, **Change driver / PA** on the contract page records who takes the seat and from which date. The outgoing person keeps every day before that date on the calendar and in wages, and is paid for them as normal; the incoming person is paid from the date given; the council charge does not change. Nothing already worked, paid or invoiced is rewritten. A change can be dated ahead, so next Monday's handover can be entered today, and the page says who takes over and when. Choosing nobody leaves the seat empty from that date. Every change is listed on the contract's Overview and can be removed, which hands the days back to whoever held the seat before it.
+
+The contract names its latest driver and PA, which is what lists, search, the dashboard and the staff pool show; the calendar, the day panel, absences and wages read whoever held the seat on each date. Picking a different person on the contract's Edit form is a correction rather than a handover: it changes who is recorded on every date (or, once handovers exist, the latest one), and the form says so before saving. Someone who handed a route over still sees it on their own page, marked as former.
 
 ### Drivers and passenger assistants
 

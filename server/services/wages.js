@@ -2,7 +2,7 @@
 // Wage calculation engine. Every figure is derived from the journeys a contract
 // was scheduled to run, plus the exceptions recorded against them, and every
 // line traces back to a date, a contract, a trip and a reason.
-const { all, insert, transaction } = require('../db');
+const { all, get, insert, transaction } = require('../db');
 const cal = require('./calendar');
 const { round2 } = cal;
 
@@ -219,7 +219,13 @@ async function daysOwed(orgId, staffId, from, to) {
  */
 async function payDays(orgId, staffId, { from, to, amount, paid_date, method, reference, note, created_by }) {
   const owed = await daysOwed(orgId, staffId, from, to);
-  if (!owed.staff) throw new Error('Staff member not found');
+  if (!owed.staff) {
+    // Someone with no journeys at all in the range (after a handover, say) is
+    // simply owed nothing, which is different from not existing.
+    const person = await get('SELECT id FROM staff WHERE id = ? AND organisation_id = ?', [Number(staffId), orgId]);
+    if (!person) throw new Error('Staff member not found');
+    throw new Error('Nothing is outstanding for those days');
+  }
   const days = owed.days.filter(d => d.due > 0);
   if (!days.length) throw new Error('Nothing is outstanding for those days');
   let amounts = days.map(d => d.due);

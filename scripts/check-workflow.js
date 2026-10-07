@@ -272,6 +272,9 @@ async function go(page, hash, heading) {
     return s.options[3].textContent.replace(' (pool)', '');
   });
   await clickButton(page, 'Save');
+  // Swapping the driver on the form rewrites every date, so the form asks first.
+  await page.waitForFunction(() => [...document.querySelectorAll('.modal')].some(m => m.textContent.includes('Every date will change')), { timeout: 25000 });
+  ok(await clickButton(page, 'Rewrite every date'), 'the form warns that a plain driver swap applies to every date, and offers the dated handover instead');
   await sleep(1500);
   await go(page, '/children/' + childId, 'Workflow Child');
   const childAfter = await page.$eval('#view', e => e.textContent);
