@@ -608,11 +608,22 @@ function absenceSpan(day, e) {
   return t && !isSimpleDay(day) ? t.label : e.leg;
 }
 
+/* Who holds the driver or PA seat on this date. After a dated handover the
+   contract names its latest person, who may not hold the seat yet, so the
+   day's own journeys are asked first. Only that person is kept off the cover
+   list: they cannot cover themselves, but the incoming driver can cover the
+   outgoing one before the handover. */
+function seatHolderOn(day, role, contract) {
+  const trip = day && day.trips ? day.trips.find(t => t[role] && t[role].normal_staff_id) : null;
+  if (trip) return trip[role].normal_staff_id;
+  return role === 'driver' ? contract.driver_id : contract.pa_id;
+}
+
 /* absence + cover in a single step */
 Ops.absenceDialog = function (contract, date, role, scope, day, refresh, markDirty) {
   const lookups = App.state.lookups;
   const pool = role === 'driver' ? lookups.drivers : lookups.pas;
-  const normalId = role === 'driver' ? contract.driver_id : contract.pa_id;
+  const normalId = seatHolderOn(day, role, contract);
   const covered = scopeTrips(day, scope);
   // Cover is worth what the journeys it covers are worth.
   const suggested = Math.round(covered.reduce((a, t) => a + (role === 'driver' ? t.driver_rate : t.pa_rate), 0) * 100) / 100;
@@ -663,7 +674,7 @@ Ops.absenceDialog = function (contract, date, role, scope, day, refresh, markDir
 Ops.coverDialog = function (contract, date, role, exception, day, refresh, markDirty) {
   const lookups = App.state.lookups;
   const editing = !!exception.cover_staff_id;
-  const normalId = role === 'driver' ? contract.driver_id : contract.pa_id;
+  const normalId = exception.staff_id || seatHolderOn(day, role, contract);
   const pool = (role === 'driver' ? lookups.drivers : lookups.pas).filter(p => p.id !== normalId);
   const covered = scopeTrips(day, exception);
   const suggested = Math.round(covered.reduce((a, t) => a + (role === 'driver' ? t.driver_rate : t.pa_rate), 0) * 100) / 100;

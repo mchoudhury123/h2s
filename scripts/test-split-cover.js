@@ -150,6 +150,21 @@ async function main() {
     await page.waitForFunction(() => !window.driverBox().textContent.includes('Ahmed Morning'));
     assert.deepEqual(await page.evaluate(() => window.driverButtons()), ['Edit cover', 'Undo absence', 'Absent AM']);
 
+    // After a dated handover the contract names the incoming driver, but on a
+    // date before it the outgoing driver still holds the seat: he is the one
+    // kept off the cover list, and the incoming driver can cover him.
+    await page.evaluate(({ contract, coverAm }) => api.post(`/api/contracts/${contract}/staff`, { role: 'driver', staff_id: coverAm, effective_from: '2026-09-21' }), { contract, coverAm });
+    await page.evaluate(() => { for (const m of document.querySelectorAll('.modal')) m.remove(); UI.openModals.clear(); });
+    await page.evaluate(({ contract, date }) => Ops.dayDialog(contract, date, () => {}), { contract, date: DATE });
+    await page.waitForFunction(() => document.querySelectorAll('.modal').length === 1 && window.driverBox());
+    await page.evaluate(() => window.clickDriver('Absent AM'));
+    await page.waitForFunction(() => document.querySelectorAll('.modal').length === 2);
+    const offered = await page.evaluate(() => [...[...document.querySelectorAll('.modal')].at(-1).querySelector('[name=cover_staff_id]').options].map(o => o.textContent));
+    assert.ok(offered.some(o => o.startsWith('Ahmed Morning')), 'the incoming driver is offered as cover before his start date');
+    assert.ok(!offered.some(o => o.startsWith('Mohammed Anees')), 'the driver who holds the seat that day is not');
+    await page.evaluate(id => window.recordCover(id), coverAm);
+    await page.waitForFunction(() => document.querySelectorAll('.modal').length === 1 && window.driverBox().textContent.includes('covered by Ahmed Morning'));
+
     assert.deepEqual(errors, []);
     console.log('Split cover browser checks passed: AM then PM absence with different covers, per-journey cover pay, cover edited in place with the payment record following, clash refused, undo re-offers the journey.');
   } finally { await browser.close(); }
