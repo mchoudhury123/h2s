@@ -12,6 +12,7 @@
 const crypto = require('crypto');
 const { all, get, run, transaction, getSetting, setSetting, insert } = require('../db');
 const cal = require('./calendar');
+const rates = require('./rates');
 const { Pdf } = require('../pdf');
 const { round2 } = cal;
 
@@ -206,11 +207,14 @@ async function preview(orgId, { from, to, contract_ids = null, invoice_date = nu
   sql += ' ORDER BY c.code';
   const contracts = await all(sql, params);
   const days = await chargeableDays(orgId, from, to, ids);
+  // The day rate shown on the invoice is the one in force at the end of the
+  // period; the engine's income already applies each date's own rate.
+  const rateHistory = await rates.loadRateHistory(orgId, contracts.map(c => c.id));
 
   const rows = [];
   for (const c of contracts) {
     const b = days.get(c.id) || emptyBreakdown();
-    const rate = round2(c.income_per_day || 0);
+    const rate = round2(rates.ratesOn({ ...c, rate_history: rateHistory.get(c.id) }, to).income_per_day || 0);
     const overlaps = await overlapping(orgId, c.id, from, to);
     const warnings = [];
     if (!c.po_number) warnings.push({ level: 'block', text: 'No PO number on this contract. Add one on the Rates & PO numbers tab before invoicing.' });

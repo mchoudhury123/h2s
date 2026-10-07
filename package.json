@@ -16,6 +16,7 @@
     "test:cover": "node --experimental-sqlite --no-warnings scripts/test-split-cover.js",
     "test:paydays": "node --experimental-sqlite --no-warnings scripts/test-pay-days.js",
     "test:handover": "node --experimental-sqlite --no-warnings scripts/test-handover.js",
+    "test:rates": "node --experimental-sqlite --no-warnings scripts/test-rates.js",
     "test:performance": "node --experimental-sqlite --no-warnings scripts/check-performance.js && node --no-warnings scripts/check-ui-performance.js",
     "test:isolation": "node --experimental-sqlite --no-warnings scripts/test-isolation.js",
     "test:auth": "node --experimental-sqlite --no-warnings scripts/check-auth.js",

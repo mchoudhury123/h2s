@@ -183,6 +183,25 @@ const TABLES = [
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_contract_staff_from
      ON contract_staff(contract_id, role, effective_from)`,
   `CREATE INDEX IF NOT EXISTS idx_contract_staff_staff ON contract_staff(organisation_id, staff_id)`,
+  // A contract's money figures, dated. The contract's own four figures name
+  // the latest rates; a change here takes effect on a date, and the journey
+  // engine reads the figures in force on each date, so a pay rise from the
+  // 13th never changes what the days before it were worth.
+  `CREATE TABLE IF NOT EXISTS contract_rates (
+    id {{PK}},
+    organisation_id ${ORG},
+    contract_id {{INT}} NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
+    effective_from TEXT NOT NULL,
+    income_per_day {{REAL}} NOT NULL DEFAULT 0,
+    driver_pay_per_day {{REAL}} NOT NULL DEFAULT 0,
+    pa_pay_per_day {{REAL}} NOT NULL DEFAULT 0,
+    other_costs_per_day {{REAL}} NOT NULL DEFAULT 0,
+    note TEXT,
+    created_by TEXT,
+    created_at TEXT NOT NULL DEFAULT {{NOW}}
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_contract_rates_from
+     ON contract_rates(contract_id, effective_from)`,
   `CREATE TABLE IF NOT EXISTS children (
     id {{PK}},
     organisation_id ${ORG},
@@ -408,7 +427,7 @@ function statements(dialect) {
 
 // Order matters for deletes and for copying rows between databases.
 const TABLE_ORDER = ['organisations', 'settings', 'users', 'user_organisations', 'councils', 'schools', 'staff', 'vehicles',
-  'contracts', 'contract_staff', 'contract_schedules', 'contract_trips', 'children', 'contract_trip_children',
+  'contracts', 'contract_staff', 'contract_rates', 'contract_schedules', 'contract_trips', 'children', 'contract_trip_children',
   'child_timetables', 'child_timetable_days', 'documents', 'exceptions', 'payroll_runs', 'payments',
   'payroll_run_lines', 'expenses', 'invoices', 'audit_log'];
 

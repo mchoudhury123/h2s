@@ -7,6 +7,7 @@
 const { all, inClause } = require('../db');
 const sched = require('./schedule');
 const staffing = require('./staffing');
+const rateService = require('./rates');
 
 function toDate(s) { const [y, m, d] = s.split('-').map(Number); return new Date(Date.UTC(y, m - 1, d)); }
 function fmt(d) { return d.toISOString().slice(0, 10); }
@@ -52,7 +53,8 @@ async function loadContracts(orgId, where = '', params = []) {
   // Dated driver and PA changes travel with the contract, so every date reads
   // the person who held the seat on it rather than whoever holds it now.
   const history = await staffing.loadStaffHistory(orgId, rows.map(c => c.id));
-  for (const c of rows) c.staff_history = history.get(c.id);
+  const rateHistory = await rateService.loadRateHistory(orgId, rows.map(c => c.id));
+  for (const c of rows) { c.staff_history = history.get(c.id); c.rate_history = rateHistory.get(c.id); }
   return rows;
 }
 
@@ -150,6 +152,9 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
 
   const live = contractLiveOn(c, date);
   const planned = live ? sched.plannedTrips(c, date, weekday, schedules) : [];
+  // The money figures in force on this date, which after a dated rate change
+  // are not necessarily the contract's current ones.
+  const rates = rateService.ratesOn(c, date);
 
   // One-off journeys added to this date only.
   const extras = live ? ex.filter(e => e.type === 'extra_journey').map((e, i) => ({
@@ -258,11 +263,11 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
     const isExtra = t.source === 'extra';
     const share = isExtra ? 0 : 1 / plannedCount;
     t.chargeable = chargeableRun(t);
-    t.income_value = plan.income != null ? Number(plan.income) : round2((c.income_per_day || 0) / 2);
+    t.income_value = plan.income != null ? Number(plan.income) : round2((rates.income_per_day || 0) / 2);
     t.driver_rate = plan.driver_pay != null ? Number(plan.driver_pay)
-      : (isExtra ? 0 : round2((c.driver_pay_per_day || 0) * share));
+      : (isExtra ? 0 : round2((rates.driver_pay_per_day || 0) * share));
     t.pa_rate = plan.pa_pay != null ? Number(plan.pa_pay)
-      : (isExtra ? 0 : round2((c.pa_pay_per_day || 0) * share));
+      : (isExtra ? 0 : round2((rates.pa_pay_per_day || 0) * share));
 
     for (const role of ['driver', 'pa']) {
       const info = t[role];
@@ -294,7 +299,7 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
   const fixedDay = c.income_basis === 'per_day';
   const days = fixedDay ? (chargeableTrips.length ? 1 : 0) : chargeableDays(trips);
   const income = fixedDay
-    ? (chargeableTrips.length ? round2(c.income_per_day || 0) : 0)
+    ? (chargeableTrips.length ? round2(rates.income_per_day || 0) : 0)
     : round2(chargeableTrips.reduce((a, t) => a + t.income_value, 0));
   // Each run carries its own share, with cumulative rounding so the run
   // amounts add up exactly to the day.
@@ -321,7 +326,8 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
     exceptions: ex,
     notes: ex.filter(e => e.type === 'note'),
     income,
-    other_costs: round2((c.other_costs_per_day || 0) * (operatedTrips.length > 0 ? 1 : 0)),
+    other_costs: round2((rates.other_costs_per_day || 0) * (operatedTrips.length > 0 ? 1 : 0)),
+    rates: { income_per_day: rates.income_per_day, driver_pay_per_day: rates.driver_pay_per_day, pa_pay_per_day: rates.pa_pay_per_day, other_costs_per_day: rates.other_costs_per_day, since: rates.change ? rates.change.effective_from : null },
     operated: operatedTrips.length > 0,
   };
   result.summary = summarise(result);

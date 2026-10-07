@@ -14,6 +14,7 @@ const audit = require('./services/audit');
 const cal = require('./services/calendar');
 const sched = require('./services/schedule');
 const staffing = require('./services/staffing');
+const rates = require('./services/rates');
 const compliance = require('./services/compliance');
 const wages = require('./services/wages');
 const finance = require('./services/finance');
@@ -461,6 +462,10 @@ crud('contracts', 'contracts', {
     const staffHistory = (await staffing.loadStaffHistory(org, [id])).get(id);
     row.staff_history = staffHistory;
     row.staffing = staffing.summary(row, staffHistory, cal.today());
+    // The money figures in force today, since when, and what is coming.
+    const rateHistory = (await rates.loadRateHistory(org, [id])).get(id);
+    row.rate_history = rateHistory;
+    row.rate_summary = rates.summary(row, rateHistory, cal.today());
     row.history = await audit.history(org, 'contracts', id, 50);
     return row;
   },
@@ -490,6 +495,9 @@ crud('contracts', 'contracts', {
       for (const [role, col] of [['driver', 'driver_id'], ['pa', 'pa_id']]) {
         if ((row[col] || null) !== (before[col] || null)) await staffing.correctLatest(org, row.id, role, row[col]);
       }
+      // Likewise a money figure typed on the form corrects the latest rates;
+      // "Change rates" on the contract page is how a rate changes from a date.
+      if (rates.FIELDS.some(f => Number(row[f] || 0) !== Number(before[f] || 0))) await rates.correctLatest(org, row);
     }
   },
   resolve: async (org, col, v) => {
@@ -967,7 +975,8 @@ route('POST', '/api/exceptions', async ctx => {
           const c = absenceContract;
           data.staff_id = staffing.assignedOn(c, data.role, date).staff_id;
           if (data.cover_staff_id && data.cover_pay === undefined) {
-            const base = data.role === 'driver' ? c.driver_pay_per_day : c.pa_pay_per_day;
+            const dayRates = rates.ratesOn(c, date);
+            const base = data.role === 'driver' ? dayRates.driver_pay_per_day : dayRates.pa_pay_per_day;
             data.cover_pay = cal.round2(base * (data.leg === 'DAY' || !data.leg ? 1 : 0.5));
           }
         }
@@ -1336,6 +1345,64 @@ route('DELETE', '/api/contracts/:id/staff/:rowId', async ctx => {
   if (!row) return H.error(ctx.res, 'That change was not found', 404);
   await audit.logAction(ctx.user, 'contracts', id, contract.code, 'staffing',
     `Removed the ${row.role === 'driver' ? 'driver' : 'PA'} change dated ${compliance.ukDate(String(row.effective_from).slice(0, 10))}`);
+  H.json(ctx.res, { ok: true });
+});
+
+// ---------------------------------------------------------------- dated rate changes
+
+function ratesPayload(contract, history, on) {
+  const inForce = rates.versionOn(history, on);
+  return {
+    contract_id: contract.id, date: on,
+    versions: history.map(v => ({ ...v, in_force: !!inForce && inForce.id === v.id, opening: v.note === rates.OPENING_NOTE })),
+    summary: rates.summary(contract, history, on),
+  };
+}
+
+/** Every dated rate change on a contract, and the figures in force on a date. */
+route('GET', '/api/contracts/:id/rates', async ctx => {
+  const id = Number(ctx.params.id);
+  const contract = (await cal.loadContracts(ctx.org, ' AND c.id = ?', [id]))[0];
+  if (!contract) return H.error(ctx.res, 'Contract not found', 404);
+  const on = DATE_RX.test(ctx.query.date || '') ? ctx.query.date : cal.today();
+  H.json(ctx.res, ratesPayload(contract, contract.rate_history, on));
+});
+
+/**
+ * New rates from a date. Days before it keep the figures they had, so wages
+ * and profit already worked out for them never move; days from it use the
+ * new figures. A change already recorded for the same date is replaced.
+ */
+route('POST', '/api/contracts/:id/rates', async ctx => {
+  const id = Number(ctx.params.id);
+  const contract = (await cal.loadContracts(ctx.org, ' AND c.id = ?', [id]))[0];
+  if (!contract) return H.error(ctx.res, 'Contract not found', 404);
+  const b = ctx.body || {};
+  let result;
+  try {
+    const figures = {};
+    for (const f of rates.FIELDS) if (b[f] !== undefined) figures[f] = b[f];
+    result = await rates.recordChange(ctx.org, contract, { effective_from: b.effective_from, note: b.note, created_by: ctx.user.name, ...figures });
+  } catch (e) { return H.error(ctx.res, friendly(e), 400); }
+
+  const from = String(b.effective_from).slice(0, 10);
+  const changed = rates.FIELDS.filter(f => result.was[f] !== result.now[f])
+    .map(f => `${rates.label(f).toLowerCase()} ${result.was[f].toFixed(2)} -> ${result.now[f].toFixed(2)}`);
+  await audit.logAction(ctx.user, 'contracts', id, contract.code, 'rates',
+    `Rates from ${compliance.ukDate(from)}: ${changed.join(', ') || 'unchanged'}${b.note ? ` — ${b.note}` : ''}`);
+  const after = (await cal.loadContracts(ctx.org, ' AND c.id = ?', [id]))[0];
+  H.json(ctx.res, { id: result.id, rewrites_history: from < cal.today(), ...ratesPayload(after, after.rate_history, cal.today()) }, 201);
+});
+
+/** Removes one recorded rate change. Dates from it follow whichever earlier rates apply. */
+route('DELETE', '/api/contracts/:id/rates/:rowId', async ctx => {
+  const id = Number(ctx.params.id);
+  const contract = await owned('contracts', id, ctx.org);
+  if (!contract) return H.error(ctx.res, 'Contract not found', 404);
+  const row = await rates.removeChange(ctx.org, contract, ctx.params.rowId);
+  if (!row) return H.error(ctx.res, 'That rate change was not found', 404);
+  await audit.logAction(ctx.user, 'contracts', id, contract.code, 'rates',
+    `Removed the rate change dated ${compliance.ukDate(String(row.effective_from).slice(0, 10))}`);
   H.json(ctx.res, { ok: true });
 });
 

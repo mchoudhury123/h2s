@@ -338,6 +338,19 @@ class Firm {
   ok((await b.del(`/api/contracts/${b.ids.contract}/staff/${bStaff.driver[0].id}`)).status === 200, 'B can remove its own handover');
 
   // ---------------------------------------------------------------
+  section('9d. Dated rate changes stay inside one firm');
+  const rateChange = { effective_from: '2030-01-07', driver_pay_per_day: 99, note: 'B rise' };
+  ok((await b.post(`/api/contracts/${b.ids.contract}/rates`, rateChange)).status === 201, 'B can record a rate change on its own contract');
+  ok((await a.post(`/api/contracts/${b.ids.contract}/rates`, rateChange)).status === 404, "A cannot record a rate change on B's contract");
+  ok((await a.get(`/api/contracts/${b.ids.contract}/rates`)).status === 404, "A cannot read B's rate changes");
+  const bRates = (await b.get(`/api/contracts/${b.ids.contract}/rates`)).data;
+  ok(bRates.versions.length === 2, "B's rate change and its opening row are still there after A's attempts");
+  ok((await a.del(`/api/contracts/${a.ids.contract}/rates/${bRates.versions[0].id}`)).status === 404,
+    "A cannot delete B's rate change through its own contract");
+  ok((await b.get(`/api/contracts/${b.ids.contract}/rates`)).data.versions.length === 2, "B's rate change survived");
+  ok((await b.del(`/api/contracts/${b.ids.contract}/rates/${bRates.versions[0].id}`)).status === 200, 'B can remove its own rate change');
+
+  // ---------------------------------------------------------------
   section('10. Signing out and back in keeps the firms apart');
   await a.post('/api/logout');
   const afterLogout = await a.get('/api/children');

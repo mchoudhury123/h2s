@@ -58,6 +58,7 @@ App.views.contractDetail = async function ({ params }) {
       App.can('calendar') ? h('button', { class: 'btn primary', onclick: () => Ops.dayDialog(c.id, D.today(), reload) }, 'Record exception today') : null,
       h('a', { class: 'btn', href: `#/calendar?contract=${c.id}` }, 'Calendar'),
       App.can('edit') ? h('button', { class: 'btn', onclick: () => Rec.staffChange(c, reload) }, 'Change driver / PA') : null,
+      App.can('edit') && showMoney ? h('button', { class: 'btn', onclick: () => Rec.rateChange(c, reload) }, 'Change rates') : null,
       App.can('edit') ? h('button', { class: 'btn', onclick: () => Rec.contractEditor(c) }, 'Edit') : null,
     ],
     [statusBadge(c.status)]);
@@ -154,16 +155,25 @@ App.views.contractDetail = async function ({ params }) {
     tabs.push({
       id: 'finance', label: 'Financials',
       render: () => {
-        const f = c.financials, p = c.per_day;
+        const f = c.financials;
+        // The figures in force today. After a dated change the contract's own
+        // columns hold the latest rates, which may not have started yet.
+        const rs = c.rate_summary || null;
+        const now = rs ? rs.in_force : { income_per_day: c.per_day.income, driver_pay_per_day: c.per_day.driver, pa_pay_per_day: c.per_day.pa, other_costs_per_day: c.per_day.other };
+        const profit = Math.round((now.income_per_day - now.driver_pay_per_day - now.pa_pay_per_day - now.other_costs_per_day) * 100) / 100;
+        const margin = now.income_per_day > 0 ? Math.round(profit / now.income_per_day * 10000) / 100 : 0;
+        const when = field => rs && rs.upcoming && rs.upcoming[field] !== now[field] ? `${fmt.money(rs.upcoming[field])} from ${fmt.date(rs.upcoming.effective_from)}`
+          : rs && rs.since ? `Since ${fmt.date(rs.since)}${rs.previous && rs.previous[field] !== now[field] ? ` · was ${fmt.money(rs.previous[field])}` : ''}` : '';
         return h('div', null,
           h('div', { class: 'stats' },
-            UI.stat({ label: 'Income per day', value: fmt.money(p.income), hint: fmt.titleCase(c.income_basis) }),
-            UI.stat({ label: 'Driver pay per day', value: fmt.money(p.driver) }),
-            UI.stat({ label: 'PA pay per day', value: fmt.money(p.pa) }),
-            UI.stat({ label: 'Other direct costs', value: fmt.money(p.other) }),
-            UI.stat({ label: 'Expected profit per day', value: fmt.money(p.profit), tone: p.profit >= 0 ? 'green' : 'red' }),
-            UI.stat({ label: 'Expected margin', value: fmt.pct(p.margin), tone: p.margin >= 20 ? 'green' : p.margin >= 10 ? 'amber' : 'red' })),
+            UI.stat({ label: 'Income per day', value: fmt.money(now.income_per_day), hint: when('income_per_day') || fmt.titleCase(c.income_basis) }),
+            UI.stat({ label: 'Driver pay per day', value: fmt.money(now.driver_pay_per_day), hint: when('driver_pay_per_day') }),
+            UI.stat({ label: 'PA pay per day', value: fmt.money(now.pa_pay_per_day), hint: when('pa_pay_per_day') }),
+            UI.stat({ label: 'Other direct costs', value: fmt.money(now.other_costs_per_day), hint: when('other_costs_per_day') }),
+            UI.stat({ label: 'Expected profit per day', value: fmt.money(profit), tone: profit >= 0 ? 'green' : 'red' }),
+            UI.stat({ label: 'Expected margin', value: fmt.pct(margin), tone: margin >= 20 ? 'green' : margin >= 10 ? 'amber' : 'red' })),
           h('div', { style: 'height:14px' }),
+          Rec.rateHistoryCard(c, reload),
           UI.card(`Actual performance ${fmt.date(c.financials_period.from)} – ${fmt.date(c.financials_period.to)}`,
             h('div', null,
               h('div', { class: 'breakdown' },
@@ -251,6 +261,18 @@ Rec.contractEditor = async function (c) {
           'To hand over from a date, with the outgoing person keeping their earlier days, cancel and use "Change driver / PA" on the contract page. Rewrite every date?',
           () => resolve(true), { title: 'Every date will change', yes: 'Rewrite every date', danger: true }));
         if (!ok) throw new Error('Not saved. Use "Change driver / PA" on the contract page to hand over from a date.');
+      }
+      // Likewise a money figure typed here applies to every date (or corrects
+      // the latest rates once dated changes exist). A rise from a date belongs in "Change rates".
+      const money = ['income_per_day', 'driver_pay_per_day', 'pa_pay_per_day', 'other_costs_per_day'];
+      if (c && money.some(f => v[f] !== undefined && Number(v[f] || 0) !== Number(c[f] || 0))) {
+        const ok = await new Promise(resolve => UI.confirm(
+          (c.rate_summary && c.rate_summary.changes
+            ? 'This contract has dated rate changes. Figures typed here replace the latest rates only, from the date they started. '
+            : 'Figures typed here apply to every date of this contract, including days already worked and paid. ') +
+          'To change a rate from a date, with earlier days keeping what they were worth, cancel and use "Change rates" on the contract page. Continue?',
+          () => resolve(true), { title: 'Rates on every date', yes: 'Apply to every date', danger: true }));
+        if (!ok) throw new Error('Not saved. Use "Change rates" on the contract page to change a rate from a date.');
       }
       const saved = c ? await api.put('/api/contracts/' + c.id, v) : await api.post('/api/contracts', v);
       UI.invalidateLookups();
@@ -363,6 +385,118 @@ Rec.staffChange = async function (c, reload) {
     if (from < D.today()) {
       UI.confirm(
         `${fmt.date(from)} is in the past. Days from that date will be worked out again with the new person, which changes wages not yet paid for those days. Days before it are untouched. Continue?`,
+        save, { yes: 'Record anyway', danger: false });
+    } else await save();
+  };
+};
+
+/* ---------- dated rate changes ----------
+   New rates from a date. Days before it keep what they were worth, so wages
+   and profit already worked out for them never move. */
+const RATE_FIELDS = [
+  ['income_per_day', 'Income per day'], ['driver_pay_per_day', 'Driver pay per day'],
+  ['pa_pay_per_day', 'PA pay per day'], ['other_costs_per_day', 'Other direct costs per day'],
+];
+const RATE_OPENING_NOTE = 'Rates before the first recorded change';
+
+Rec.rateHistoryCard = function (c, reload) {
+  const rows = c.rate_history || [];
+  if (!rows.length) return null;
+  const today = D.today();
+  const card = UI.cardTight('Rate changes',
+    UI.table([
+      { key: 'effective_from', label: 'From', nowrap: true, value: v => v.note === RATE_OPENING_NOTE ? 'Start of contract'
+        : h('span', null, fmt.date(v.effective_from), v.effective_from > today ? h('span', { class: 'badge amber', style: 'margin-left:6px' }, 'Upcoming') : null), sort: v => v.effective_from },
+      ...RATE_FIELDS.map(([f, label]) => ({ key: f, label, num: true, value: v => fmt.money(v[f]) })),
+      { key: 'note', label: 'Note', value: v => v.note === RATE_OPENING_NOTE ? h('span', { style: 'color:var(--text-dim)' }, 'Before the first change') : (v.note || '') },
+    ], rows, { sortKey: 'effective_from', sortDir: -1 }),
+    App.can('edit') ? h('button', { class: 'btn xs', onclick: () => Rec.rateChange(c, reload) }, 'Change') : null);
+  card.style.marginBottom = '14px';
+  return card;
+};
+
+Rec.rateChange = async function (c, reload) {
+  let data;
+  try { data = await api.get(`/api/contracts/${c.id}/rates`); }
+  catch (e) { return toast(e.message, 'err'); }
+  const versions = data.versions;
+  // The figures in force on a date: the newest change on or before it, else
+  // the oldest, else the contract's own.
+  const inForceOn = date => {
+    if (!versions.length) return c;
+    return versions.find(v => v.effective_from <= date) || versions[versions.length - 1];
+  };
+
+  const fromInput = h('input', { type: 'date', value: D.today() });
+  const inputs = {};
+  for (const [f] of RATE_FIELDS) inputs[f] = h('input', { type: 'number', step: '0.01', min: '0' });
+  const noteInput = h('input', { type: 'text', placeholder: 'e.g. New driver on a higher rate', autocomplete: 'off' });
+  const basisNote = h('div', { class: 'help' });
+  const prefill = () => {
+    const base = inForceOn(fromInput.value || D.today());
+    for (const [f] of RATE_FIELDS) inputs[f].value = Number(base[f] || 0).toFixed(2);
+    basisNote.textContent = fromInput.value ? `Showing the rates in force on ${fmt.date(fromInput.value)}. Change the ones that differ.` : '';
+  };
+  fromInput.onchange = prefill;
+  prefill();
+
+  const historyBox = h('div', { class: 'sd-versions', style: 'margin-top:12px' });
+  if (!versions.length) historyBox.appendChild(h('span', { style: 'color:var(--text-dim)' }, 'No rate change recorded yet: the rates on the contract apply to every date.'));
+  else {
+    historyBox.appendChild(h('strong', 'Recorded: '));
+    for (const v of versions) {
+      historyBox.appendChild(h('span', { class: 'badge ' + (v.in_force ? 'green' : '') },
+        `${v.opening ? 'Before the first change' : 'From ' + fmt.date(v.effective_from)}: ${RATE_FIELDS.map(([f, label]) => `${label.replace(' per day', '').replace('Other direct costs', 'other')} ${fmt.money(v[f])}`).join(', ')}${v.in_force ? ' (in force)' : ''}`,
+        App.can('edit') && !v.opening ? h('button', {
+          class: 'x', style: 'font-size:14px;padding:0 3px', title: 'Remove this rate change',
+          onclick: () => UI.confirm(
+            `Remove the rate change dated ${fmt.date(v.effective_from)}? Days from that date go back to the rates before it, which changes wages not yet paid for those days.`,
+            async () => {
+              try { await api.del(`/api/contracts/${c.id}/rates/${v.id}`); toast('Rate change removed', 'ok'); dlg.close(); reload(); }
+              catch (e) { toast(e.message, 'err'); }
+            }),
+        }, '×') : null));
+    }
+  }
+
+  const field = (label, input, help) => h('div', { class: 'field' }, h('label', label), input, help ? h('div', { class: 'help' }, help) : null);
+  const saveBtn = h('button', { class: 'btn primary' }, 'Record new rates');
+  const dlg = UI.modal({
+    title: `Change rates — ${c.code}`,
+    width: 'wide',
+    body: h('div', null,
+      h('div', { class: 'note-box', style: 'margin-bottom:12px' },
+        h('strong', 'New rates from a date.'),
+        h('div', { style: 'margin-top:4px' },
+          'Days before the date keep the rates they had, so wages and profit already worked out for them never change. Days from the date use the new figures, for whoever works them.')),
+      h('div', { class: 'form-grid' },
+        h('div', { class: 'field' }, h('label', 'From'), fromInput, basisNote),
+        field('Note', noteInput),
+        ...RATE_FIELDS.map(([f, label]) => field(label + ' (£)', inputs[f]))),
+      historyBox),
+    footer: [h('button', { class: 'btn', onclick: () => dlg.close() }, 'Cancel'), saveBtn],
+  });
+
+  saveBtn.onclick = async () => {
+    const from = fromInput.value;
+    if (!from) { fromInput.focus(); return toast('Choose the date the new rates take effect', 'err'); }
+    const body = { effective_from: from, note: noteInput.value || null };
+    for (const [f] of RATE_FIELDS) {
+      if (inputs[f].value === '' || Number(inputs[f].value) < 0) { inputs[f].focus(); return toast('Every rate needs a figure of zero or more', 'err'); }
+      body[f] = Number(inputs[f].value);
+    }
+    const save = async () => {
+      saveBtn.disabled = true; saveBtn.textContent = 'Saving…';
+      try {
+        await api.post(`/api/contracts/${c.id}/rates`, body);
+        toast('New rates recorded — wages and profit use them from that date', 'ok');
+        dlg.close();
+        reload();
+      } catch (e) { toast(e.message, 'err'); saveBtn.disabled = false; saveBtn.textContent = 'Record new rates'; }
+    };
+    if (from < D.today()) {
+      UI.confirm(
+        `${fmt.date(from)} is in the past. Days from that date will be worked out again at the new rates, which changes wages not yet paid for those days. Days before it are untouched. Continue?`,
         save, { yes: 'Record anyway', danger: false });
     } else await save();
   };

@@ -723,6 +723,52 @@ async function main() {
   is((await contractRow()).staff_history.driver.length, 0, 'and the opening row goes with the last change');
   is((await wagesFor('John Normal')).totals.amount_due, 300, 'who is owed the whole week again');
 
+  section('21. A rate change from a date leaves earlier days worth what they were');
+  const rateService = require('../server/services/rates');
+  const rise = await rateService.recordChange(orgId, await contractRow(), { effective_from: '2026-09-10', driver_pay_per_day: 75, income_per_day: 120, note: 'New driver, new rate', created_by: 'test' });
+  is([rise.was.driver_pay_per_day, rise.now.driver_pay_per_day, rise.now.pa_pay_per_day, rise.now.income_per_day], [60, 75, 40, 120], 'the change records the old and new figures, keeping the ones not given');
+  const c21 = await contractRow();
+  is([c21.driver_pay_per_day, c21.income_per_day], [75, 120], 'the contract now carries the latest rates');
+  is(c21.rate_history.map(v => [v.effective_from, v.driver_pay_per_day, v.income_per_day]), [['2026-09-10', 75, 120], ['2026-09-01', 60, 100]], 'with an opening row holding the rates before it');
+  is(AM(await day('2026-09-09')).driver.pay, 30, 'Wednesday is still paid at the old rate');
+  is(AM(await day('2026-09-10')).driver.pay, 37.5, 'Thursday at the new one');
+  is((await day('2026-09-09')).income, 100, 'Wednesday is charged at the old income');
+  is((await day('2026-09-10')).income, 120, 'Thursday at the new one');
+  is((await day('2026-09-10')).rates.since, '2026-09-10', 'the day knows when its rates started');
+  is((await wagesFor('John Normal')).totals.amount_due, 330, 'John is owed three days at 60 and two at 75');
+  is((await wagesFor('Linda Assist')).totals.amount_due, 200, 'the PA rate did not move');
+  const prof21 = await finance.profitability(orgId, { ...WEEK, contract_id: contractId });
+  is([prof21.rows[0].income, prof21.rows[0].driver_cost], [540, 330], 'profitability uses each day at its own rate');
+  const coverThu = await addEx({ date: '2026-09-10', type: 'staff_absence', leg: 'DAY', contract_id: contractId, role: 'driver', staff_id: driverId, cover_staff_id: coverId });
+  is((await wagesFor('Ahmed Cover')).totals.cover_earnings, 75, 'cover without an agreed figure is worth the new rate on that day');
+  await run('DELETE FROM exceptions WHERE organisation_id = ? AND id = ?', [orgId, coverThu]);
+  is((await wagesFor('John Normal', { from: '2026-09-07', to: '2026-09-09' })).totals.amount_due, 180, 'a calculation over the days before the change is exactly what it always was');
+  let sameRates = null;
+  try { await rateService.recordChange(orgId, await contractRow(), { effective_from: '2026-09-14', driver_pay_per_day: 75, created_by: 'test' }); } catch (e) { sameRates = e.message; }
+  is(sameRates, 'Those are already the rates on 2026-09-14', 'recording the same rates again is refused');
+  let badRate = null;
+  try { await rateService.recordChange(orgId, await contractRow(), { effective_from: '2026-09-14', driver_pay_per_day: -5, created_by: 'test' }); } catch (e) { badRate = e.message; }
+  is(badRate, 'Driver pay per day must be a number of pounds, zero or more', 'a negative rate is refused');
+  const sum21 = rateService.summary(c21, c21.rate_history, '2026-09-09');
+  is([sum21.in_force.driver_pay_per_day, sum21.upcoming.effective_from, sum21.upcoming.driver_pay_per_day], [60, '2026-09-10', 75], 'on the 9th the page shows 60 with 75 coming on the 10th');
+  const sum21b = rateService.summary(c21, c21.rate_history, '2026-09-10');
+  is([sum21b.in_force.driver_pay_per_day, sum21b.since, sum21b.previous.until, sum21b.previous.driver_pay_per_day], [75, '2026-09-10', '2026-09-09', 60], 'from the 10th it shows 75 since the 10th, 60 until the 9th');
+  // The handover and the rate change together: Sam takes over on the Thursday at the new rate.
+  await staffing.recordChange(orgId, await contractRow(), { role: 'driver', staff_id: cover2Id, effective_from: '2026-09-10', created_by: 'test' });
+  is((await wagesFor('John Normal')).totals.amount_due, 180, 'John keeps Monday to Wednesday at 60');
+  is((await wagesFor('Sam Second')).totals.amount_due, 150, 'Sam gets Thursday and Friday at 75');
+  for (const v of (await contractRow()).staff_history.driver.filter(v => v.effective_from >= '2026-09-10')) await staffing.removeChange(orgId, await contractRow(), v.id);
+  // The contract form typing a figure corrects the latest rates only.
+  await run('UPDATE contracts SET driver_pay_per_day = 80 WHERE organisation_id = ? AND id = ?', [orgId, contractId]);
+  await rateService.correctLatest(orgId, await contractRow());
+  is(AM(await day('2026-09-10')).driver.pay, 40, 'correcting the rate on the form changes the latest rates');
+  is(AM(await day('2026-09-09')).driver.pay, 30, 'and not the earlier ones');
+  const rateRow = (await contractRow()).rate_history.find(v => v.effective_from === '2026-09-10');
+  await rateService.removeChange(orgId, await contractRow(), rateRow.id);
+  const c21b = await contractRow();
+  is([c21b.driver_pay_per_day, c21b.income_per_day, c21b.rate_history.length], [60, 100, 0], 'removing the change restores the old rates and clears the opening row');
+  is((await wagesFor('John Normal')).totals.amount_due, 300, 'and the week is worth what it was');
+
   console.log(`\n${pass} passed, ${fail} failed on ${database.describe}`);
   return fail;
 }

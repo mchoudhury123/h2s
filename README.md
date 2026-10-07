@@ -144,7 +144,7 @@ The same application fits a phone without a separate build. Under 900px the side
 ### Tests
 
 ```
-npm test                 # 304 business-rule tests
+npm test                 # 327 business-rule tests
 npm run test:performance  # schema checks, dropdown queries/cache and button responsiveness
 npm run test:isolation   # 92 checks that one firm cannot reach another's data
 npm run test:auth        # registration, sign-in and separation, in a browser
@@ -156,6 +156,7 @@ npm run test:invoicing   # invoice numbering, day counting, snapshots and PDFs
 npm run test:cover       # one driver absent, a different cover on each journey, in a browser
 npm run test:paydays     # ticking off days a driver was already paid for, in a browser
 npm run test:handover    # one driver replaces another from a date, through the dialog, in a browser
+npm run test:rates       # a contract's rates change from a date, through the dialog, in a browser
 ```
 
 The browser suites expect Chrome at the default Windows location and the server already running. The walkthrough suites (`test:browser`, `test:workflow` and `test:schedules`) sign in as the seeded sample business, so run them against a local SQLite server after `npm run seed`, or point them at a filled business of your own with `USER_EMAIL` and `USER_PASS`. A live database with only a real, empty firm on it has nothing for them to walk through.
@@ -264,7 +265,9 @@ Three children in one vehicle each keep their own profile and all appear under t
 
 **Handing a route over.** When one driver or PA replaces another, **Change driver / PA** on the contract page records who takes the seat and from which date. The outgoing person keeps every day before that date on the calendar and in wages, and is paid for them as normal; the incoming person is paid from the date given; the council charge does not change. Nothing already worked, paid or invoiced is rewritten. A change can be dated ahead, so next Monday's handover can be entered today, and the page says who takes over and when. Choosing nobody leaves the seat empty from that date. Every change is listed on the contract's Overview and can be removed, which hands the days back to whoever held the seat before it.
 
-The contract names its latest driver and PA, which is what lists, search, the dashboard and the staff pool show; the calendar, the day panel, absences and wages read whoever held the seat on each date. Picking a different person on the contract's Edit form is a correction rather than a handover: it changes who is recorded on every date (or, once handovers exist, the latest one), and the form says so before saving. Someone who handed a route over still sees it on their own page, marked as former.
+**Changing the rates.** A new driver may be on a different rate, or the council may raise the day rate from April. **Change rates** on the contract page records new figures from a date: income per day, driver pay, PA pay and other direct costs. Days before the date keep the rates they had, so wages and profit already worked out for them never change, and a wage calculation over those days gives exactly what it always did. Days from the date use the new figures, for whoever works them; cover without an agreed figure is worth that day's rate. The Financials tab shows the rates in force today, says when they started and what is coming, and lists every change, each of which can be removed. A rate change and a driver handover can share a date, so the new driver starts on the new rate while the old driver's last days stay on the old one.
+
+The contract names its latest driver, PA and rates, which is what lists, search, the dashboard and the staff pool show; the calendar, the day panel, absences and wages read whoever held the seat on each date. Picking a different person or typing a different figure on the contract's Edit form is a correction rather than a dated change: it applies to every date (or, once dated changes exist, to the latest one), and the form says so before saving. Someone who handed a route over still sees it on their own page, marked as former.
 
 ### Drivers and passenger assistants
 
