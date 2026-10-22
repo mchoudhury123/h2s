@@ -331,6 +331,7 @@ crud('staff', 'staff', {
       FROM documents d
       JOIN vehicles v ON v.id = d.entity_id
       WHERE d.organisation_id = ? AND d.entity_type = 'vehicle' AND v.driver_id = ? ORDER BY d.expiry_date`, [org, id]);
+    row.holidays = await all('SELECT * FROM staff_holidays WHERE organisation_id = ? AND staff_id = ? ORDER BY start_date DESC', [org, id]);
     row.recent_cover = await all(`SELECT e.*, c.code AS contract_code FROM exceptions e
       LEFT JOIN contracts c ON c.id = e.contract_id
       WHERE e.organisation_id = ? AND e.cover_staff_id = ? ORDER BY e.date DESC LIMIT 20`, [org, id]);
@@ -1625,6 +1626,36 @@ route('GET', '/api/invoicing/batch/:batchId/pdf', async ctx => {
 // =====================================================================
 // Dashboard and search
 // =====================================================================
+// Planned leave is separate from worked-day and payroll exceptions.
+function holidayDate(value) {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
+    && Number.isFinite(Date.parse(value + 'T00:00:00Z'))
+    && new Date(value + 'T00:00:00Z').toISOString().slice(0, 10) === value;
+}
+for (const method of ['POST', 'PUT']) route(method, method === 'POST' ? '/api/staff/:id/holidays' : '/api/staff/:id/holidays/:holidayId', async ctx => {
+  const staffId = Number(ctx.params.id), b = ctx.body;
+  const staff = await get('SELECT * FROM staff WHERE organisation_id = ? AND id = ?', [ctx.org, staffId]);
+  if (!staff) return H.error(ctx.res, 'Staff member not found', 404);
+  const holidayId = method === 'PUT' ? Number(ctx.params.holidayId) : 0;
+  if (method === 'PUT' && !await get('SELECT id FROM staff_holidays WHERE organisation_id = ? AND staff_id = ? AND id = ?', [ctx.org, staffId, holidayId])) return H.error(ctx.res, 'Holiday not found', 404);
+  if (!holidayDate(b.start_date) || !holidayDate(b.end_date) || b.end_date < b.start_date) return H.error(ctx.res, 'Enter valid start and end dates; the end must be on or after the start.');
+  const clash = await get('SELECT id FROM staff_holidays WHERE organisation_id = ? AND staff_id = ? AND id <> ? AND start_date <= ? AND end_date >= ?', [ctx.org, staffId, holidayId, b.end_date, b.start_date]);
+  if (clash) return H.error(ctx.res, 'This overlaps an existing holiday for this staff member.');
+  const data = { staff_id: staffId, start_date: b.start_date, end_date: b.end_date, note: String(b.note || '').trim() };
+  let id = holidayId;
+  if (method === 'POST') id = await insert('staff_holidays', { ...data, created_by: ctx.user.name }, [...Object.keys(data), 'created_by'], null, ctx.org);
+  else await update('staff_holidays', id, data, Object.keys(data), null, ctx.org);
+  await audit.logAction(ctx.user, 'staff', staffId, `${staff.first_name} ${staff.last_name}`, 'holiday', `${method === 'POST' ? 'Recorded' : 'Updated'} holiday ${b.start_date} to ${b.end_date}`);
+  H.json(ctx.res, { id, ...data }, method === 'POST' ? 201 : 200);
+});
+route('DELETE', '/api/staff/:id/holidays/:holidayId', async ctx => {
+  const row = await get('SELECT * FROM staff_holidays WHERE organisation_id = ? AND staff_id = ? AND id = ?', [ctx.org, Number(ctx.params.id), Number(ctx.params.holidayId)]);
+  if (!row) return H.error(ctx.res, 'Holiday not found', 404);
+  await run('DELETE FROM staff_holidays WHERE organisation_id = ? AND id = ?', [ctx.org, row.id]);
+  await audit.logAction(ctx.user, 'staff', row.staff_id, null, 'holiday', `Cancelled holiday ${row.start_date} to ${row.end_date}`);
+  H.json(ctx.res, { ok: true });
+});
+
 route('GET', '/api/dashboard', async ctx => H.json(ctx.res, await dash.dashboard(ctx.org, ctx.query.date)));
 route('GET', '/api/search', async ctx => H.json(ctx.res,
   await search.universalSearch(ctx.org, ctx.query.q, Number(ctx.query.limit) || 8)));

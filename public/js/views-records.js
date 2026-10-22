@@ -755,6 +755,19 @@ App.views.staffDetail = async function ({ params }) {
     h('span', { style: 'font-size:12px;color:var(--text-faint)' }, `Amber warning ${s.compliance.amber_days} days before expiry`));
 
   const tabs = [
+    { id: 'holidays', label: 'Holidays', count: (s.holidays || []).length,
+      render: () => h('div', null,
+        h('div', { class: 'note-box' }, 'Reminders appear on the dashboard five calendar days before leave starts and remain until it ends. Use the calendar to record absences and assign cover; recording a holiday does not change wages.'),
+        h('div', { style: 'margin:12px 0' }, h('button', { class: 'btn primary', onclick: () => Rec.holidayEditor(s, null, reload) }, '+ Add holiday')),
+        UI.cardTight('Staff holidays', UI.table([
+          { key: 'start_date', label: 'First day off', value: r => fmt.date(r.start_date) },
+          { key: 'end_date', label: 'Last day off', value: r => fmt.date(r.end_date) },
+          { key: 'note', label: 'Notes' },
+          { label: 'Cover', sortable: false, value: r => h('a', { class: 'btn xs', href: `#/calendar?staff=${s.id}&from=${r.start_date}` }, 'Arrange cover') },
+          { label: '', sortable: false, value: r => h('div', { class: 'pill-row' },
+            h('button', { class: 'btn xs', onclick: () => Rec.holidayEditor(s, r, reload) }, 'Edit'),
+            h('button', { class: 'btn xs danger', onclick: () => UI.confirm('Cancel this holiday and its reminder?', async () => { await api.del(`/api/staff/${s.id}/holidays/${r.id}`); toast('Holiday cancelled', 'ok'); reload(); }) }, 'Cancel holiday')) },
+        ], s.holidays || [], { sortKey: 'start_date', sortDir: -1, empty: 'No holidays recorded' }))) },
     {
       id: 'work', label: 'Work & assignments',
       render: () => h('div', null,
@@ -1109,5 +1122,20 @@ App.views.vehicles = async function () {
     ],
     rows, searchFields: ['registration', 'make', 'model', 'driver_name'],
     onRow: r => r.driver_id ? Router.go('/staff/' + r.driver_id) : null,
+  });
+};
+
+Rec.holidayEditor = function (staff, holiday, reload) {
+  UI.editor({ title: `${holiday ? 'Edit' : 'Add'} holiday - ${staff.name}`, values: holiday || {},
+    fields: [
+      { name: 'start_date', label: 'First day off', type: 'date', required: true },
+      { name: 'end_date', label: 'Last day off (inclusive)', type: 'date', required: true },
+      { name: 'note', label: 'Notes', type: 'textarea', span: 'full' },
+    ],
+    onSave: async data => {
+      const url = `/api/staff/${staff.id}/holidays`;
+      if (holiday) await api.put(url + '/' + holiday.id, data); else await api.post(url, data);
+      toast('Holiday saved; reminder starts five days before leave', 'ok'); reload();
+    },
   });
 };

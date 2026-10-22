@@ -15,6 +15,7 @@
     "test:cancellations": "node --experimental-sqlite --no-warnings scripts/test-cancelled-runs.js",
     "test:cover": "node --experimental-sqlite --no-warnings scripts/test-split-cover.js",
     "test:paydays": "node --experimental-sqlite --no-warnings scripts/test-pay-days.js",
+    "test:holidays": "node --experimental-sqlite --no-warnings scripts/test-holidays.js",
     "test:handover": "node --experimental-sqlite --no-warnings scripts/test-handover.js",
     "test:rates": "node --experimental-sqlite --no-warnings scripts/test-rates.js",
     "test:performance": "node --experimental-sqlite --no-warnings scripts/check-performance.js && node --no-warnings scripts/check-ui-performance.js",

@@ -8,7 +8,7 @@ const finance = require('./finance');
 
 async function dashboard(orgId, date) {
   if (!orgId) throw new Error('An organisation id is required');
-  const today = date || cal.today();
+  const today = date || new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 
   // One query for all the headline counts, rather than eight round trips.
   const counts = await get(`SELECT
@@ -96,7 +96,14 @@ async function dashboard(orgId, date) {
   const week = (await finance.profitability(orgId, { from: weekStart, to: weekEnd })).totals;
   const month = (await finance.profitability(orgId, { from: monthStart, to: monthEnd })).totals;
 
+  const holidays = await all(`SELECT h.*, s.first_name || ' ' || s.last_name AS staff_name, s.type
+    FROM staff_holidays h JOIN staff s ON s.id = h.staff_id AND s.organisation_id = h.organisation_id
+    WHERE h.organisation_id = ? AND h.start_date <= ? AND h.end_date >= ? ORDER BY h.start_date, s.last_name`,
+    [orgId, cal.addDays(today, 5), today]);
   const alerts = [];
+  for (const h of holidays) alerts.push({ level: 'amber', category: 'Staff holiday',
+    text: `${h.staff_name} (${h.type === 'driver' ? 'Driver' : 'PA'}) ${h.start_date > today ? 'goes on holiday' : 'is on holiday'} ${compliance.ukDate(h.start_date)} to ${compliance.ukDate(h.end_date)} - arrange cover`,
+    href: `#/calendar?staff=${h.staff_id}&from=${h.start_date > today ? h.start_date : today}` });
   for (const c of noDriver) alerts.push({ level: c.status === 'active' ? 'red' : 'amber', category: 'Staffing', text: `${c.code} has no driver assigned${c.status === 'pending' ? ` (starts ${c.start_date ? compliance.ukDate(c.start_date) : 'soon'})` : ''}`, href: `#/contracts/${c.id}` });
   for (const c of noPa) alerts.push({ level: c.status === 'active' ? 'red' : 'amber', category: 'Staffing', text: `${c.code} requires a PA but none is assigned${c.status === 'pending' ? ` (starts ${c.start_date ? compliance.ukDate(c.start_date) : 'soon'})` : ''}`, href: `#/contracts/${c.id}` });
   for (const s of statuses.red) alerts.push({ level: 'red', category: 'Compliance', text: `${s.name} (${s.type.toUpperCase()}) — ${s.problems[0] || 'compliance failure'}`, href: `#/staff/${s.id}` });
@@ -136,6 +143,7 @@ async function dashboard(orgId, date) {
     gaps: { no_driver: noDriver, no_pa: noPa, no_vehicle: noVehicle, ending_soon: endingSoon },
     compliance: { green: statuses.green.length, amber: statuses.amber.length, red: statuses.red.length, amber_list: statuses.amber, red_list: statuses.red, expiring },
     finance: { today: daily, week: { ...week, from: weekStart, to: weekEnd }, month: { ...month, from: monthStart, to: monthEnd } },
+    holidays,
     alerts,
   };
 }

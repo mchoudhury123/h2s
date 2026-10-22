@@ -19,6 +19,7 @@
 const ORG = '{{INT}} NOT NULL REFERENCES organisations(id) ON DELETE CASCADE';
 
 const TABLES = [
+
   `CREATE TABLE IF NOT EXISTS organisations (
     id {{PK}},
     name TEXT NOT NULL,
@@ -369,6 +370,14 @@ const TABLES = [
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_number ON invoices(organisation_id, number)`,
   `CREATE INDEX IF NOT EXISTS idx_invoices_contract ON invoices(organisation_id, contract_id, period_from, period_to)`,
+  `CREATE TABLE IF NOT EXISTS staff_holidays (
+    id {{PK}}, organisation_id ${ORG},
+    staff_id {{INT}} NOT NULL REFERENCES staff(id) ON DELETE CASCADE,
+    start_date TEXT NOT NULL, end_date TEXT NOT NULL,
+    note TEXT, created_by TEXT, created_at TEXT NOT NULL DEFAULT {{NOW}},
+    CHECK (end_date >= start_date)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_staff_holidays_dates ON staff_holidays(organisation_id, staff_id, start_date, end_date)`,
   `CREATE TABLE IF NOT EXISTS audit_log (
     id {{PK}},
     organisation_id ${ORG},
@@ -429,7 +438,7 @@ function statements(dialect) {
 const TABLE_ORDER = ['organisations', 'settings', 'users', 'user_organisations', 'councils', 'schools', 'staff', 'vehicles',
   'contracts', 'contract_staff', 'contract_rates', 'contract_schedules', 'contract_trips', 'children', 'contract_trip_children',
   'child_timetables', 'child_timetable_days', 'documents', 'exceptions', 'payroll_runs', 'payments',
-  'payroll_run_lines', 'expenses', 'invoices', 'audit_log'];
+  'payroll_run_lines', 'expenses', 'invoices', 'staff_holidays', 'audit_log'];
 
 // Every table holding one firm's data. Each must be filtered by organisation_id.
 // "sessions" is deliberately outside this: a session is looked up by its token

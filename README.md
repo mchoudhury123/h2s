@@ -367,6 +367,14 @@ The PDF is drawn by the server with no dependency: A4, black on white, the compa
 
 Name, address, postcode, telephone, contact, email, opening and closing times and notes. Each school page automatically lists the children attending, the contracts travelling there, and the drivers and PAs who serve it.
 
+### Staff holidays
+
+Open a driver or passenger assistant profile and choose **Holidays** to add leave with a first day off, last day off (inclusive), and notes. Holidays can be edited or cancelled; overlapping dates for the same person are refused. Changes appear in the staff audit history.
+
+The dashboard shows holiday reminders starting **five calendar days before** the first day off, using the UK date. They remain visible through the last day of leave, including holidays entered at short notice. A dedicated reminder table keeps every reminder visible even when there are many other operational alerts. **Arrange cover** opens the calendar for that staff member at the start of leave. Record the relevant absences and assign cover there using the existing workflow. Holiday records themselves do not change wages or create absence exceptions. These are in-app dashboard notifications, with no email or push delivery.
+
+Run `npm run test:holidays` to check recording, validation, editing, cancellation, reminder dates, business isolation and the browser form using an isolated in-memory database.
+
 ### Staff pool
 
 Drivers and PAs who are available but not on a permanent contract, alongside anyone already assigned. Records vehicle, seats, wheelchair accessibility, licensing authority, compliance, stated availability and preferred working areas. Search by proximity to a postcode or a school.

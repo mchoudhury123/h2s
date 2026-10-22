@@ -72,6 +72,15 @@ App.views.dashboard = async function () {
         { label: '', sortable: false, value: run => h('button', { class: 'btn xs', onclick: () => Ops.dayDialog(run.contract_id, d.date, () => Router.handle()) }, 'Manage run') },
       ], d.today.cancelled_runs)) : UI.empty('No runs cancelled today.')));
 
+  if (d.holidays && d.holidays.length) wrap.appendChild(UI.cardTight('Holiday reminders - arrange cover',
+    UI.table([
+      { label: 'Staff', value: r => h('a', { href: '#/staff/' + r.staff_id }, r.staff_name) },
+      { label: 'First day off', value: r => fmt.date(r.start_date) },
+      { label: 'Last day off', value: r => fmt.date(r.end_date) },
+      { label: 'Notes', value: r => r.note },
+      { label: '', value: r => h('a', { class: 'btn sm primary', href: `#/calendar?staff=${r.staff_id}&from=${r.start_date > d.date ? r.start_date : d.date}` }, 'Arrange cover') },
+    ], d.holidays)));
+
   // --- alerts + today's operations side by side ---
   wrap.appendChild(h('div', { style: 'height:14px' }));
   const alertsCard = UI.cardTight(`Operational alerts (${d.alerts.length})`,
