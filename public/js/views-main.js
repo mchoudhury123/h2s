@@ -177,7 +177,7 @@ App.views.calendar = async function ({ query }) {
   return h('div', null,
     UI.pageHead('Operations calendar',
       'Journeys are generated automatically from each contract. Record only what is different.',
-      [nav]),
+      [h('button', { class: 'btn', onclick: () => Rec.schoolHolidays() }, 'School holidays'), nav]),
     h('div', { class: 'card' },
       h('div', { class: 'card-head' }, filterBar),
       h('div', { class: 'card-body tight' }, h('div', { class: 'cal-wrap' }, grid)),
@@ -587,7 +587,9 @@ Ops.dayDialog = async function (contractId, date, onChange) {
           { label: 'Applies to', sortable: false, value: e => absenceSpan(day, e) },
           { label: 'Detail', sortable: false, value: e => [e.child_name, e.staff_name, e.cover_name ? '→ ' + e.cover_name : null, e.cover_pay != null ? fmt.money(e.cover_pay) : null, e.note].filter(Boolean).join(' · ') || '—' },
           { key: 'created_by', label: 'Recorded by' },
-          { label: '', sortable: false, value: e => h('button', { class: 'btn xs danger', onclick: () => remove(e.id) }, 'Remove') },
+          { label: '', sortable: false, value: e => e.holiday_id
+            ? h('button', { class: 'btn xs', onclick: () => Rec.schoolHolidays(c.school_id, refresh) }, 'Manage holiday')
+            : h('button', { class: 'btn xs danger', onclick: () => remove(e.id) }, 'Remove') },
         ], day.exceptions)));
     }
     return wrap;

@@ -954,7 +954,7 @@ App.views.schools = async function () {
     deleteRecord: { resource: 'schools', label: r => r.name },
     title: 'Schools',
     subtitle: `${rows.length} schools`,
-    actions: App.can('edit') ? [h('button', { class: 'btn primary', onclick: () => Rec.schoolEditor(null) }, '+ New school')] : null,
+    actions: App.can('edit') ? [h('button', { class: 'btn', onclick: () => Rec.schoolHolidays() }, 'School holidays'), h('button', { class: 'btn primary', onclick: () => Rec.schoolEditor(null) }, '+ New school')] : null,
     columns: [
       { key: 'name', label: 'School', value: r => h('a', { href: '#/schools/' + r.id }, h('strong', r.name)) },
       { key: 'address', label: 'Address' },
@@ -976,6 +976,7 @@ App.views.schoolDetail = async function ({ params }) {
   const reload = () => Router.handle();
   const head = UI.pageHead(s.name, [s.address, s.postcode].filter(Boolean).join(', '),
     [App.can('edit') ? h('button', { class: 'btn', onclick: () => Rec.schoolEditor(s) }, 'Edit') : null,
+     h('button', { class: 'btn', onclick: () => Rec.schoolHolidays(s.id) }, 'School holidays'),
      h('a', { class: 'btn', href: `#/calendar?school=${s.id}` }, 'Calendar'),
      App.can('finance') ? h('a', { class: 'btn primary', href: `#/finance?school=${s.id}` }, 'Profitability') : null]);
 
@@ -1138,4 +1139,66 @@ Rec.holidayEditor = function (staff, holiday, reload) {
       toast('Holiday saved; reminder starts five days before leave', 'ok'); reload();
     },
   });
+};
+
+Rec.schoolHolidayReview = function (warnings) {
+  if (warnings && warnings.length) UI.modal({ title: 'Review existing invoices and payments',
+    body: h('div', null, ...warnings.map(text => h('p', text))) });
+};
+
+Rec.schoolHolidays = async function (schoolId = null, onChange = null) {
+  const [rows, schools] = await Promise.all([api.get('/api/school-holidays'), api.get('/api/schools')]);
+  const visible = schoolId ? rows.filter(r => r.all_schools || r.schools.some(s => s.id === Number(schoolId))) : rows;
+  const reload = async () => { dlg.close(); if (onChange) await onChange(); else await Router.handle(); await Rec.schoolHolidays(schoolId, onChange); };
+  const dlg = UI.modal({ title: 'School holidays', width: 'wide',
+    body: h('div', null,
+      h('div', { class: 'note-box', style: 'margin-bottom:12px' }, 'Closed dates have no driver or PA pay, no cover pay, and no business income or invoice charges. The first and last dates are both included.'),
+      UI.table([
+        { key: 'name', label: 'Holiday' },
+        { key: 'start_date', label: 'First day closed', value: r => fmt.date(r.start_date) },
+        { key: 'end_date', label: 'Last day closed', value: r => fmt.date(r.end_date) },
+        { label: 'Schools', value: r => r.all_schools ? 'All schools' : r.schools.map(s => s.name).join(', ') || 'No remaining schools' },
+        { key: 'note', label: 'Notes' },
+        { label: '', sortable: false, value: r => h('div', { class: 'pill-row' },
+          h('button', { class: 'btn xs', onclick: () => Rec.schoolHolidayEditor(r, schools, schoolId, reload) }, 'Edit'),
+          h('button', { class: 'btn xs danger', onclick: () => UI.confirm('Cancel this school holiday? These dates will follow the normal schedule again. Existing individual closures will still apply.', async () => {
+            try { const result = await api.del('/api/school-holidays/' + r.id); await reload(); Rec.schoolHolidayReview(result.warnings); }
+            catch (e) { toast(e.message, 'err'); }
+          }) }, 'Cancel holiday')) },
+      ], visible, { empty: 'No school holidays recorded' })),
+    footer: [h('button', { class: 'btn', onclick: () => dlg.close() }, 'Close'),
+      h('button', { class: 'btn primary', onclick: () => Rec.schoolHolidayEditor(null, schools, schoolId, reload) }, '+ Add school holiday')],
+  });
+};
+
+Rec.schoolHolidayEditor = function (holiday, schools, schoolId, reload) {
+  const form = UI.form([
+    { name: 'name', label: 'Holiday name', required: true, placeholder: 'e.g. October half-term', span: 'full' },
+    { name: 'start_date', label: 'First day closed', type: 'date', required: true },
+    { name: 'end_date', label: 'Last day closed (inclusive)', type: 'date', required: true },
+    { name: 'note', label: 'Notes', type: 'textarea', span: 'full' },
+  ], holiday || {});
+  const selected = holiday ? holiday.schools.map(s => s.id) : schoolId ? [Number(schoolId)] : [];
+  const all = h('input', { type: 'checkbox', name: 'all_schools', checked: holiday ? !!holiday.all_schools : !schoolId });
+  const boxes = schools.map(s => ({ id: s.id, input: h('input', { type: 'checkbox', name: 'school_ids', value: s.id, checked: selected.includes(s.id) }), name: s.name }));
+  const choices = h('div', { class: 'form-grid' }, ...boxes.map(b => h('label', { class: 'field check' }, b.input, b.name)));
+  const sync = () => { choices.hidden = all.checked; boxes.forEach(b => { b.input.disabled = all.checked; }); };
+  all.onchange = sync; sync();
+  const save = h('button', { class: 'btn primary' }, 'Save');
+  const dlg = UI.modal({ title: holiday ? 'Edit school holiday' : 'Add school holiday',
+    body: h('div', null, form, h('fieldset', h('legend', 'Schools affected'), h('label', { class: 'field check' }, all, 'All schools'), choices),
+      h('p', { class: 'help' }, 'Use one day for an inset closure. Changing past dates recalculates wages and invoice previews; issued invoices and recorded payments need separate review.')),
+    footer: [h('button', { class: 'btn', onclick: () => dlg.close() }, 'Cancel'), save],
+  });
+  save.onclick = async () => {
+    if (!form.validate()) return;
+    const school_ids = boxes.filter(b => b.input.checked).map(b => b.id);
+    if (!all.checked && !school_ids.length) return toast('Choose at least one school or select all schools.', 'err');
+    save.disabled = true;
+    try {
+      const body = { ...form.read(), all_schools: all.checked ? 1 : 0, school_ids };
+      const result = holiday ? await api.put('/api/school-holidays/' + holiday.id, body) : await api.post('/api/school-holidays', body);
+      dlg.close(); await reload(); toast('School holiday saved', 'ok'); Rec.schoolHolidayReview(result.warnings);
+    } catch (e) { toast(e.message, 'err'); save.disabled = false; }
+  };
 };

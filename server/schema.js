@@ -370,6 +370,20 @@ const TABLES = [
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_number ON invoices(organisation_id, number)`,
   `CREATE INDEX IF NOT EXISTS idx_invoices_contract ON invoices(organisation_id, contract_id, period_from, period_to)`,
+  `CREATE TABLE IF NOT EXISTS school_holidays (
+    id {{PK}}, organisation_id ${ORG}, name TEXT NOT NULL,
+    start_date TEXT NOT NULL, end_date TEXT NOT NULL,
+    all_schools {{INT}} NOT NULL DEFAULT 0 CHECK (all_schools IN (0,1)),
+    note TEXT, created_by TEXT, created_at TEXT NOT NULL DEFAULT {{NOW}},
+    CHECK (end_date >= start_date)
+  )`,
+  `CREATE TABLE IF NOT EXISTS school_holiday_schools (
+    id {{PK}}, organisation_id ${ORG},
+    holiday_id {{INT}} NOT NULL REFERENCES school_holidays(id) ON DELETE CASCADE,
+    school_id {{INT}} NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+    UNIQUE (holiday_id, school_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_school_holidays_dates ON school_holidays(organisation_id, start_date, end_date)`,
   `CREATE TABLE IF NOT EXISTS staff_holidays (
     id {{PK}}, organisation_id ${ORG},
     staff_id {{INT}} NOT NULL REFERENCES staff(id) ON DELETE CASCADE,
@@ -438,7 +452,7 @@ function statements(dialect) {
 const TABLE_ORDER = ['organisations', 'settings', 'users', 'user_organisations', 'councils', 'schools', 'staff', 'vehicles',
   'contracts', 'contract_staff', 'contract_rates', 'contract_schedules', 'contract_trips', 'children', 'contract_trip_children',
   'child_timetables', 'child_timetable_days', 'documents', 'exceptions', 'payroll_runs', 'payments',
-  'payroll_run_lines', 'expenses', 'invoices', 'staff_holidays', 'audit_log'];
+  'payroll_run_lines', 'expenses', 'invoices', 'staff_holidays', 'school_holidays', 'school_holiday_schools', 'audit_log'];
 
 // Every table holding one firm's data. Each must be filtered by organisation_id.
 // "sessions" is deliberately outside this: a session is looked up by its token

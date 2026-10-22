@@ -1656,6 +1656,33 @@ route('DELETE', '/api/staff/:id/holidays/:holidayId', async ctx => {
   H.json(ctx.res, { ok: true });
 });
 
+route('GET', '/api/school-holidays', async ctx => {
+  const holidays = require('./services/school-holidays');
+  H.json(ctx.res, await holidays.list(ctx.org));
+});
+for (const method of ['POST', 'PUT']) route(method, method === 'POST' ? '/api/school-holidays' : '/api/school-holidays/:id', async ctx => {
+  const holidays = require('./services/school-holidays');
+  try {
+    const id = method === 'PUT' ? Number(ctx.params.id) : null;
+    const before = id ? await get('SELECT * FROM school_holidays WHERE organisation_id = ? AND id = ?', [ctx.org, id]) : null;
+    if (method === 'PUT' && !before) return H.error(ctx.res, 'School holiday not found', 404);
+    const previousWarnings = await holidays.review(ctx.org, before);
+    const savedId = await holidays.save(ctx.org, ctx.user, ctx.body, id);
+    const row = await get('SELECT * FROM school_holidays WHERE organisation_id = ? AND id = ?', [ctx.org, savedId]);
+    const warnings = [...new Set([...previousWarnings, ...await holidays.review(ctx.org, row)])];
+    H.json(ctx.res, { ...row, warnings }, method === 'POST' ? 201 : 200);
+  } catch (e) { H.error(ctx.res, friendly(e)); }
+});
+route('DELETE', '/api/school-holidays/:id', async ctx => {
+  const holidays = require('./services/school-holidays');
+  const id = Number(ctx.params.id);
+  const row = await get('SELECT * FROM school_holidays WHERE organisation_id = ? AND id = ?', [ctx.org, id]);
+  if (!row) return H.error(ctx.res, 'School holiday not found', 404);
+  const warnings = await holidays.review(ctx.org, row);
+  await holidays.remove(ctx.org, ctx.user, id);
+  H.json(ctx.res, { ok: true, warnings });
+});
+
 route('GET', '/api/dashboard', async ctx => H.json(ctx.res, await dash.dashboard(ctx.org, ctx.query.date)));
 route('GET', '/api/search', async ctx => H.json(ctx.res,
   await search.universalSearch(ctx.org, ctx.query.q, Number(ctx.query.limit) || 8)));

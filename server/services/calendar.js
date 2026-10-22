@@ -88,7 +88,9 @@ async function loadExceptions(orgId, from, to, contractIds = null) {
     params.push(...contractIds);
   }
   sql += ' ORDER BY e.date, e.id';
-  return all(sql, params);
+  const rows = await all(sql, params);
+  const holidays = await require('./school-holidays').exceptions(orgId, from, to);
+  return [...rows, ...holidays];
 }
 
 /** Everything one date range needs, in a handful of queries. */

@@ -367,6 +367,16 @@ The PDF is drawn by the server with no dependency: A4, black on white, the compa
 
 Name, address, postcode, telephone, contact, email, opening and closing times and notes. Each school page automatically lists the children attending, the contracts travelling there, and the drivers and PAs who serve it.
 
+### School holidays
+
+Choose **School holidays** on the Schools page, a school profile, or the Operations calendar. Add a holiday name, first and last closed dates (inclusive), notes, and select one, several or all schools. A one-day range handles inset closures. Selecting all schools also covers schools and routes added later.
+
+Every affected run appears as school closed on the calendar. Drivers, passenger assistants and cover staff earn nothing on those runs, and the business earns no income or invoice charges, including contracts on fixed daily rates. School holidays do not mark children absent. Edit or cancel the holiday in the same screen; individual closures and other overlapping holidays still apply.
+
+Changing past dates recalculates wages, profitability and future invoice previews. If existing invoices, payments or payroll overlap those dates, the CRM flags them for separate review and keeps their saved records intact. School holiday changes are audited and kept separate for each business.
+
+Run `npm run test:school-holidays` for calendar, financial rules, retrospective warnings, business isolation and browser entry checks.
+
 ### Staff holidays
 
 Open a driver or passenger assistant profile and choose **Holidays** to add leave with a first day off, last day off (inclusive), and notes. Holidays can be edited or cancelled; overlapping dates for the same person are refused. Changes appear in the staff audit history.
