@@ -1610,6 +1610,19 @@ route('DELETE', '/api/invoices/:id', async ctx => {
   H.json(ctx.res, { ok: true, number: r.invoice.number, invoice_no: r.invoice.invoice_no });
 });
 
+// Delete several invoices at once, for example everything shown for a date
+// range. One transaction, one audit line per invoice, every number handed back.
+route('POST', '/api/invoices/delete', async ctx => {
+  const r = await invoicing.removeMany(ctx.org, (ctx.body || {}).ids);
+  if (r.error) return H.error(ctx.res, r.error, r.error === 'Invoice not found' ? 404 : 400);
+  for (const inv of r.invoices) {
+    await audit.logAction(ctx.user, 'invoice', inv.id, inv.invoice_no, 'delete',
+      `Deleted ${inv.invoice_no} with ${r.invoices.length - 1} other${r.invoices.length === 2 ? '' : 's'} and handed number ${inv.number} back for the next invoice (was ${inv.status}, ${invoicing.daysText(inv.days)} days, ${invoicing.money(inv.total)}, ${invoicing.ukDate(inv.period_from)} to ${invoicing.ukDate(inv.period_to)})`);
+  }
+  const numbers = r.invoices.map(i => i.number);
+  H.json(ctx.res, { ok: true, deleted: r.invoices.map(i => ({ id: i.id, invoice_no: i.invoice_no, number: i.number })), numbers, count: numbers.length });
+});
+
 route('GET', '/api/invoicing/batch/:batchId/zip', async ctx => {
   const rows = await invoicing.byBatch(ctx.org, ctx.params.batchId);
   if (!rows.length) return H.error(ctx.res, 'Batch not found', 404);

@@ -221,12 +221,90 @@ Inv.batchResult = function (res) {
 Inv.registerPanel = function (L, query) {
   const wrap = h('div');
   const f = { from: query.rfrom || '', to: query.rto || '', contract_id: query.contract || '', status: query.status || '', q: query.q || '' };
+  // The filters live in the address bar, so a reload, the back button or a
+  // page re-render lands on the same dates rather than the whole register.
+  const syncUrl = () => {
+    const qs = new URLSearchParams(clean({ tab: 'register', rfrom: f.from, rto: f.to, contract: f.contract_id, status: f.status, q: f.q }));
+    history.replaceState(null, '', '#/invoicing?' + qs);
+  };
   const body = h('div');
   const foot = h('div', { class: 'inv-foot' });
+  const bar = h('div', { class: 'inv-select' });
+  const selected = new Set();
+  let shown = [];
+  const describe = ids => {
+    const nos = shown.filter(i => ids.includes(i.id)).map(i => i.invoice_no);
+    return nos.length <= 6 ? nos.join(', ') : `${nos.slice(0, 5).join(', ')} and ${nos.length - 5} more`;
+  };
+  const deleteMany = ids => {
+    if (!ids.length) return;
+    if (ids.length === 1) {
+      const i = shown.find(x => x.id === ids[0]);
+      return UI.confirm(
+        `Delete ${i.invoice_no}? It leaves the register completely and number ${i.number} is used again by the next invoice generated. Use Void instead if the number must never be reused.`,
+        async () => { try { const r = await api.del('/api/invoices/' + i.id); selected.delete(i.id); toast(`${r.invoice_no} deleted. Number ${r.number} will be used by the next invoice.`, 'ok'); load(); } catch (e) { toast(e.message, 'err'); } },
+        { title: 'Delete invoice', yes: 'Delete and reuse the number' });
+    }
+    UI.confirm(
+      `Delete ${plural(ids.length, 'invoice')} (${describe(ids)})? They leave the register completely and their numbers are used again by the next invoices generated. Use Void instead if a number must never be reused.`,
+      async () => {
+        try {
+          const r = await api.post('/api/invoices/delete', { ids });
+          ids.forEach(id => selected.delete(id));
+          toast(`${plural(r.count, 'invoice')} deleted. ${r.count === 1 ? 'Number' : 'Numbers'} ${r.numbers.join(', ')} will be used by the next invoices.`, 'ok');
+          load();
+        } catch (e) { toast(e.message, 'err'); }
+      },
+      { title: `Delete ${plural(ids.length, 'invoice')}`, yes: `Delete ${ids.length} and reuse the numbers` });
+  };
+  const drawBar = () => {
+    bar.innerHTML = '';
+    if (!shown.length) return;
+    const allOn = shown.every(i => selected.has(i.id));
+    const all = h('input', { type: 'checkbox', checked: allOn, 'aria-label': 'Select every invoice shown' });
+    all.indeterminate = !allOn && shown.some(i => selected.has(i.id));
+    all.onchange = () => { shown.forEach(i => all.checked ? selected.add(i.id) : selected.delete(i.id)); redraw(); };
+    bar.appendChild(h('label', { class: 'inv-select-all' }, all, h('span', null, allOn ? `All ${plural(shown.length, 'invoice')} shown selected` : `Select all ${plural(shown.length, 'invoice')} shown`)));
+    if (selected.size) {
+      bar.appendChild(h('span', { class: 'inv-select-count' }, `${selected.size} selected`));
+      bar.appendChild(h('button', { class: 'btn sm danger', onclick: () => deleteMany([...selected]) }, `Delete ${plural(selected.size, 'selected invoice')}`));
+      bar.appendChild(h('button', { class: 'btn sm', onclick: () => { selected.clear(); redraw(); } }, 'Clear selection'));
+    }
+  };
+  let table = null;
+  const redraw = () => { drawBar(); if (table) table.setRows(shown); };
+  const columns = [
+    { label: '', sortable: false, width: '1%', value: i => {
+      const cb = h('input', { type: 'checkbox', checked: selected.has(i.id), 'aria-label': 'Select ' + i.invoice_no });
+      cb.onchange = () => { if (cb.checked) selected.add(i.id); else selected.delete(i.id); drawBar(); };
+      return cb;
+    } },
+    { key: 'number', label: 'Invoice', value: i => h('div', null, h('strong', i.invoice_no), i.override_reason ? h('div', { style: 'font-size:11px;color:var(--text-faint)' }, 'days adjusted') : null) },
+    { key: 'contract_code', label: 'Contract', value: i => i.contract_id ? h('a', { href: '#/contracts/' + i.contract_id }, i.contract_code) : i.contract_code },
+    { key: 'school_name', label: 'School' },
+    { key: 'po_number', label: 'PO' },
+    { key: 'period_from', label: 'Period', value: i => `${fmt.date(i.period_from)} – ${fmt.date(i.period_to)}`, nowrap: true },
+    { key: 'invoice_date', label: 'Invoice date', value: i => fmt.date(i.invoice_date), nowrap: true },
+    { key: 'days', label: 'Days', num: true, value: i => daysText(i.days) },
+    { key: 'subtotal', label: 'Subtotal', num: true, value: i => fmt.money(i.subtotal) },
+    { key: 'vat', label: 'VAT', num: true, value: i => fmt.money(i.vat) },
+    { key: 'total', label: 'Total', num: true, value: i => fmt.money(i.total) },
+    { key: 'status', label: 'Status', value: i => h('span', { class: 'badge ' + (i.status === 'paid' ? 'green' : i.status === 'void' ? 'red' : 'blue'), title: i.void_reason || (i.paid_date ? 'Paid ' + fmt.date(i.paid_date) : '') }, fmt.titleCase(i.status)) },
+    { label: '', sortable: false, value: i => h('div', { class: 'pill-row' },
+      h('a', { class: 'btn xs', href: `/api/invoices/${i.id}/pdf`, target: '_blank' }, 'PDF'),
+      i.status === 'issued' ? h('button', { class: 'btn xs', onclick: () => UI.confirm(`Mark ${i.invoice_no} as paid?`, async () => { try { await api.put('/api/invoices/' + i.id, { status: 'paid' }); toast('Marked as paid', 'ok'); load(); } catch (e) { toast(e.message, 'err'); } }, { yes: 'Mark paid', danger: false }) }, 'Mark paid') : null,
+      i.status !== 'void' ? h('button', { class: 'btn xs danger', onclick: () => Inv.voidDialog(i, load) }, 'Void') : null,
+      h('button', { class: 'btn xs danger', title: 'Remove this invoice from the register and use its number again', onclick: () => deleteMany([i.id]) }, 'Delete')) },
+  ];
   const load = async () => {
+    syncUrl();
     body.innerHTML = '<div class="loading"><span class="spinner"></span></div>';
     const rows = await api.get('/api/invoices', clean(f));
     body.innerHTML = '';
+    shown = rows;
+    // Anything ticked that no longer matches the filters is dropped, so a
+    // delete only ever touches what is on screen.
+    for (const id of [...selected]) if (!rows.some(i => i.id === id)) selected.delete(id);
     const live = rows.filter(i => i.status !== 'void');
     const sum = k => live.reduce((a, i) => a + Number(i[k] || 0), 0);
     foot.innerHTML = '';
@@ -239,27 +317,10 @@ Inv.registerPanel = function (L, query) {
     foot.appendChild(h('div', { class: 'pill-row' },
       rows.length ? h('a', { class: 'btn sm primary', href: '/api/invoices/zip?' + new URLSearchParams(clean(f)) }, `Download all ${plural(rows.length, 'PDF')} (ZIP)`) : null,
       h('a', { class: 'btn sm', href: '#', onclick: e => { e.preventDefault(); window.open('/api/reports/invoices.csv?' + new URLSearchParams(clean(f)), '_blank'); } }, 'Export CSV')));
-    body.appendChild(UI.table([
-      { key: 'number', label: 'Invoice', value: i => h('div', null, h('strong', i.invoice_no), i.override_reason ? h('div', { style: 'font-size:11px;color:var(--text-faint)' }, 'days adjusted') : null) },
-      { key: 'contract_code', label: 'Contract', value: i => i.contract_id ? h('a', { href: '#/contracts/' + i.contract_id }, i.contract_code) : i.contract_code },
-      { key: 'school_name', label: 'School' },
-      { key: 'po_number', label: 'PO' },
-      { key: 'period_from', label: 'Period', value: i => `${fmt.date(i.period_from)} – ${fmt.date(i.period_to)}`, nowrap: true },
-      { key: 'invoice_date', label: 'Invoice date', value: i => fmt.date(i.invoice_date), nowrap: true },
-      { key: 'days', label: 'Days', num: true, value: i => daysText(i.days) },
-      { key: 'subtotal', label: 'Subtotal', num: true, value: i => fmt.money(i.subtotal) },
-      { key: 'vat', label: 'VAT', num: true, value: i => fmt.money(i.vat) },
-      { key: 'total', label: 'Total', num: true, value: i => fmt.money(i.total) },
-      { key: 'status', label: 'Status', value: i => h('span', { class: 'badge ' + (i.status === 'paid' ? 'green' : i.status === 'void' ? 'red' : 'blue'), title: i.void_reason || (i.paid_date ? 'Paid ' + fmt.date(i.paid_date) : '') }, fmt.titleCase(i.status)) },
-      { label: '', sortable: false, value: i => h('div', { class: 'pill-row' },
-        h('a', { class: 'btn xs', href: `/api/invoices/${i.id}/pdf`, target: '_blank' }, 'PDF'),
-        i.status === 'issued' ? h('button', { class: 'btn xs', onclick: () => UI.confirm(`Mark ${i.invoice_no} as paid?`, async () => { try { await api.put('/api/invoices/' + i.id, { status: 'paid' }); toast('Marked as paid', 'ok'); load(); } catch (e) { toast(e.message, 'err'); } }, { yes: 'Mark paid', danger: false }) }, 'Mark paid') : null,
-        i.status !== 'void' ? h('button', { class: 'btn xs danger', onclick: () => Inv.voidDialog(i, load) }, 'Void') : null,
-        h('button', { class: 'btn xs danger', title: 'Remove this invoice from the register and use its number again', onclick: () => UI.confirm(
-          `Delete ${i.invoice_no}? It leaves the register completely and number ${i.number} is used again by the next invoice generated. Use Void instead if the number must never be reused.`,
-          async () => { try { const r = await api.del('/api/invoices/' + i.id); toast(`${r.invoice_no} deleted. Number ${r.number} will be used by the next invoice.`, 'ok'); load(); } catch (e) { toast(e.message, 'err'); } },
-          { title: 'Delete invoice', yes: 'Delete and reuse the number' }) }, 'Delete')) },
-    ], rows, { empty: 'No invoices match', sortKey: 'number', sortDir: -1 }));
+    table = UI.table(columns, rows, { empty: 'No invoices match', sortKey: 'number', sortDir: -1 });
+    drawBar();
+    body.appendChild(bar);
+    body.appendChild(table);
     body.appendChild(foot);
   };
   const filters = h('div', { class: 'filters' },

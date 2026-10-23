@@ -206,6 +206,43 @@ async function main() {
   const g3 = await post('/api/invoicing/generate', { from: '2027-01-04', to: '2027-01-08', items: [{ contract_id: gamma.id }] });
   ok(g3.status === 201 && g3.data.invoices[0].number === 400, 'the next invoice is 400');
 
+  section('7b. Several invoices can be deleted in one go and every number comes back');
+  const FEB = { from: '2027-02-08', to: '2027-02-12' };
+  const g4 = await post('/api/invoicing/generate', { ...FEB, items: [{ contract_id: alpha.id }, { contract_id: beta.id }, { contract_id: gamma.id }] });
+  ok(g4.status === 201 && JSON.stringify(g4.data.invoices.map(i => i.number)) === '[401,402,403]', 'three invoices issued as 401, 402, 403');
+  const bulkIds = g4.data.invoices.map(i => i.id);
+  ok((await post('/api/invoices/delete', { ids: [] })).status === 400, 'deleting nothing is refused');
+  ok((await post('/api/invoices/delete', { ids: [999999999] })).status === 404, 'an id that is not an invoice is refused');
+  const bulk = await post('/api/invoices/delete', { ids: [...bulkIds, 999999999] });
+  ok(bulk.status === 200 && bulk.data.count === 3 && JSON.stringify(bulk.data.numbers) === '[401,402,403]', `all three are deleted together and their numbers reported (got ${JSON.stringify(bulk.data)})`);
+  ok(!(await get('/api/invoices')).data.some(i => bulkIds.includes(i.id)), 'none of them is in the register any more');
+  const pool = (await get('/api/invoicing/settings')).data.released_numbers;
+  ok(JSON.stringify(pool) === '[401,402,403]', `the settings list 401, 402, 403 as handed back (got ${pool})`);
+  const auditBulk = (await get('/api/audit?entity_type=invoice&entity_id=' + bulkIds[0])).data;
+  ok(JSON.stringify(auditBulk).includes('handed number 401 back'), 'each deletion has its own audit line');
+  const g5 = await post('/api/invoicing/generate', { ...FEB, items: [{ contract_id: alpha.id }, { contract_id: beta.id }, { contract_id: gamma.id }] });
+  ok(g5.status === 201 && JSON.stringify(g5.data.invoices.map(i => i.number)) === '[401,402,403]', `the next batch takes those numbers back in order (got ${g5.data.invoices && g5.data.invoices.map(i => i.number)})`);
+  ok((await get('/api/invoicing/settings')).data.next_number === 404, 'and the counter is still 404');
+  const g5del = await post('/api/invoices/delete', { ids: g5.data.invoices.map(i => i.id) });
+  ok(g5del.status === 200 && g5del.data.count === 3, 'and they can be cleared again in one step');
+
+  section('7c. Deleting one at a time keeps every number, not just the last');
+  const g6 = await post('/api/invoicing/generate', { ...FEB, items: [{ contract_id: alpha.id }, { contract_id: beta.id }, { contract_id: gamma.id }] });
+  ok(g6.status === 201 && JSON.stringify(g6.data.invoices.map(i => i.number)) === '[401,402,403]', 'three invoices issued again as 401, 402, 403');
+  for (const inv of [...g6.data.invoices].reverse()) ok((await del('/api/invoices/' + inv.id)).status === 200, `deleted ${inv.invoice_no} on its own`);
+  const pool2 = (await get('/api/invoicing/settings')).data.released_numbers;
+  ok(JSON.stringify(pool2) === '[401,402,403]', `all three numbers are waiting, lowest first (got ${JSON.stringify(pool2)})`);
+  const g7 = await post('/api/invoicing/generate', { ...FEB, items: [{ contract_id: alpha.id }, { contract_id: beta.id }, { contract_id: gamma.id }] });
+  ok(g7.status === 201 && JSON.stringify(g7.data.invoices.map(i => i.number)) === '[401,402,403]', `the next batch is 401, 402, 403 with no gap (got ${g7.data.invoices && g7.data.invoices.map(i => i.number)})`);
+  ok((await get('/api/invoicing/settings')).data.next_number === 404, 'and the counter is still 404');
+  const v7 = await put('/api/invoices/' + g7.data.invoices[0].id, { status: 'void', reason: 'Never sent', reuse_number: true });
+  const v7b = await put('/api/invoices/' + g7.data.invoices[1].id, { status: 'void', reason: 'Never sent', reuse_number: true });
+  ok(v7.status === 200 && v7b.status === 200 && JSON.stringify((await get('/api/invoicing/settings')).data.released_numbers) === '[401,402]', 'two voids that hand numbers back keep both numbers');
+  await post('/api/invoices/delete', { ids: [g7.data.invoices[2].id] });
+  ok(JSON.stringify((await get('/api/invoicing/settings')).data.released_numbers) === '[401,402,403]', 'and a bulk delete adds to them rather than replacing them');
+  const g8 = await post('/api/invoicing/generate', { ...FEB, items: [{ contract_id: alpha.id }, { contract_id: beta.id }, { contract_id: gamma.id }] });
+  await post('/api/invoices/delete', { ids: g8.data.invoices.map(i => i.id) });
+
   section('8. PDFs, the ZIP and the combined PDF');
   const pdf = await call('GET', `/api/invoices/${g1.data.invoices[0].id}/pdf`, undefined, true);
   ok(pdf.status === 200 && pdf.buf.slice(0, 5).toString() === '%PDF-', 'the invoice PDF downloads');

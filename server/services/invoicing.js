@@ -49,9 +49,17 @@ async function settings(orgId) {
   };
 }
 
-/** Numbers handed back by a void, waiting to be used by the next batch. */
-async function releasedNumbers(orgId) {
-  try { const v = JSON.parse(await getSetting(orgId, 'invoice_released_numbers', '[]')); return Array.isArray(v) ? v.map(Number).filter(Number.isInteger).sort((a, b) => a - b) : []; }
+/**
+ * Numbers handed back by a void or a delete, waiting to be used by the next
+ * batch. Inside a transaction pass the transaction as `q`: on a serverless
+ * host the pool has a single connection, which the transaction holds, so a
+ * read through the pool there would wait, time out and come back empty.
+ */
+async function releasedNumbers(orgId, q = null) {
+  const row = q
+    ? await q.get("SELECT value FROM settings WHERE organisation_id = ? AND key = 'invoice_released_numbers'", [orgId])
+    : { value: await getSetting(orgId, 'invoice_released_numbers', '[]') };
+  try { const v = JSON.parse((row && row.value) || '[]'); return Array.isArray(v) ? v.map(Number).filter(Number.isInteger).sort((a, b) => a - b) : []; }
   catch (_) { return []; }
 }
 
@@ -394,7 +402,7 @@ async function setStatus(orgId, id, status, reason, reuseNumber = false) {
   if (status === 'void' && reuseNumber) {
     await transaction(async tx => {
       await tx.run('DELETE FROM invoices WHERE id = ? AND organisation_id = ?', [id, orgId]);
-      const pool = await releasedNumbers(orgId);
+      const pool = await releasedNumbers(orgId, tx);
       if (!pool.includes(inv.number)) pool.push(inv.number);
       await tx.run(`INSERT INTO settings (organisation_id, key, value) VALUES (?,?,?)
         ON CONFLICT (organisation_id, key) DO UPDATE SET value = excluded.value`,
@@ -419,13 +427,38 @@ async function remove(orgId, id) {
   if (!inv) return { error: 'Invoice not found' };
   await transaction(async tx => {
     await tx.run('DELETE FROM invoices WHERE id = ? AND organisation_id = ?', [id, orgId]);
-    const pool = await releasedNumbers(orgId);
+    const pool = await releasedNumbers(orgId, tx);
     if (!pool.includes(inv.number)) pool.push(inv.number);
     await tx.run(`INSERT INTO settings (organisation_id, key, value) VALUES (?,?,?)
       ON CONFLICT (organisation_id, key) DO UPDATE SET value = excluded.value`,
       [orgId, 'invoice_released_numbers', JSON.stringify(pool.sort((a, b) => a - b))]);
   });
   return { invoice: inv, released: true };
+}
+
+/**
+ * Delete several invoices in one go, for clearing a batch or a date range
+ * from the register. Every one is removed and every number handed back in a
+ * single transaction, so a half-done delete cannot leave numbers unaccounted
+ * for. Ids that are not this firm's invoices are ignored rather than failing
+ * the rest. Returns { invoices } with the records removed.
+ */
+async function removeMany(orgId, ids) {
+  const wanted = [...new Set((Array.isArray(ids) ? ids : []).map(Number).filter(n => Number.isInteger(n) && n > 0))];
+  if (!wanted.length) return { error: 'Choose at least one invoice to delete' };
+  const rows = await all(`SELECT * FROM invoices WHERE organisation_id = ? AND id IN (${wanted.map(() => '?').join(',')}) ORDER BY number`, [orgId, ...wanted]);
+  if (!rows.length) return { error: 'Invoice not found' };
+  for (const r of rows) { try { r.snapshot = JSON.parse(r.snapshot || '{}'); } catch (_) { r.snapshot = {}; } }
+  await transaction(async tx => {
+    const found = rows.map(r => r.id);
+    await tx.run(`DELETE FROM invoices WHERE organisation_id = ? AND id IN (${found.map(() => '?').join(',')})`, [orgId, ...found]);
+    const pool = await releasedNumbers(orgId, tx);
+    for (const r of rows) if (!pool.includes(r.number)) pool.push(r.number);
+    await tx.run(`INSERT INTO settings (organisation_id, key, value) VALUES (?,?,?)
+      ON CONFLICT (organisation_id, key) DO UPDATE SET value = excluded.value`,
+      [orgId, 'invoice_released_numbers', JSON.stringify(pool.sort((a, b) => a - b))]);
+  });
+  return { invoices: rows, released: true };
 }
 
 // ---------------------------------------------------------------- pdf
@@ -531,7 +564,7 @@ async function withSnapshots(orgId, q) {
 function pdfForMany(invoices) { const pdf = new Pdf(); for (const inv of invoices) { pdf.addPage(); drawInvoice(pdf, inv); } return pdf.render(); }
 
 module.exports = {
-  remove,
+  remove, removeMany,
   settings, saveSettings, chargeableDays, preview, generate, list, one, byBatch, setStatus, withSnapshots,
   pdfFor, pdfForMany, zipFor, fileName, ukDate, money, daysText, STATUSES, chargeableRun, releasedNumbers,
 };
