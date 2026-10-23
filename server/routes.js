@@ -33,7 +33,7 @@ const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 const COLS = {
   councils: ['name', 'contact_name', 'phone', 'email', 'address', 'notes', 'active'],
   schools: ['name', 'address', 'postcode', 'phone', 'contact_name', 'email', 'open_time', 'close_time', 'notes', 'active'],
-  staff: ['type', 'first_name', 'last_name', 'address', 'postcode', 'phone', 'email', 'emergency_contact_name', 'emergency_contact_phone', 'status', 'licensing_authority', 'badge_number', 'dbs_number', 'default_day_rate', 'availability', 'preferred_areas', 'start_date', 'notes'],
+  staff: ['type', 'first_name', 'last_name', 'address', 'postcode', 'phone', 'email', 'emergency_contact_name', 'emergency_contact_phone', 'status', 'licensing_authority', 'badge_number', 'dbs_number', 'default_day_rate', 'cash_payment', 'availability', 'preferred_areas', 'start_date', 'notes'],
   vehicles: ['driver_id', 'registration', 'make', 'model', 'seats', 'wheelchair_accessible', 'colour', 'notes', 'active'],
   contracts: ['code', 'name', 'council_id', 'council_ref', 'school_id', 'driver_id', 'pa_id', 'vehicle_id', 'requires_pa', 'status', 'start_date', 'end_date', 'days_of_week', 'am_pickup_time', 'am_arrival_time', 'pm_finish_time', 'pm_dropoff_time', 'route_info', 'am_notes', 'pm_notes', 'income_per_day', 'income_basis', 'driver_pay_per_day', 'pa_pay_per_day', 'pay_basis', 'other_costs_per_day', 'notes', 'po_number'],
   children: ['first_name', 'last_name', 'dob', 'address', 'postcode', 'parent_name', 'parent_phone', 'emergency_contact_name', 'emergency_contact_phone', 'school_id', 'contract_id', 'council_ref', 'pickup_time', 'arrival_time', 'finish_time', 'dropoff_time', 'medical_info', 'sen_needs', 'conditions', 'mobility', 'wheelchair', 'behaviour', 'communication', 'allergies', 'safeguarding_info', 'risk_info', 'notes', 'status'],
@@ -42,7 +42,7 @@ const COLS = {
 // Numeric columns declared NOT NULL DEFAULT 0. A blank box means zero, never null.
 const ZERO_IF_BLANK = {
   contracts: ['income_per_day', 'driver_pay_per_day', 'pa_pay_per_day', 'other_costs_per_day', 'requires_pa'],
-  staff: ['default_day_rate'],
+  staff: ['default_day_rate', 'cash_payment'],
   children: ['wheelchair'],
   vehicles: ['wheelchair_accessible', 'active'],
   expenses: ['amount'],
@@ -1907,14 +1907,14 @@ route('DELETE', '/api/payments/:id', async ctx => {
 route('POST', '/api/payroll-runs', async ctx => {
   const { from, to, staff_ids, description } = ctx.body;
   if (!from || !to) return H.error(ctx.res, 'from and to dates are required');
-  const calc = await wages.calculateWages(ctx.org, { from, to, staff_ids: staff_ids && staff_ids.length ? staff_ids : undefined });
+  const calc = await wages.calculateWages(ctx.org, { from, to, staff_ids: staff_ids && staff_ids.length ? staff_ids.map(Number) : undefined });
   const payable = calc.results.filter(r => r.totals.amount_due > 0);
   if (!payable.length) return H.error(ctx.res, 'Nothing outstanding to pay for that period');
   let runId;
   await transaction(async tx => {
     runId = await insert('payroll_runs', {
       from_date: from, to_date: to, description: description || `Payroll ${from} to ${to}`,
-      total: calc.totals.total_due, created_by: ctx.user.name,
+      total: cal.round2(payable.reduce((sum, r) => sum + r.totals.amount_due, 0)), created_by: ctx.user.name,
     }, ['from_date', 'to_date', 'description', 'total', 'created_by'], tx, ctx.org);
     for (const r of payable) {
       await insert('payroll_run_lines', {
@@ -1922,15 +1922,15 @@ route('POST', '/api/payroll-runs', async ctx => {
       }, ['payroll_run_id', 'staff_id', 'amount', 'breakdown_json'], tx, ctx.org);
       await insert('payments', {
         staff_id: r.staff.id, work_date: to, paid_date: cal.today(), amount: r.totals.amount_due,
-        source: 'payroll', payroll_run_id: runId, note: `Payroll ${from} to ${to}`, created_by: ctx.user.name,
-      }, ['staff_id', 'work_date', 'paid_date', 'amount', 'source', 'payroll_run_id', 'note', 'created_by'], tx, ctx.org);
+        source: 'payroll', payroll_run_id: runId, method: r.staff.cash_payment === 1 ? 'Cash' : 'Bank transfer', note: `Payroll ${from} to ${to}`, created_by: ctx.user.name,
+      }, ['staff_id', 'work_date', 'paid_date', 'amount', 'source', 'payroll_run_id', 'method', 'note', 'created_by'], tx, ctx.org);
       await tx.run(`INSERT INTO audit_log (organisation_id, user_name, entity_type, entity_id, entity_label, action, summary)
         VALUES (?,?,?,?,?,?,?)`,
       [ctx.org, ctx.user.name, 'staff', r.staff.id, r.staff.name, 'payroll',
-        `Paid ${r.totals.amount_due.toFixed(2)} for ${from} to ${to}`]);
+        `Paid ${r.totals.amount_due.toFixed(2)} by ${r.staff.cash_payment === 1 ? 'Cash' : 'Bank transfer'} for ${from} to ${to}`]);
     }
   });
-  H.json(ctx.res, { id: runId, paid: payable.length, total: calc.totals.total_due }, 201);
+  H.json(ctx.res, { id: runId, paid: payable.length, total: cal.round2(payable.reduce((sum, r) => sum + r.totals.amount_due, 0)), cash_total: calc.totals.cash_due, bank_total: calc.totals.bank_due }, 201);
 });
 
 // Undo a payroll run: its payments go, so the period is owed again.
@@ -1950,7 +1950,10 @@ route('DELETE', '/api/payroll-runs/:id', async ctx => {
 });
 
 route('GET', '/api/payroll-runs', async ctx => H.json(ctx.res, await all(
-  `SELECT r.*, (SELECT COUNT(*) FROM payroll_run_lines WHERE payroll_run_id = r.id AND organisation_id = r.organisation_id) AS staff_count
+  `SELECT r.*,
+     (SELECT COALESCE(SUM(p.amount),0) FROM payments p WHERE p.organisation_id = r.organisation_id AND p.payroll_run_id = r.id AND p.method = 'Cash') AS cash_total,
+     (SELECT COALESCE(SUM(p.amount),0) FROM payments p WHERE p.organisation_id = r.organisation_id AND p.payroll_run_id = r.id AND p.method = 'Bank transfer') AS bank_total,
+     (SELECT COUNT(*) FROM payroll_run_lines WHERE payroll_run_id = r.id AND organisation_id = r.organisation_id) AS staff_count
    FROM payroll_runs r WHERE r.organisation_id = ? ORDER BY r.id DESC LIMIT 100`, [ctx.org])));
 
 route('GET', '/api/payroll-runs/:id', async ctx => {
@@ -1960,6 +1963,7 @@ route('GET', '/api/payroll-runs/:id', async ctx => {
     FROM payroll_run_lines l JOIN staff s ON s.id = l.staff_id
     WHERE l.organisation_id = ? AND l.payroll_run_id = ?`, [ctx.org, r.id]))
     .map(l => ({ ...l, breakdown: l.breakdown_json ? JSON.parse(l.breakdown_json) : null, breakdown_json: undefined }));
+  r.cash_total = cal.round2(r.lines.filter(l => l.breakdown?.staff.cash_payment === 1).reduce((sum, l) => sum + l.amount, 0));
   H.json(ctx.res, r);
 });
 

@@ -46,6 +46,16 @@ App.views.wages = async function ({ query }) {
     UI.stat({ label: 'Already paid', value: fmt.money0(data.totals.already_paid), hint: 'Cover paid immediately and past payroll', tone: data.totals.already_paid ? 'amber' : '' }),
     UI.stat({ label: 'Total to pay', value: fmt.money0(data.totals.total_due), tone: 'green' }));
 
+  const cashSection = UI.cardTight('Cash payments to prepare', h('div', null,
+    h('div', { class: 'stats', style: 'padding:12px' },
+      UI.stat({ label: 'Cash total', value: fmt.money(data.totals.cash_due), tone: 'green' }),
+      UI.stat({ label: 'Bank transfer total', value: fmt.money(data.totals.bank_due) })),
+    UI.table([
+      { label: 'Staff', value: r => r.staff.name },
+      { label: 'Type', value: r => r.staff.type === 'driver' ? 'Driver' : 'PA' },
+      { label: 'Cash due', num: true, value: r => fmt.money(r.totals.amount_due) },
+    ], data.results.filter(r => r.staff.cash_payment === 1 && r.totals.amount_due > 0), { empty: 'No cash payments due for this period' })));
+
   const summary = UI.table([
     { key: 'name', label: 'Staff', value: r => h('a', { href: '#', title: 'Open the breakdown', onclick: e => { e.preventDefault(); Fin.breakdown(r, from, to); } }, h('strong', r.staff.name)), sort: r => r.staff.name },
     { label: 'Type', value: r => h('span', { class: 'pill-row' }, h('span', { class: 'badge blue' }, r.staff.type === 'driver' ? 'Driver' : 'PA'),
@@ -58,6 +68,12 @@ App.views.wages = async function ({ query }) {
     { label: 'Gross', num: true, value: r => fmt.money(r.totals.gross), sort: r => r.totals.gross },
     { label: 'Already paid', num: true, value: r => r.totals.already_paid ? h('span', { style: 'color:var(--red)' }, '-' + fmt.money(r.totals.already_paid)) : '—', sort: r => r.totals.already_paid },
     { label: 'Amount due', num: true, value: r => h('strong', fmt.money(r.totals.amount_due)), sort: r => r.totals.amount_due },
+    { label: 'Pay in cash', sortable: false, value: r => h('input', { type: 'checkbox', checked: r.staff.cash_payment === 1,
+      'aria-label': 'Pay ' + r.staff.name + ' in cash', onclick: e => e.stopPropagation(), onchange: async e => {
+        const input = e.target; input.disabled = true;
+        try { await api.put('/api/staff/' + r.staff.id, { cash_payment: input.checked ? 1 : 0 }); await Router.handle(); }
+        catch (err) { input.checked = !input.checked; input.disabled = false; toast(err.message, 'err'); }
+      } }) },
     { label: '', sortable: false, value: r => h('button', { class: 'btn xs primary', onclick: () => Fin.breakdown(r, from, to) }, 'Breakdown') },
   ], data.results, {
     empty: 'No staff to show for this period',
@@ -65,20 +81,21 @@ App.views.wages = async function ({ query }) {
     footer: h('tr', h('td', { colspan: 6, class: 'tfoot-title' }, 'TOTAL'),
       h('td', { class: 'num', 'data-label': 'Gross' }, fmt.money(data.totals.gross)),
       h('td', { class: 'num', 'data-label': 'Already paid' }, data.totals.already_paid ? '-' + fmt.money(data.totals.already_paid) : '—'),
-      h('td', { class: 'num', 'data-label': 'Amount due' }, fmt.money(data.totals.total_due)), h('td')),
+      h('td', { class: 'num', 'data-label': 'Amount due' }, fmt.money(data.totals.total_due)), h('td'), h('td')),
   });
 
   const actions = [
     h('a', { class: 'btn', href: `/api/reports/payroll.csv?from=${from}&to=${to}`, target: '_blank' }, Icon.el('download', 14), 'Export summary'),
     h('a', { class: 'btn', href: `/api/reports/wage-breakdown.csv?from=${from}&to=${to}`, target: '_blank' }, Icon.el('download', 14), 'Export full breakdown'),
     h('button', { class: 'btn', onclick: () => window.print() }, Icon.el('print', 14), 'Print'),
-    App.can('wages') && data.totals.total_due > 0 ? h('button', { class: 'btn primary', onclick: () => Fin.markPaid(from, to, data) }, 'Mark period as paid') : null,
+    App.can('wages') && !contractId && data.totals.cash_due + data.totals.bank_due > 0 ? h('button', { class: 'btn primary', onclick: () => Fin.markPaid(from, to, data) }, 'Mark period as paid') : null,
   ];
 
   return h('div', null,
     UI.pageHead('Wage calculation', `${fmt.dateLong(from)} to ${fmt.dateLong(to)} — calculated from journeys actually operated`, actions),
-    controls, h('div', { style: 'height:14px' }), totals, h('div', { style: 'height:14px' }),
+    controls, contractId ? h('p', { class: 'help' }, 'Clear the contract filter to record payroll for the selected staff.') : null, h('div', { style: 'height:14px' }), totals, h('div', { style: 'height:14px' }),
     UI.cardTight('Wages due', summary),
+    h('div', { style: 'height:14px' }), cashSection,
     h('div', { style: 'height:14px' }),
     UI.card('How these figures are produced', h('div', { style: 'color:var(--text-dim);font-size:13px' },
       h('p', { style: 'margin:0 0 6px' }, 'Every contract generates its scheduled AM and PM journeys automatically for its operating days. The calculation then applies each recorded exception:'),
@@ -221,7 +238,7 @@ Fin.payDays = function (staff, from, to) {
     { name: 'to', label: 'Paid to', type: 'date', value: to, required: true, help: 'One day: put the same date in both.' },
     { name: 'amount', label: 'Amount paid (£)', type: 'number', step: '0.01', help: 'Suggested from what those days are worth. Change it if a different sum was handed over; it is then spread across the days.' },
     { name: 'paid_date', label: 'Date paid', type: 'date', value: D.today() },
-    { name: 'method', label: 'Method', type: 'select', options: ['Bank transfer', 'Cash', 'Cheque', 'Other'] },
+    { name: 'method', label: 'Method', type: 'select', value: staff.cash_payment === 1 ? 'Cash' : 'Bank transfer', options: ['Bank transfer', 'Cash', 'Cheque', 'Other'] },
     { name: 'reference', label: 'Reference' },
     { name: 'note', label: 'Note', span: 'full', placeholder: 'e.g. Paid in cash on Friday' },
   ], {});
@@ -280,7 +297,7 @@ Fin.recordPayment = function (staff, amount, workDate) {
     { name: 'amount', label: 'Amount paid (£)', type: 'number', step: '0.01', required: true, value: amount },
     { name: 'work_date', label: 'Work date this covers', type: 'date', value: workDate, required: true, help: 'The payment is deducted from any wage calculation covering this date.' },
     { name: 'paid_date', label: 'Date paid', type: 'date', value: D.today() },
-    { name: 'method', label: 'Method', type: 'select', options: ['Bank transfer', 'Cash', 'Cheque', 'Other'] },
+    { name: 'method', label: 'Method', type: 'select', value: staff.cash_payment === 1 ? 'Cash' : 'Bank transfer', options: ['Bank transfer', 'Cash', 'Cheque', 'Other'] },
     { name: 'reference', label: 'Reference' },
     { name: 'note', label: 'Note', span: 'full' },
   ], {});
@@ -295,9 +312,9 @@ Fin.recordPayment = function (staff, amount, workDate) {
 
 Fin.markPaid = function (from, to, data) {
   UI.confirm(
-    `Record ${fmt.money(data.totals.total_due)} as paid to ${data.totals.staff_due ?? data.totals.staff_count} staff for ${fmt.date(from)} to ${fmt.date(to)}? Each amount is logged as a payment so it will not appear in a future wage calculation.`,
+    `Record ${fmt.money(data.totals.cash_due + data.totals.bank_due)} as paid to ${data.totals.staff_due ?? data.totals.staff_count} staff for ${fmt.date(from)} to ${fmt.date(to)}? Cash: ${fmt.money(data.totals.cash_due)}. Bank transfer: ${fmt.money(data.totals.bank_due)}. Each amount is logged as a payment so it will not appear in a future wage calculation.`,
     async () => {
-      try { const r = await api.post('/api/payroll-runs', { from, to }); toast(`Payroll recorded: ${r.paid} staff, ${fmt.money(r.total)}`, 'ok'); Router.handle(); }
+      try { const r = await api.post('/api/payroll-runs', { from, to, staff_ids: data.results.filter(r => r.totals.amount_due > 0).map(r => r.staff.id) }); toast(`Payroll recorded: ${r.paid} staff, ${fmt.money(r.total)}`, 'ok'); Router.handle(); }
       catch (e) { toast(e.message, 'err'); }
     }, { title: 'Mark payroll as paid', yes: 'Yes, record as paid', danger: false });
 };
@@ -313,6 +330,7 @@ App.views.payrollRuns = async function () {
       { key: 'from_date', label: 'Period', value: r => `${fmt.date(r.from_date)} – ${fmt.date(r.to_date)}`, nowrap: true },
       { key: 'staff_count', label: 'Staff', num: true },
       { key: 'total', label: 'Total', num: true, value: r => fmt.money(r.total) },
+      { key: 'cash_total', label: 'Cash', num: true, value: r => fmt.money(r.cash_total) },
       { key: 'created_by', label: 'Recorded by' },
       { label: '', sortable: false, value: r => h('div', { class: 'pill-row', style: 'justify-content:flex-end' },
         h('a', { class: 'btn xs', href: `#/wages?from=${r.from_date}&to=${r.to_date}` }, 'Re-open period'),

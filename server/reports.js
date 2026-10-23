@@ -238,14 +238,14 @@ function c(key, label, value) { return value ? { key, label, value: r => value(r
 async function wageReport(org, q, type, title) {
   const calc = await wages.calculateWages(org, { from: q.from, to: q.to, type: type || undefined, all_staff: true, staff_ids: q.staff_ids ? String(q.staff_ids).split(',').map(Number) : undefined });
   const rows = calc.results.map(r => ({
-    name: r.staff.name, type: r.staff.type.toUpperCase(),
+    name: r.staff.name, type: r.staff.type.toUpperCase(), payment_method: r.staff.cash_payment === 1 ? 'Cash' : 'Bank transfer',
     normal_days: r.totals.normal_days, journeys: r.totals.journeys, normal_earnings: r.totals.normal_earnings,
     cover_days: r.totals.cover_days, cover_earnings: r.totals.cover_earnings,
     gross: r.totals.gross, already_paid: r.totals.already_paid, amount_due: r.totals.amount_due,
   }));
   return {
     title: `${title} ${q.from} to ${q.to}`,
-    columns: [c('name', 'Staff'), c('type', 'Type'), c('normal_days', 'Days worked'), c('journeys', 'Journeys'),
+    columns: [c('name', 'Staff'), c('type', 'Type'), c('payment_method', 'Payment method'), c('normal_days', 'Days worked'), c('journeys', 'Journeys'),
       c('normal_earnings', 'Normal earnings', money), c('cover_days', 'Cover days'), c('cover_earnings', 'Cover earnings', money),
       c('gross', 'Gross', money), c('already_paid', 'Already paid', money), c('amount_due', 'Amount due', money)],
     rows, totals: calc.totals,

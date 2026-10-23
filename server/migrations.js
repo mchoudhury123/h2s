@@ -211,6 +211,7 @@ async function applyMigrations(driver, log) {
   await addColumn(driver, 'contracts', 'po_number', 'TEXT', log);
   // Days paid together can be undone together.
   await addColumn(driver, 'payments', 'batch', 'TEXT', log);
+  await addColumn(driver, 'staff', 'cash_payment', 'INTEGER NOT NULL DEFAULT 0 CHECK (cash_payment IN (0,1))', log);
   for (const stmt of schema.statements(driver.dialect)) await driver.exec(stmt);
 }
 

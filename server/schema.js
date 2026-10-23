@@ -91,6 +91,7 @@ const TABLES = [
     status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','pool','inactive')),
     licensing_authority TEXT, badge_number TEXT, dbs_number TEXT,
     default_day_rate {{REAL}} NOT NULL DEFAULT 0,
+    cash_payment {{INT}} NOT NULL DEFAULT 0 CHECK (cash_payment IN (0,1)),
     availability TEXT, preferred_areas TEXT,
     start_date TEXT, photo TEXT, notes TEXT,
     created_at TEXT NOT NULL DEFAULT {{NOW}}

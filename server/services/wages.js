@@ -20,7 +20,7 @@ async function calculateWages(orgId, opts) {
 
   const ledger = new Map();
   const staffRows = await all(
-    'SELECT id, type, first_name, last_name, default_day_rate, status FROM staff WHERE organisation_id = ?', [orgId]);
+    'SELECT id, type, first_name, last_name, default_day_rate, cash_payment, status FROM staff WHERE organisation_id = ?', [orgId]);
   const staffById = new Map(staffRows.map(s => [s.id, s]));
   function entry(staffId) {
     if (!staffId) return null;
@@ -134,7 +134,7 @@ async function calculateWages(orgId, opts) {
       kind: 'already_paid', date: p.work_date, leg: null,
       contract_id: p.paid_contract_id || null, contract_code: p.paid_contract_code || null,
       description: `${label} on ${ukDate(p.paid_date)}${p.paid_contract_code ? ' for ' + p.paid_contract_code : ''}${p.reference ? ' (ref ' + p.reference + ')' : ''}`,
-      rate: null, amount: -round2(p.amount), payment_id: p.id, source: p.source,
+      rate: null, amount: -round2(p.amount), payment_id: p.id, source: p.source, method: p.method || null,
       paid_date: p.work_date && p.paid_date ? String(p.paid_date).slice(0, 10) : null,
       batch: p.batch || null, payroll_run_id: p.payroll_run_id || null, exception_id: p.exception_id || null,
     });
@@ -177,6 +177,8 @@ async function calculateWages(orgId, opts) {
       gross: round2(sumBy(results, r => r.totals.gross)),
       already_paid: round2(sumBy(results, r => r.totals.already_paid)),
       total_due: round2(sumBy(results, r => r.totals.amount_due)),
+      cash_due: round2(sumBy(results.filter(r => r.staff.cash_payment === 1), r => Math.max(0, r.totals.amount_due))),
+      bank_due: round2(sumBy(results.filter(r => r.staff.cash_payment !== 1), r => Math.max(0, r.totals.amount_due))),
       staff_count: results.length,
       // Listed is everyone shown; due is the people actually owed something.
       staff_due: results.filter(r => r.totals.amount_due > 0).length,

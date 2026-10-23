@@ -367,6 +367,14 @@ The PDF is drawn by the server with no dependency: A4, black on white, the compa
 
 Name, address, postcode, telephone, contact, email, opening and closing times and notes. Each school page automatically lists the children attending, the contracts travelling there, and the drivers and PAs who serve it.
 
+### Cash wages
+
+Tick **Pay in cash** on a driver or PA profile, or beside their name on the wage calculation. This saves their preference for future calculations. The **Cash payments to prepare** section lists cash recipients and their outstanding amounts, with separate cash and bank transfer totals after deducting payments already made. Changing the checkbox does not mark wages as paid.
+
+**Mark period as paid** records Cash or Bank transfer against each payment and pays only the staff included in the displayed calculation. Clear the contract filter before recording payroll. Payroll history shows the cash total recorded for each run; changing a staff member's current preference does not change previous payment methods. The staff payment history and exported wage summary also show the method. Individual payment dialogs default to the staff member's preference and still allow a different method for a one-off payment.
+
+Run `npm run test:cash-wages` for cash preferences, totals, payroll records, historical methods, undo, tenant isolation, migration and browser checks.
+
 ### School holidays
 
 Choose **School holidays** on the Schools page, a school profile, or the Operations calendar. Add a holiday name, first and last closed dates (inclusive), notes, and select one, several or all schools. A one-day range handles inset closures. Selecting all schools also covers schools and routes added later.

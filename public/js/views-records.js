@@ -807,7 +807,7 @@ App.views.staffDetail = async function ({ params }) {
           UI.kv([
             ...(isDriver ? [['Licensing authority', s.licensing_authority], ['Driver badge / licence number', s.badge_number]] : []),
             ['DBS number', s.dbs_number],
-            ...(App.can('finance') ? [['Default day rate', fmt.money(s.default_day_rate)]] : []),
+            ...(App.can('finance') ? [['Default day rate', fmt.money(s.default_day_rate)], ['Payment method', s.cash_payment ? 'Cash' : 'Bank transfer']] : []),
             ['Availability', s.availability], ['Preferred working areas', s.preferred_areas],
           ]),
           s.notes ? h('div', { class: 'note-box', style: 'margin-top:12px' }, s.notes) : null)),
@@ -855,6 +855,7 @@ App.views.staffDetail = async function ({ params }) {
             { label: '', sortable: false, width: '30px', value: p => h('input', { type: 'checkbox', class: 'pay-pick', 'aria-label': 'Select payment', onchange: e => { if (e.target.checked) payPicked.set(p.id, p); else payPicked.delete(p.id); refreshPayUndo(); } }) },
             { key: 'work_date', label: 'Work date', value: p => fmt.date(p.work_date), nowrap: true },
             { key: 'paid_date', label: 'Paid on', value: p => fmt.date(p.paid_date), nowrap: true },
+            { key: 'method', label: 'Method', value: p => p.method || 'Not recorded' },
             { key: 'amount', label: 'Amount', num: true, value: p => fmt.money(p.amount) },
             { key: 'source', label: 'Source', value: p => h('span', { class: 'badge ' + (p.source === 'cover_immediate' ? 'amber' : '') }, fmt.titleCase(p.source)) },
             { key: 'note', label: 'Note' },
@@ -908,6 +909,8 @@ Rec.staffEditor = function (s, type) {
   ];
   if (App.can('finance')) fields.push({ type: 'section', label: 'Pay' }, { name: 'default_day_rate', label: 'Default day rate (£)', type: 'number', step: '0.01', help: 'Used as a fallback. Contract rates take priority.' });
   fields.push({ name: 'notes', label: 'Notes', type: 'textarea', span: 'full', rows: 3 });
+
+  fields.push({ name: 'cash_payment', label: 'Pay in cash', type: 'checkbox', help: 'Include this person in the cash wages total.' });
 
   UI.editor({
     title: s ? 'Edit ' + s.name : `New ${isDriver ? 'driver' : 'passenger assistant'}`,
