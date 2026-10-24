@@ -292,10 +292,15 @@ Ops.cell = function (day, contract, date, onChange) {
     else if (t.pa.required && t.pa.status === 'absent_no_cover') { cls += ' partial'; text = 'No PA'; }
     else if (t.children_absent > 0) { cls += ' partial'; text = `${t.children_absent} absent`; }
     else if (t.source === 'extra') { cls += ' cover'; text = t.label; }
+    if (t.closed) text='SCHOOL CLOSED';
     const gap = t.driver.status === 'absent_no_cover' ? ' · ran without a driver recorded' : (t.pa.required && t.pa.status === 'absent_no_cover' ? ' · ran without a PA' : '');
     cell.appendChild(h('div', { class: cls, title: `${t.label}${t.depart_time ? ' · departs ' + fmt.time(t.depart_time) : ''}${gap}` },
       h('span', { class: 'lt' }, tripShort(day, t)), h('span', { class: 'lx' }, text)));
   }
+  const provisional=day.trips.flatMap(t=>t.provisional_school_dates||[]);
+  if(provisional.length) cell.appendChild(h('div',{class:'badge amber',title:[...new Set(provisional)].join('; ')},'PROVISIONAL'));
+  const closedChildren=day.children.filter(ch=>ch.status==='school_closed');
+  if(closedChildren.length && !day.trips.every(t=>t.closed)) cell.appendChild(h('div',{class:'cellnote',title:closedChildren.map(ch=>ch.name+' — SCHOOL CLOSED').join('; ')},closedChildren.length+' SCHOOL CLOSED'));
   const off = day.children.filter(c => !c.scheduled).length;
   if (off && day.trips.length) {
     cell.appendChild(h('div', { class: 'cellnote', title: day.children.filter(c => !c.scheduled).map(c => c.name + ' — normal day off').join('\n') },
@@ -429,13 +434,14 @@ Ops.dayDialog = async function (contractId, date, onChange) {
     const jbox = h('fieldset', h('legend', `Journeys on this date — ${plural(day.planned_trips, 'planned journey')} · charged to the council as ${Number.isInteger(chargedDays) ? chargedDays : chargedDays.toFixed(1)} ${chargedDays === 1 ? 'day' : 'days'}`));
     for (const t of day.trips) {
       const cancelled = day.exceptions.find(e =>
-        ['journey_cancelled', 'journey_removed', 'contract_cancelled', 'school_closed'].includes(e.type) && scopeTrips(day, e).some(x => x.seq === t.seq));
+        e.id === t.cancellation_exception_id);
       jbox.appendChild(h('div', { class: 'trip-head' },
         h('div', { class: 'th-num' }, t.seq),
         h('div', { class: 'th-name' }, t.label,
           t.source === 'extra' ? h('span', { class: 'badge blue', style: 'margin-left:6px' }, 'One-off extra') : null),
         h('div', { class: 'th-time' }, t.depart_time ? fmt.time(t.depart_time) : ''),
-        tripBadge(day, t),
+        t.closed ? h('span', {class:'badge red'}, 'SCHOOL CLOSED') : tripBadge(day, t),
+        t.provisional_school_dates?.length ? h('span', {class:'badge amber',title:t.provisional_school_dates.join('; ')}, 'PROVISIONAL') : null,
         h('span', { style: 'font-size:11.5px;color:var(--text-dim)' },
           `${plural(t.children_travelling, 'child', 'children')} travelling`,
           t.children_not_scheduled ? ` · ${t.children_not_scheduled} not on this journey` : ''),
@@ -511,6 +517,7 @@ Ops.dayDialog = async function (contractId, date, onChange) {
         h('div', { style: 'flex:1;min-width:130px' },
           h('a', { href: '#/children/' + ch.id, target: '_blank' }, ch.name),
           ch.start_time || ch.finish_time ? h('div', { style: 'font-size:11.5px;color:var(--text-faint)' }, `${fmt.time(ch.start_time)} – ${fmt.time(ch.finish_time)}`) : null,
+          theirs.some(t=>ch.trips[t.seq]==='school_closed') ? h('span',{class:'badge red'},'SCHOOL CLOSED') : null,
           recorded),
         actions));
     }

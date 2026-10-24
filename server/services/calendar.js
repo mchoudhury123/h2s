@@ -62,7 +62,7 @@ async function loadChildrenByContract(orgId, contractIds) {
   requireOrg(orgId);
   const list = inClause(contractIds);
   if (!list) return {};
-  const rows = await all(`SELECT id, first_name, last_name, contract_id, wheelchair, status,
+  const rows = await all(`SELECT id, first_name, last_name, school_id, contract_id, wheelchair, status,
       pickup_time, arrival_time, finish_time, dropoff_time
     FROM children WHERE organisation_id = ? AND status = 'active' AND contract_id IN (${list})
     ORDER BY last_name, first_name`, [orgId, ...contractIds]);
@@ -90,7 +90,8 @@ async function loadExceptions(orgId, from, to, contractIds = null) {
   sql += ' ORDER BY e.date, e.id';
   const rows = await all(sql, params);
   const holidays = await require('./school-holidays').exceptions(orgId, from, to);
-  return [...rows, ...holidays];
+  const academic = await require('./academic-calendars').exceptions(orgId, from, to);
+  return [...rows, ...holidays, ...academic];
 }
 
 /** Everything one date range needs, in a handful of queries. */
@@ -149,8 +150,8 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
 
   const ex = exceptions.filter(e => e.date === date
     && (e.contract_id === c.id
-      || (e.contract_id == null && e.type === 'school_closed'
-        && (e.school_id == null || e.school_id === c.school_id))));
+      || (e.contract_id == null && ['school_closed', 'school_provisional'].includes(e.type)
+        && (e.school_id == null || e.school_id === c.school_id || children.some(ch => ch.school_id === e.school_id)))));
 
   const live = contractLiveOn(c, date);
   const planned = live ? sched.plannedTrips(c, date, weekday, schedules) : [];
@@ -174,7 +175,7 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
   const childStates = children.map(ch => {
     const day = sched.childDay(ch, c, date, weekday, timetables.get(ch.id));
     return {
-      id: ch.id, name: ch.name, wheelchair: ch.wheelchair,
+      id: ch.id, name: ch.name, school_id: ch.school_id || c.school_id, wheelchair: ch.wheelchair,
       scheduled: !!day.attends && live,
       start_time: day.start_time, finish_time: day.finish_time,
       // "not_scheduled" is a normal day off. It is not an absence.
@@ -196,7 +197,14 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
       children: [], children_travelling: 0, children_absent: 0, children_not_scheduled: 0,
     };
 
-    const closedHere = ex.find(e => e.type === 'school_closed' && appliesToTrip(e, plan));
+    const riders = sched.tripChildren(plan, scheduledChildren);
+    const schoolClosure = ch => ex.find(e => e.type === 'school_closed' && appliesToTrip(e, plan)
+      && (e.contract_id === c.id || e.school_id == null || e.school_id === ch.school_id));
+    const closedHere = riders.length ? (riders.every(schoolClosure) ? schoolClosure(riders[0]) : null)
+      : ex.find(e => e.type === 'school_closed' && appliesToTrip(e, plan) && (e.school_id == null || e.school_id === c.school_id));
+    t.school_status = closedHere ? 'SCHOOL_CLOSED' : null;
+    t.provisional_school_dates = ex.filter(e => e.type === 'school_provisional' && appliesToTrip(e, plan)
+      && (riders.length ? riders.some(ch => ch.school_id === e.school_id) : e.school_id === c.school_id)).map(e=>e.note);
     const cancelled = cancelledWholeDay
       || ex.find(e => e.type === 'contract_cancelled' && appliesToTrip(e, plan));
     const journeyCancelled = ex.find(e => e.type === 'journey_cancelled' && appliesToTrip(e, plan));
@@ -218,11 +226,11 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
     if (removed && removed.note) t.reason += ' — ' + removed.note;
 
     // Who is on this trip, of the children expected in today.
-    const riders = sched.tripChildren(plan, scheduledChildren);
     for (const ch of riders) {
       const absent = ex.find(e => e.type === 'child_absence' && e.child_id === ch.id && appliesToTrip(e, plan));
       let status;
-      if (t.status === 'not_operated') status = 'not_operated';
+      if (schoolClosure(ch)) status = 'school_closed';
+      else if (t.status === 'not_operated') status = 'not_operated';
       else if (absent) { status = 'absent'; t.children_absent++; }
       else { status = 'travelling'; t.children_travelling++; }
       ch.trips[plan.seq] = status;
@@ -290,6 +298,11 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
     }
   }
 
+  for (const ch of childStates) {
+    const statuses=Object.values(ch.trips);
+    if (statuses.length && statuses.every(status=>status==='school_closed')) { ch.status='school_closed'; ch.school_status='SCHOOL_CLOSED'; }
+  }
+
   const operatedTrips = trips.filter(t => t.status === 'operated');
 
   // Council income for the date, by the one shared rule. Every chargeable
@@ -332,7 +345,7 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
     rates: { income_per_day: rates.income_per_day, driver_pay_per_day: rates.driver_pay_per_day, pa_pay_per_day: rates.pa_pay_per_day, other_costs_per_day: rates.other_costs_per_day, since: rates.change ? rates.change.effective_from : null },
     operated: operatedTrips.length > 0,
   };
-  result.summary = summarise(result);
+  result.summary = [...summarise(result), ...new Set(ex.filter(e=>e.type==='school_provisional').map(e=>e.note))];
   return result;
 }
 
@@ -430,7 +443,7 @@ async function buildCalendar(orgId, from, to, filter = {}) {
   let where = " AND c.status IN ('active','suspended')";
   const params = [];
   if (filter.contract_id) { where += ' AND c.id = ?'; params.push(filter.contract_id); }
-  if (filter.school_id) { where += ' AND c.school_id = ?'; params.push(filter.school_id); }
+  if (filter.school_id) { where += ' AND (c.school_id = ? OR EXISTS (SELECT 1 FROM children ch WHERE ch.organisation_id = c.organisation_id AND ch.contract_id = c.id AND ch.school_id = ? AND ch.status = \'active\'))'; params.push(filter.school_id, filter.school_id); }
   if (filter.staff_id) {
     // Someone who held a seat on any date in the past belongs on their calendar too.
     where += ` AND (c.driver_id = ? OR c.pa_id = ?

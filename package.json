@@ -28,7 +28,8 @@
     "test:workflow": "node --experimental-sqlite --no-warnings scripts/check-workflow.js",
     "test:schedules": "node --experimental-sqlite --no-warnings scripts/check-schedules.js",
     "business": "node --experimental-sqlite --no-warnings scripts/business.js",
-    "test:invoicing": "node --experimental-sqlite --no-warnings scripts/test-invoicing.js"
+    "test:invoicing": "node --experimental-sqlite --no-warnings scripts/test-invoicing.js",
+    "test:academic-calendars": "node --experimental-sqlite --no-warnings scripts/test-academic-calendars.js"
   },
   "engines": {
     "node": ">=20.19"

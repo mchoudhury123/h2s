@@ -470,7 +470,8 @@ crud('contracts', 'contracts', {
     row.history = await audit.history(org, 'contracts', id, 50);
     return row;
   },
-  before: async (org, data) => {
+  before: async (org, data, ctx) => {
+    if (!data.school_id && (data.school_id !== undefined || !(ctx && ctx.req && ctx.req.method === 'PUT'))) return 'Choose the primary school served by this contract';
     if (data.code) data.code = String(data.code).trim().toUpperCase();
     // Every link must point at a record belonging to the same firm.
     for (const [field, table, msg] of [
@@ -485,10 +486,7 @@ crud('contracts', 'contracts', {
     return null;
   },
   after: async (org, row, ctx, before) => {
-    // Changing a contract's school re-points its children so the hierarchy stays consistent.
-    if (before && row.school_id !== before.school_id && row.school_id) {
-      await run('UPDATE children SET school_id = ? WHERE contract_id = ? AND organisation_id = ?', [row.school_id, row.id, org]);
-    }
+    // Child school assignments are independent on mixed-school contracts; never rewrite them here.
     // A driver or PA picked on the form is a correction of the latest holder.
     // Dated handovers already recorded keep their earlier people; to hand a
     // seat over from a date, the contract page's "Change driver / PA" is used.
@@ -584,13 +582,15 @@ crud('children', 'children', {
     row.history = await audit.history(org, 'children', id, 40);
     return row;
   },
-  before: async (org, data) => {
+  before: async (org, data, ctx, before) => {
+    if (before && data.school_id === undefined) data.school_id = before.school_id;
     if (data.contract_id) {
       const c = await owned('contracts', Number(data.contract_id), org);
       if (!c) return 'That contract is not in your records';
       // A child inherits the school from their contract unless one is given explicitly.
       if (!data.school_id && c.school_id) data.school_id = c.school_id;
     }
+    if (!data.school_id) return 'Choose a school for this child or assign a contract with a primary school';
     if (data.school_id && !(await owned('schools', Number(data.school_id), org))) return 'That school is not in your records';
     return null;
   },
@@ -1667,6 +1667,32 @@ route('DELETE', '/api/staff/:id/holidays/:holidayId', async ctx => {
   await run('DELETE FROM staff_holidays WHERE organisation_id = ? AND id = ?', [ctx.org, row.id]);
   await audit.logAction(ctx.user, 'staff', row.staff_id, null, 'holiday', `Cancelled holiday ${row.start_date} to ${row.end_date}`);
   H.json(ctx.res, { ok: true });
+});
+
+// School-by-school staging, preview and explicit approval. Existing holidays remain independent.
+route('GET', '/api/academic-calendars', async ctx => H.json(ctx.res, await require('./services/academic-calendars').list(ctx.org)));
+route('POST', '/api/academic-calendars/import', async ctx => {
+  try { H.json(ctx.res,await require('./services/academic-calendars').stageImport(ctx.org,ctx.user,ctx.body)); }
+  catch(e) { H.error(ctx.res,friendly(e)); }
+});
+route('POST', '/api/academic-calendars/bulk-preview', async ctx => {
+  try { H.json(ctx.res,await require('./services/academic-calendars').bulkPreview(ctx.org,ctx.body.version_ids)); }
+  catch(e) { H.error(ctx.res,friendly(e)); }
+});
+route('POST', '/api/academic-calendars/prepare', async ctx => {
+  try { await require('./services/academic-calendars').prepare(ctx.org,ctx.user); H.json(ctx.res,{ok:true}); }
+  catch(e) { H.error(ctx.res,friendly(e)); }
+});
+for (const action of ['preview','apply','records','revise','verify']) route('POST', '/api/academic-calendars/:id/'+action, async ctx => {
+  try {
+    const service=require('./services/academic-calendars');
+    const result=action==='preview' ? await service.preview(ctx.org,ctx.params.id,ctx.body.operation || 'approve')
+      : action==='apply' ? await service.apply(ctx.org,ctx.user,ctx.params.id,ctx.body)
+      : action==='verify' ? await service.verifyRecord(ctx.org,ctx.user,ctx.params.id,ctx.body)
+      : action==='revise' ? await service.revise(ctx.org,ctx.user,ctx.params.id)
+      : await service.addRecord(ctx.org,ctx.user,ctx.params.id,ctx.body);
+    H.json(ctx.res,result);
+  } catch(e) { H.error(ctx.res,friendly(e)); }
 });
 
 route('GET', '/api/school-holidays', async ctx => {

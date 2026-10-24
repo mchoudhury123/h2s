@@ -371,6 +371,21 @@ const TABLES = [
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_number ON invoices(organisation_id, number)`,
   `CREATE INDEX IF NOT EXISTS idx_invoices_contract ON invoices(organisation_id, contract_id, period_from, period_to)`,
+  `CREATE TABLE IF NOT EXISTS school_calendar_versions (
+    id {{PK}}, organisation_id ${ORG}, school_id {{INT}} NOT NULL REFERENCES schools(id),
+    academic_year TEXT NOT NULL, import_key TEXT NOT NULL,
+    verification_status TEXT NOT NULL, note TEXT,
+    state TEXT NOT NULL DEFAULT 'draft', effective_from TEXT, reverted_from TEXT,
+    approved_by TEXT, approved_at TEXT, created_at TEXT NOT NULL DEFAULT {{NOW}},
+    UNIQUE (organisation_id, school_id, import_key)
+  )`,
+  `CREATE TABLE IF NOT EXISTS school_calendar_records (
+    id {{PK}}, organisation_id ${ORG}, version_id {{INT}} NOT NULL REFERENCES school_calendar_versions(id),
+    school_id {{INT}} NOT NULL REFERENCES schools(id), date_from TEXT NOT NULL, date_to TEXT NOT NULL,
+    reason TEXT NOT NULL, verification_status TEXT NOT NULL,
+    record_type TEXT NOT NULL DEFAULT 'closed', source_url TEXT, source_note TEXT,
+    created_at TEXT NOT NULL DEFAULT {{NOW}}, CHECK (date_to >= date_from)
+  )`,
   `CREATE TABLE IF NOT EXISTS school_holidays (
     id {{PK}}, organisation_id ${ORG}, name TEXT NOT NULL,
     start_date TEXT NOT NULL, end_date TEXT NOT NULL,
@@ -453,7 +468,7 @@ function statements(dialect) {
 const TABLE_ORDER = ['organisations', 'settings', 'users', 'user_organisations', 'councils', 'schools', 'staff', 'vehicles',
   'contracts', 'contract_staff', 'contract_rates', 'contract_schedules', 'contract_trips', 'children', 'contract_trip_children',
   'child_timetables', 'child_timetable_days', 'documents', 'exceptions', 'payroll_runs', 'payments',
-  'payroll_run_lines', 'expenses', 'invoices', 'staff_holidays', 'school_holidays', 'school_holiday_schools', 'audit_log'];
+  'payroll_run_lines', 'expenses', 'invoices', 'staff_holidays', 'school_calendar_versions', 'school_calendar_records', 'school_holidays', 'school_holiday_schools', 'audit_log'];
 
 // Every table holding one firm's data. Each must be filtered by organisation_id.
 // "sessions" is deliberately outside this: a session is looked up by its token
