@@ -377,13 +377,15 @@ Run `npm run test:cash-wages` for cash preferences, totals, payroll records, his
 
 ### School holidays
 
-Choose **School holidays** on the Schools page, a school profile, or the Operations calendar. Add a holiday name, first and last closed dates (inclusive), notes, and select one, several or all schools. A one-day range handles inset closures. Selecting all schools also covers schools and routes added later.
+Choose **School holidays** on the Schools page, a school profile, or the Operations calendar. Add a holiday name, first and last closed dates (inclusive), notes, and select one, several or all schools. A one-day range handles inset closures. Selecting all schools also covers schools and routes added later. Each holiday is filed under an **academic year**, worked out from its first closed date (August to July), so the 2027/2028 dates are added the same way when they are known and apply to the calendar at once. An all-schools holiday can name schools that **stay open as normal**, for a school whose term dates differ; add that school's own dates as a holiday of its own.
 
-Every affected run appears as school closed on the calendar. Drivers, passenger assistants and cover staff earn nothing on those runs, and the business earns no income or invoice charges, including contracts on fixed daily rates. School holidays do not mark children absent. Edit or cancel the holiday in the same screen; individual closures and other overlapping holidays still apply.
+Every closed weekday is **greyed out as SCHOOL CLOSED** on the calendar, with the holiday name and the number of runs not operating; the day view and the contract's own calendar show the same. The closed date stays on the calendar and still opens the day dialog, which shows the reason, the scheduled trips, and driver and PA wages of £0. No recurring run operates, so nothing is paid or charged, including contracts on fixed daily rates, and the normal weekly pattern resumes by itself on the first open day. School holidays never mark children absent. Edit or cancel the holiday in the same screen; individual closures and other overlapping holidays still apply.
+
+A closure belongs to the **school, not the contract**. A route carrying children from two schools keeps running for the children whose school is open: the children at the closed school are shown as school closed rather than absent, the staff are paid and the council charged for the runs that operate, and the run is closed only when every child aboard is at a closed school. To run a contract on a date its school calendar closes (an authorised holiday run), open the day dialog and choose **Open this contract on this date**; that contract then operates, pays and charges as normal while the rest stay closed, and the override can be removed again. Bank holidays that fall inside a holiday period need no separate entry; one inside term time is entered as a one-day holiday.
 
 Changing past dates recalculates wages, profitability and future invoice previews. If existing invoices, payments or payroll overlap those dates, the CRM flags them for separate review and keeps their saved records intact. School holiday changes are audited and kept separate for each business.
 
-Run `npm run test:school-holidays` for calendar, financial rules, retrospective warnings, business isolation and browser entry checks.
+Run `npm run test:school-holidays` for calendar, financial rules, retrospective warnings, academic years, schools kept open, mixed-school routes, the school open override, business isolation and browser entry checks.
 
 ### Staff holidays
 

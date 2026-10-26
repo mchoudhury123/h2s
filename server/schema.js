@@ -284,7 +284,7 @@ const TABLES = [
     id {{PK}},
     organisation_id ${ORG},
     date TEXT NOT NULL,
-    type TEXT NOT NULL CHECK (type IN ('child_absence','staff_absence','school_closed','contract_cancelled','journey_cancelled','journey_removed','pay_override','note','extra_journey')),
+    type TEXT NOT NULL CHECK (type IN ('child_absence','staff_absence','school_closed','school_open','contract_cancelled','journey_cancelled','journey_removed','pay_override','note','extra_journey')),
     -- Which journey this applies to. A trip number targets one journey; without
     -- one, AM means the outward trips, PM the return trips, DAY the whole day.
     leg TEXT NOT NULL DEFAULT 'DAY' CHECK (leg IN ('AM','PM','DAY')),
@@ -373,6 +373,7 @@ const TABLES = [
   `CREATE INDEX IF NOT EXISTS idx_invoices_contract ON invoices(organisation_id, contract_id, period_from, period_to)`,
   `CREATE TABLE IF NOT EXISTS school_holidays (
     id {{PK}}, organisation_id ${ORG}, name TEXT NOT NULL,
+    academic_year TEXT,
     start_date TEXT NOT NULL, end_date TEXT NOT NULL,
     all_schools {{INT}} NOT NULL DEFAULT 0 CHECK (all_schools IN (0,1)),
     note TEXT, created_by TEXT, created_at TEXT NOT NULL DEFAULT {{NOW}},
@@ -382,6 +383,9 @@ const TABLES = [
     id {{PK}}, organisation_id ${ORG},
     holiday_id {{INT}} NOT NULL REFERENCES school_holidays(id) ON DELETE CASCADE,
     school_id {{INT}} NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+    -- 'closed': the school is shut for this holiday. 'open': the school stays
+    -- open while an all-schools holiday closes the rest (a differing term date).
+    role TEXT NOT NULL DEFAULT 'closed' CHECK (role IN ('closed','open')),
     UNIQUE (holiday_id, school_id)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_school_holidays_dates ON school_holidays(organisation_id, start_date, end_date)`,

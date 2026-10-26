@@ -62,7 +62,7 @@ async function loadChildrenByContract(orgId, contractIds) {
   requireOrg(orgId);
   const list = inClause(contractIds);
   if (!list) return {};
-  const rows = await all(`SELECT id, first_name, last_name, contract_id, wheelchair, status,
+  const rows = await all(`SELECT id, first_name, last_name, contract_id, school_id, wheelchair, status,
       pickup_time, arrival_time, finish_time, dropoff_time
     FROM children WHERE organisation_id = ? AND status = 'active' AND contract_id IN (${list})
     ORDER BY last_name, first_name`, [orgId, ...contractIds]);
@@ -147,10 +147,15 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
   const schedules = ctx.schedules && ctx.schedules.get ? ctx.schedules.get(c.id) : null;
   const timetables = ctx.timetables && ctx.timetables.get ? ctx.timetables : new Map();
 
+  // A closure belongs to a school. It reaches this contract through the
+  // contract's own school or through the school of any child on board, so a
+  // route carrying children from two schools follows each child's school.
+  const schoolOf = ch => ch.school_id || c.school_id || null;
+  const childSchoolIds = new Set(children.map(schoolOf).filter(Boolean));
   const ex = exceptions.filter(e => e.date === date
     && (e.contract_id === c.id
       || (e.contract_id == null && e.type === 'school_closed'
-        && (e.school_id == null || e.school_id === c.school_id))));
+        && (e.school_id == null || e.school_id === c.school_id || childSchoolIds.has(e.school_id)))));
 
   const live = contractLiveOn(c, date);
   const planned = live ? sched.plannedTrips(c, date, weekday, schedules) : [];
@@ -174,7 +179,7 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
   const childStates = children.map(ch => {
     const day = sched.childDay(ch, c, date, weekday, timetables.get(ch.id));
     return {
-      id: ch.id, name: ch.name, wheelchair: ch.wheelchair,
+      id: ch.id, name: ch.name, wheelchair: ch.wheelchair, school_id: ch.school_id || null,
       scheduled: !!day.attends && live,
       start_time: day.start_time, finish_time: day.finish_time,
       // "not_scheduled" is a normal day off. It is not an absence.
@@ -193,10 +198,27 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
       depart_time: plan.depart_time, arrive_time: plan.arrive_time,
       source: plan.source, exception_id: plan.exception_id || null,
       status: 'operated', reason: null,
-      children: [], children_travelling: 0, children_absent: 0, children_not_scheduled: 0,
+      children: [], children_travelling: 0, children_absent: 0, children_closed: 0, children_not_scheduled: 0,
     };
 
-    const closedHere = ex.find(e => e.type === 'school_closed' && appliesToTrip(e, plan));
+    // Who is on this trip, of the children expected in today.
+    const riders = sched.tripChildren(plan, scheduledChildren);
+
+    // School closures. "School open" recorded on the contract for this date
+    // overrides every closure, so a route can run on a day its school's
+    // holiday calendar would close (an authorised holiday run). Otherwise a
+    // closure for a school keeps that school's children at home; the trip
+    // itself is closed only when every child on it is at a closed school, or
+    // when nobody is assigned yet and the contract's own school is closed.
+    const openHere = ex.find(e => e.type === 'school_open' && appliesToTrip(e, plan));
+    const closures = openHere ? [] : ex.filter(e => e.type === 'school_closed' && appliesToTrip(e, plan));
+    const closedForSchool = sid => closures.some(e => e.school_id == null || e.school_id === sid);
+    const closedRiders = riders.filter(ch => closedForSchool(schoolOf(ch)));
+    const wholeTripClosed = closures.length > 0 && (riders.length ? closedRiders.length === riders.length : closedForSchool(c.school_id || null));
+    const closedHere = wholeTripClosed ? (closures.find(e => e.school_id == null || e.school_id === c.school_id) || closures[0]) : null;
+    t.school_open = !!openHere;
+    t.closure_note = closedHere ? (closedHere.holiday_name || closedHere.note || 'School closed') : null;
+    t.holiday_id = closedHere ? (closedHere.holiday_id || null) : null;
     const cancelled = cancelledWholeDay
       || ex.find(e => e.type === 'contract_cancelled' && appliesToTrip(e, plan));
     const journeyCancelled = ex.find(e => e.type === 'journey_cancelled' && appliesToTrip(e, plan));
@@ -217,12 +239,12 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
     if (cancellation && cancellation.note) t.reason += ' — ' + cancellation.note;
     if (removed && removed.note) t.reason += ' — ' + removed.note;
 
-    // Who is on this trip, of the children expected in today.
-    const riders = sched.tripChildren(plan, scheduledChildren);
     for (const ch of riders) {
       const absent = ex.find(e => e.type === 'child_absence' && e.child_id === ch.id && appliesToTrip(e, plan));
       let status;
       if (t.status === 'not_operated') status = 'not_operated';
+      // A child whose school is shut stays at home. That is not an absence.
+      else if (closedForSchool(schoolOf(ch))) { status = 'school_closed'; t.children_closed++; }
       else if (absent) { status = 'absent'; t.children_absent++; }
       else { status = 'travelling'; t.children_travelling++; }
       ch.trips[plan.seq] = status;
@@ -236,7 +258,7 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
     // pattern before anybody is assigned to it.
     if (t.status === 'operated' && childStates.length > 0 && t.children_travelling === 0) {
       t.status = 'not_operated';
-      t.reason = riders.length > 0 ? 'All children absent' : 'No children scheduled';
+      t.reason = riders.length > 0 ? (t.children_closed ? 'All children absent or at a closed school' : 'All children absent') : 'No children scheduled';
     }
 
     for (const role of ['driver', 'pa']) t[role] = staffForTrip(c, role, plan, ex, date);
@@ -322,6 +344,10 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
     cancelled_trips: trips.filter(t => t.cancelled).length,
     removed_trips: trips.filter(t => t.removed).length,
     closed_trips: trips.filter(t => t.closed).length,
+    // The whole day is a school closure when every planned run is closed.
+    closed: trips.length > 0 && trips.every(t => t.closed),
+    closure_reason: (trips.find(t => t.closed) || {}).closure_note || null,
+    school_open: trips.some(t => t.school_open),
     chargeable_days: days,
     chargeable_trips: chargeableTrips.length,
     children: childStates,
@@ -402,6 +428,8 @@ function summarise(r) {
     if (t.pa.status === 'covered') lines.push(`${label(t)}: PA cover ${t.pa.cover_name}`);
     else if (t.pa.status === 'absent_no_cover' && !/PA absent/.test(t.reason || '')) lines.push(`${label(t)}: PA absent (no cover)`);
     if (t.children_absent) lines.push(`${label(t)}: ${t.children_absent} child${t.children_absent > 1 ? 'ren' : ''} absent`);
+    if (t.children_closed && t.status === 'operated') lines.push(`${label(t)}: ${t.children_closed} child${t.children_closed > 1 ? 'ren' : ''} at a closed school`);
+    if (t.school_open && t.status === 'operated') lines.push(`${label(t)}: School open (closure overridden)`);
   }
   const off = r.children.filter(c => !c.scheduled).length;
   if (off && off === r.children.length && r.trips.length) lines.push('No children scheduled today');

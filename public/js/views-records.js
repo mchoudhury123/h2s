@@ -1157,10 +1157,13 @@ Rec.schoolHolidays = async function (schoolId = null, onChange = null) {
     body: h('div', null,
       h('div', { class: 'note-box', style: 'margin-bottom:12px' }, 'Closed dates have no driver or PA pay, no cover pay, and no business income or invoice charges. The first and last dates are both included.'),
       UI.table([
+        { key: 'academic_year', label: 'Academic year' },
         { key: 'name', label: 'Holiday' },
         { key: 'start_date', label: 'First day closed', value: r => fmt.date(r.start_date) },
         { key: 'end_date', label: 'Last day closed', value: r => fmt.date(r.end_date) },
-        { label: 'Schools', value: r => r.all_schools ? 'All schools' : r.schools.map(s => s.name).join(', ') || 'No remaining schools' },
+        { label: 'Schools', value: r => r.all_schools
+          ? h('span', null, 'All schools', r.open_schools && r.open_schools.length ? h('div', { style: 'font-size:11.5px;color:var(--text-dim)' }, 'Open as normal: ' + r.open_schools.map(s => s.name).join(', ')) : null)
+          : r.schools.map(s => s.name).join(', ') || 'No remaining schools' },
         { key: 'note', label: 'Notes' },
         { label: '', sortable: false, value: r => h('div', { class: 'pill-row' },
           h('button', { class: 'btn xs', onclick: () => Rec.schoolHolidayEditor(r, schools, schoolId, reload) }, 'Edit'),
@@ -1168,7 +1171,7 @@ Rec.schoolHolidays = async function (schoolId = null, onChange = null) {
             try { const result = await api.del('/api/school-holidays/' + r.id); await reload(); Rec.schoolHolidayReview(result.warnings); }
             catch (e) { toast(e.message, 'err'); }
           }) }, 'Cancel holiday')) },
-      ], visible, { empty: 'No school holidays recorded' })),
+      ], visible, { empty: 'No school holidays recorded', sortKey: 'start_date', sortDir: -1 })),
     footer: [h('button', { class: 'btn', onclick: () => dlg.close() }, 'Close'),
       h('button', { class: 'btn primary', onclick: () => Rec.schoolHolidayEditor(null, schools, schoolId, reload) }, '+ Add school holiday')],
   });
@@ -1182,24 +1185,36 @@ Rec.schoolHolidayEditor = function (holiday, schools, schoolId, reload) {
     { name: 'note', label: 'Notes', type: 'textarea', span: 'full' },
   ], holiday || {});
   const selected = holiday ? holiday.schools.map(s => s.id) : schoolId ? [Number(schoolId)] : [];
+  const openSelected = holiday && holiday.open_schools ? holiday.open_schools.map(s => s.id) : [];
   const all = h('input', { type: 'checkbox', name: 'all_schools', checked: holiday ? !!holiday.all_schools : !schoolId });
-  const boxes = schools.map(s => ({ id: s.id, input: h('input', { type: 'checkbox', name: 'school_ids', value: s.id, checked: selected.includes(s.id) }), name: s.name }));
+  // With "All schools" ticked the same boxes name the exceptions: schools
+  // whose own term dates keep them open while the rest are closed.
+  const boxes = schools.map(s => ({ id: s.id, input: h('input', { type: 'checkbox', name: 'school_ids', value: s.id }), name: s.name }));
   const choices = h('div', { class: 'form-grid' }, ...boxes.map(b => h('label', { class: 'field check' }, b.input, b.name)));
-  const sync = () => { choices.hidden = all.checked; boxes.forEach(b => { b.input.disabled = all.checked; }); };
+  const choicesTitle = h('div', { style: 'margin:8px 0 4px;font-size:12.5px;color:var(--text-dim)' });
+  const sync = () => {
+    choicesTitle.textContent = all.checked ? 'Except these schools, which stay open as normal (optional):' : 'Schools closed:';
+    boxes.forEach(b => { b.input.checked = (all.checked ? openSelected : selected).includes(b.id); });
+  };
   all.onchange = sync; sync();
+  const yearOf = d => { const y = Number(String(d).slice(0, 4)), m = Number(String(d).slice(5, 7)); const s = m >= 8 ? y : y - 1; return `${s}/${s + 1}`; };
   const save = h('button', { class: 'btn primary' }, 'Save');
   const dlg = UI.modal({ title: holiday ? 'Edit school holiday' : 'Add school holiday',
-    body: h('div', null, form, h('fieldset', h('legend', 'Schools affected'), h('label', { class: 'field check' }, all, 'All schools'), choices),
-      h('p', { class: 'help' }, 'Use one day for an inset closure. Changing past dates recalculates wages and invoice previews; issued invoices and recorded payments need separate review.')),
+    body: h('div', null, form, h('fieldset', h('legend', 'Schools affected'), h('label', { class: 'field check' }, all, 'All schools (including schools added later)'), choicesTitle, choices),
+      h('p', { class: 'help' }, 'Use one day for an inset closure. The academic year is filed from the first closed date (August to July). Changing past dates recalculates wages and invoice previews; issued invoices and recorded payments need separate review.')),
     footer: [h('button', { class: 'btn', onclick: () => dlg.close() }, 'Cancel'), save],
   });
   save.onclick = async () => {
     if (!form.validate()) return;
-    const school_ids = boxes.filter(b => b.input.checked).map(b => b.id);
+    const ticked = boxes.filter(b => b.input.checked).map(b => b.id);
+    const school_ids = all.checked ? [] : ticked;
+    const open_school_ids = all.checked ? ticked : [];
     if (!all.checked && !school_ids.length) return toast('Choose at least one school or select all schools.', 'err');
+    if (all.checked && open_school_ids.length === schools.length) return toast('Every school is marked open, so nothing would be closed.', 'err');
     save.disabled = true;
     try {
-      const body = { ...form.read(), all_schools: all.checked ? 1 : 0, school_ids };
+      const values = form.read();
+      const body = { ...values, all_schools: all.checked ? 1 : 0, school_ids, open_school_ids, academic_year: yearOf(values.start_date) };
       const result = holiday ? await api.put('/api/school-holidays/' + holiday.id, body) : await api.post('/api/school-holidays', body);
       dlg.close(); await reload(); toast('School holiday saved', 'ok'); Rec.schoolHolidayReview(result.warnings);
     } catch (e) { toast(e.message, 'err'); save.disabled = false; }

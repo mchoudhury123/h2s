@@ -983,6 +983,12 @@ route('POST', '/api/exceptions', async ctx => {
         }
         if (data.type === 'child_absence' && !data.child_id) throw new Error('Select the child who was absent');
         if (data.type === 'school_closed' && data.school_id) data.contract_id = null;
+        // A contract kept running on a closed date. Always on one contract.
+        if (data.type === 'school_open') {
+          if (!data.contract_id) throw new Error('Choose the contract that is running on this date');
+          data.school_id = null;
+          data.leg = data.leg || 'DAY';
+        }
         if (data.type === 'extra_journey') {
           if (!data.contract_id) throw new Error('Choose the contract this extra journey belongs to');
           if (!data.trip_label) throw new Error('Name the extra journey, for example "1pm college collection"');
@@ -1120,6 +1126,7 @@ function describeException(r) {
     case 'child_absence': return `Child absent (${leg})`;
     case 'staff_absence': return `${r.role === 'driver' ? 'Driver' : 'PA'} absent (${leg})${r.cover_staff_id ? ' - cover assigned' : ' - no cover'}`;
     case 'school_closed': return `School closed (${leg})`;
+    case 'school_open': return `School open, closure overridden (${leg})`;
     case 'contract_cancelled': return `Contract cancelled (${leg})`;
     case 'journey_cancelled': return `Journey cancelled (${leg})`;
     case 'journey_removed': return `Run taken off (${leg}) - not charged`;

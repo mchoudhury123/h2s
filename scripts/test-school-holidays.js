@@ -88,6 +88,51 @@ const holidays = require('../server/services/school-holidays');
   assert.equal((await db.get('SELECT subtotal FROM invoices WHERE organisation_id = ?', [org])).subtotal, 500);
   assert.equal((await db.get('SELECT amount FROM payments WHERE organisation_id = ?', [org])).amount, 60);
 
+  // Academic year is filed from the first closed date (August to July).
+  assert.equal((await call('GET', url)).data.find(h => h.id === id).academic_year, '2026/2027');
+  // An all-schools holiday can keep named schools open: their term dates differ.
+  const xmas = await call('POST', url, { name: 'Christmas', start_date: '2026-12-21', end_date: '2027-01-01', all_schools: 1, school_ids: [], open_school_ids: [schoolB] });
+  assert.equal(xmas.status, 201);
+  const listed = (await call('GET', url)).data.find(h => h.id === xmas.data.id);
+  assert.equal(listed.academic_year, '2026/2027');
+  assert.deepEqual(listed.open_schools.map(s => s.id), [schoolB]);
+  assert.equal((await day(c, '2026-12-21')).closed, true, 'the whole day reads as closed');
+  assert.equal((await day(c, '2027-01-01')).closure_reason, 'Christmas');
+  assert.equal((await day(c, '2027-01-04')).closed, false, 'the normal pattern resumes after the last closed date');
+  assert.equal((await day(c, '2027-01-04')).income, 100);
+  assert.equal((await day(b, '2026-12-21')).closed, false, 'the school kept open runs as normal');
+  assert.equal((await day(b, '2026-12-21')).income, 100);
+  assert.equal((await call('POST', url, { name: 'Bad', start_date: '2026-12-21', end_date: '2026-12-22', all_schools: 1, open_school_ids: [foreignSchool] })).status, 400);
+  // A route carrying children from two schools follows each child's school.
+  const mixed = await contract('M', school, 'per_journey');
+  const kidA = await add('children', { first_name: 'Ann', last_name: 'A', contract_id: mixed, school_id: school, status: 'active' });
+  const kidB = await add('children', { first_name: 'Ben', last_name: 'B', contract_id: mixed, school_id: schoolB, status: 'active' });
+  const inset = await call('POST', url, { name: 'Inset A', start_date: '2027-01-04', end_date: '2027-01-04', all_schools: 0, school_ids: [school] });
+  let md = await day(mixed, '2027-01-04');
+  assert.equal(md.closed, false, 'the trip still runs for the child at the open school');
+  assert.equal(md.income, 100);
+  assert(md.trips.every(t => t.status === 'operated' && t.children_travelling === 1 && t.children_closed === 1 && t.driver.pay > 0), JSON.stringify(md.trips.map(t => [t.status, t.children_travelling, t.children_closed])));
+  assert.equal(md.children.find(k => k.id === kidA).trips[1], 'school_closed');
+  assert.equal(md.children.find(k => k.id === kidB).trips[1], 'travelling');
+  assert(md.summary.some(text => /at a closed school/.test(text)));
+  await call('PUT', url + '/' + inset.data.id, { name: 'Inset A and B', start_date: '2027-01-04', end_date: '2027-01-04', all_schools: 0, school_ids: [school, schoolB] });
+  md = await day(mixed, '2027-01-04');
+  assert.equal(md.closed, true, 'closed once every child aboard is at a closed school');
+  assert.equal(md.income, 0);
+  assert(md.trips.every(t => t.closed && t.driver.pay === 0 && t.pa.pay === 0));
+  // "School open" recorded on one contract overrides the closure for that contract only.
+  const opened = await call('POST', '/api/exceptions', { contract_id: mixed, date: '2027-01-04', type: 'school_open', leg: 'DAY', note: 'Authorised' });
+  assert(opened.status < 300, JSON.stringify(opened));
+  md = await day(mixed, '2027-01-04');
+  assert.equal(md.closed, false); assert.equal(md.school_open, true); assert.equal(md.income, 100);
+  assert(md.trips.every(t => t.status === 'operated' && t.children_travelling === 2 && t.driver.pay > 0));
+  assert.equal((await day(c, '2027-01-04')).closed, true, 'other contracts at the school stay closed');
+  assert.equal((await call('POST', '/api/exceptions', { date: '2027-01-04', type: 'school_open', leg: 'DAY' })).status, 400, 'school open needs a contract');
+  assert.equal((await wages.calculateWages(org, { from: '2027-01-04', to: '2027-01-04', contract_id: mixed, include_zero: true })).totals.total_due, 100);
+  assert.equal((await wages.calculateWages(org, { from: '2027-01-04', to: '2027-01-04', contract_id: c, include_zero: true })).totals.total_due, 0);
+  await call('DELETE', url + '/' + inset.data.id);
+  await call('DELETE', url + '/' + xmas.data.id);
+
   const browser = await puppeteer.launch({ executablePath: process.env.CHROME || 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true });
   try {
     const page = await browser.newPage(); const errors = [];
@@ -119,5 +164,5 @@ const holidays = require('../server/services/school-holidays');
   assert.equal(removed.data.warnings.length, 2);
   assert.equal((await day(b)).income, 100);
   assert.equal((await call('DELETE', url + '/' + id)).status, 404);
-  console.log('School holidays: calendar, wages, cover, fixed-day income, invoice previews, editing, cancellation, historical warnings, tenancy and browser entry passed.');
+  console.log('School holidays: calendar, wages, cover, fixed-day income, invoice previews, editing, cancellation, historical warnings, academic years, schools kept open, mixed-school routes, school open overrides, tenancy and browser entry passed.');
 })().catch(e => { console.error(e); process.exitCode = 1; }).finally(() => db.close());

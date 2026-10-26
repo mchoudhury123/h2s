@@ -187,6 +187,7 @@ App.views.calendar = async function ({ query }) {
           h('span', null, h('span', { class: 'leg partial', style: 'display:inline-flex' }, 'Partial'), ' child absent or staff missing'),
           h('span', null, h('span', { class: 'leg cover', style: 'display:inline-flex' }, 'Cover'), ' cover staff used'),
           h('span', null, h('span', { class: 'leg bad', style: 'display:inline-flex' }, 'Not run'), ' cancelled or uncovered'),
+          h('span', null, h('span', { class: 'leg closed', style: 'display:inline-flex' }, 'School closed'), ' holiday or inset day: not paid, not charged'),
           h('span', { style: 'color:var(--text-faint)' }, '· Click any day to record an exception')))));
 };
 
@@ -211,7 +212,7 @@ Ops.calendarGrid = function (data, onChange) {
     for (const dt of data.dates) {
       const day = row.days[dt];
       if (!day) { tr.appendChild(h('td', { class: 'off' })); continue; }
-      tr.appendChild(h('td', Ops.cell(day, c, dt, onChange)));
+      tr.appendChild(h('td', { class: day.closed ? 'closed-day' : null }, Ops.cell(day, c, dt, onChange)));
     }
     body.appendChild(tr);
   }
@@ -280,10 +281,21 @@ function scopePicker(day, buttonLabel, onChoose, { includeDay = true, only = nul
 }
 
 Ops.cell = function (day, contract, date, onChange) {
-  const cell = h('div', { class: 'cell' + (day.trips.length > 2 ? ' many' : ''), title: 'Click to record an exception' });
+  const cell = h('div', { class: 'cell' + (day.trips.length > 2 ? ' many' : '') + (day.closed ? ' closed' : ''), title: day.closed ? 'School closed — click to view or override' : 'Click to record an exception' });
+  // A school closure greys the whole day: one label, the reason, and the
+  // number of runs that would have operated. Nothing is paid or charged.
+  if (day.closed) {
+    cell.appendChild(h('div', { class: 'closed-tag' }, 'School closed'));
+    cell.appendChild(h('div', { class: 'cellnote', title: day.closure_reason || '' }, day.closure_reason || 'Holiday'));
+    cell.appendChild(h('div', { class: 'cellnote' }, `${plural(day.trips.length, 'run')} not operating`));
+    cell.onclick = () => Ops.dayDialog(contract.id, date, onChange);
+    return cell;
+  }
   for (const t of day.trips) {
     let cls = 'leg', text = 'Operated';
-    if (t.status !== 'operated') { cls += ' bad'; text = t.reason || 'Not operated'; }
+    if (t.closed) { cls += ' closed'; text = 'School closed'; }
+    else if (t.status !== 'operated') { cls += ' bad'; text = t.reason || 'Not operated'; }
+    else if (t.school_open) { cls += ' cover'; text = 'Open (override)'; }
     else if (t.driver.status === 'covered' || t.pa.status === 'covered') {
       cls += ' cover';
       const who = t.driver.status === 'covered' ? t.driver.cover_name : t.pa.cover_name;
@@ -326,10 +338,11 @@ App.views.day = async function ({ params }) {
     const bad = !item.operated;
     const warn = item.summary.length > 0;
     const c = data.contracts.find(x => x.id === item.contract_id);
-    list.appendChild(h('div', { class: 'oprow ' + (bad ? 'bad' : warn ? 'warn' : '') },
+    list.appendChild(h('div', { class: 'oprow ' + (item.closed ? 'closed' : bad ? 'bad' : warn ? 'warn' : '') },
       h('div', { class: 'oc' },
         h('a', { class: 'code', href: '#/contracts/' + item.contract_id }, item.code),
-        h('div', { class: 'sch' }, c ? c.school_name : '')),
+        h('div', { class: 'sch' }, c ? c.school_name : ''),
+        item.closed ? h('div', { class: 'closed-tag', style: 'margin-top:4px' }, 'School closed', h('span', { style: 'font-weight:500;letter-spacing:0;text-transform:none' }, ' · ' + (item.closure_reason || 'Holiday'))) : null),
       h('div', { class: 'ostaff' },
         h('div', null, h('strong', 'Driver: '), staffText(item, 'driver')),
         h('div', null, h('strong', 'PA: '), staffText(item, 'pa'))),
@@ -354,7 +367,8 @@ App.views.day = async function ({ params }) {
 
 function tripBadge(day, t) {
   let cls = 'green', text = 'Operated';
-  if (t.status !== 'operated') { cls = 'red'; text = t.reason || 'Not run'; }
+  if (t.closed) { cls = 'grey'; text = 'School closed'; }
+  else if (t.status !== 'operated') { cls = 'red'; text = t.reason || 'Not run'; }
   else if (t.driver.status === 'covered' || t.pa.status === 'covered') { cls = 'purple'; text = 'Cover'; }
   else if (t.driver.status === 'absent_no_cover') { cls = 'amber'; text = 'Ran without a driver recorded'; }
   else if (t.pa.required && t.pa.status === 'absent_no_cover') { cls = 'amber'; text = 'Ran without a PA'; }
@@ -381,6 +395,7 @@ function childDot(day, ch) {
   if (!states.length) return 'grey';
   if (states.every(s => s === 'travelling')) return 'green';
   if (states.every(s => s === 'absent')) return 'red';
+  if (states.every(s => s === 'school_closed' || s === 'not_operated')) return 'grey';
   return 'amber';
 }
 function childDayText(day, ch) {
@@ -424,6 +439,28 @@ Ops.dayDialog = async function (contractId, date, onChange) {
     const wrap = h('div');
     const simple = isSimpleDay(day);
 
+    // ---- school closed banner ----
+    const openOverride = day.exceptions.find(e => e.type === 'school_open');
+    if (day.closed || openOverride) {
+      const pay = role => day.trips.reduce((a, t) => a + (t[role] && t[role].pay ? Number(t[role].pay) : 0), 0);
+      const schoolWide = day.exceptions.some(e => e.type === 'school_closed' && !e.contract_id);
+      wrap.appendChild(h('div', { class: 'note-box ' + (day.closed ? 'closed' : ''), style: 'margin-bottom:10px' },
+        day.closed
+          ? h('div', null,
+            h('div', { class: 'closed-tag', style: 'font-size:12px' }, 'School closed'),
+            h('div', null, h('strong', 'Reason: '), day.closure_reason || 'School closed'),
+            h('div', null, `Scheduled school trips: ${day.trips.length} · none operating · Driver wages ${fmt.money(pay('driver'))} · PA wages ${fmt.money(pay('pa'))} · charged to the council as 0 days`))
+          : h('div', null, h('strong', 'School open on this date. '), 'The closure has been overridden for this contract; its runs operate, pay and charge as normal.'),
+        App.can('calendar') ? h('div', { class: 'pill-row', style: 'margin-top:8px' },
+          openOverride
+            ? h('button', { class: 'btn xs danger', onclick: () => remove(openOverride.id) }, 'Remove the override (closed again)')
+            : (schoolWide ? h('button', { class: 'btn xs', title: 'Keep this contract running although the school calendar says closed', onclick: () => UI.confirm(
+              `Run ${c.code} on ${fmt.date(date)} although the school is closed? Its journeys will operate, the driver and PA will be paid and the council will be charged as on a normal day. Other contracts stay closed.`,
+              () => post({ type: 'school_open', leg: 'DAY', note: 'Authorised to run during the closure' }),
+              { title: 'Open this contract on a closed date', yes: 'Run as normal', danger: false }) }, 'Open this contract on this date') : null),
+          h('button', { class: 'btn xs', onclick: () => Rec.schoolHolidays(c.school_id, refresh) }, 'School holidays')) : null));
+    }
+
     // ---- what is meant to run today ----
     const chargedDays = Number(day.chargeable_days) || 0;
     const jbox = h('fieldset', h('legend', `Journeys on this date — ${plural(day.planned_trips, 'planned journey')} · charged to the council as ${Number.isInteger(chargedDays) ? chargedDays : chargedDays.toFixed(1)} ${chargedDays === 1 ? 'day' : 'days'}`));
@@ -455,7 +492,9 @@ Ops.dayDialog = async function (contractId, date, onChange) {
     // ---- children ----
     const childBox = h('fieldset', h('legend', 'Children — mark an absence'));
     if (!day.children.length) childBox.appendChild(h('div', { style: 'color:var(--text-faint)' }, 'No children assigned to this contract.'));
-    for (const ch of day.children) {
+    if (day.closed && day.children.length) childBox.appendChild(h('div', { style: 'color:var(--text-dim);font-size:12.5px' },
+      'School closed: no child is marked absent today. ', day.children.map(ch => ch.name).join(', ')));
+    for (const ch of (day.closed ? [] : day.children)) {
       const exs = day.exceptions.filter(e => e.type === 'child_absence' && e.child_id === ch.id);
       const permanent = () => {
         m.close();
@@ -563,10 +602,10 @@ Ops.dayDialog = async function (contractId, date, onChange) {
 
     // ---- contract level ----
     const cbox = h('fieldset', h('legend', 'Contract and school'));
-    const cancels = day.exceptions.filter(e => ['school_closed', 'contract_cancelled'].includes(e.type));
+    const cancels = day.exceptions.filter(e => ['school_closed', 'contract_cancelled', 'school_open'].includes(e.type));
     if (cancels.length) {
       cbox.appendChild(h('div', { class: 'pill-row' }, ...cancels.map(e =>
-        h('span', { class: 'badge red' }, `${fmt.titleCase(e.type)} (${absenceSpan(day, e)})`,
+        h('span', { class: 'badge ' + (e.type === 'school_open' ? 'green' : 'red') }, `${e.type === 'school_open' ? 'School open (override)' : fmt.titleCase(e.type)} (${absenceSpan(day, e)})`,
           e.contract_id ? h('button', { class: 'x', style: 'font-size:14px;padding:0 3px', onclick: () => remove(e.id) }, '×')
             : h('span', { style: 'font-size:10px;margin-left:5px' }, '(school-wide)')))));
     }

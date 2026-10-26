@@ -116,7 +116,9 @@ async function addColumn(driver, table, column, definition, log) {
 }
 
 /**
- * Allows the new 'extra_journey' exception type on a database created before it.
+ * Allows exception types added since a database was created: runs taken off,
+ * extra journeys and, latest, 'school_open' (a contract kept running on a
+ * date its school's holiday would otherwise close).
  * SQLite cannot alter a CHECK constraint, so its table is rebuilt; Postgres
  * replaces the constraint in place.
  */
@@ -130,16 +132,16 @@ async function widenExceptionTypes(driver, log) {
       if (!row) return;
       const def = await driver.get(
         `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = ?`, [row.conname]);
-      if (def && def.def.includes('journey_removed')) return;
+      if (def && def.def.includes('school_open')) return;
       await driver.exec(`ALTER TABLE exceptions DROP CONSTRAINT ${row.conname}`);
       await driver.exec(`ALTER TABLE exceptions ADD CONSTRAINT ${row.conname} CHECK (type IN
-        ('child_absence','staff_absence','school_closed','contract_cancelled','journey_cancelled','journey_removed','pay_override','note','extra_journey'))`);
-      log('  exceptions: runs can now be taken off as well as cancelled');
+        ('child_absence','staff_absence','school_closed','school_open','contract_cancelled','journey_cancelled','journey_removed','pay_override','note','extra_journey'))`);
+      log('  exceptions: type list widened (runs taken off, school open overrides)');
       return;
     }
     // SQLite: only rebuild if the old constraint is actually in the way.
     const info = await driver.get("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'exceptions'");
-    if (!info || info.sql.includes('journey_removed')) return;
+    if (!info || info.sql.includes('school_open')) return;
     const rows = await driver.all('SELECT * FROM exceptions');
     const cols = await driver.columns('exceptions');
     await driver.exec('ALTER TABLE exceptions RENAME TO exceptions_old');
@@ -153,7 +155,7 @@ async function widenExceptionTypes(driver, log) {
         shared.map(c => (r[c] === undefined ? null : r[c])));
     }
     await driver.exec('DROP TABLE exceptions_old');
-    log(`  exceptions: rebuilt to allow runs to be taken off (${rows.length} kept)`);
+    log(`  exceptions: rebuilt with the wider type list (${rows.length} kept)`);
   } catch (e) {
     log(`  exceptions: could not widen the type list (${e.message})`);
     throw e;
@@ -212,6 +214,10 @@ async function applyMigrations(driver, log) {
   // Days paid together can be undone together.
   await addColumn(driver, 'payments', 'batch', 'TEXT', log);
   await addColumn(driver, 'staff', 'cash_payment', 'INTEGER NOT NULL DEFAULT 0 CHECK (cash_payment IN (0,1))', log);
+  // School holidays are filed by academic year, and an all-schools holiday can
+  // name schools that stay open (a school whose term dates differ).
+  await addColumn(driver, 'school_holidays', 'academic_year', 'TEXT', log);
+  await addColumn(driver, 'school_holiday_schools', 'role', "TEXT NOT NULL DEFAULT 'closed'", log);
   for (const stmt of schema.statements(driver.dialect)) await driver.exec(stmt);
 }
 
