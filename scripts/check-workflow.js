@@ -96,7 +96,7 @@ async function go(page, hash, heading) {
   await page.waitForSelector('.modal', { timeout: 25000 });
   await setField(page, 'Contract / job code', CODE);
   await setField(page, 'Description', 'Created by the workflow test');
-  await setField(page, 'School', String(schoolId));
+  await setField(page, 'Primary school', String(schoolId));
   await setField(page, 'Start date', '2026-09-01');
   await setField(page, 'End date', '2026-12-18');
   await setField(page, 'AM pick-up time', '08:00');

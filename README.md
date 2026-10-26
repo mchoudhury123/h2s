@@ -496,3 +496,43 @@ This runs as-is for a single office. Before putting it on the open internet you 
 On Supabase, the database is backed up by Supabase itself, and uploaded documents live in it too, so one backup covers everything. The `uploads/` folder is only read now, for files kept by an older self-hosted version.
 
 Two things to know before several firms rely on it. Postgres Row Level Security is not used: the application enforces the separation between firms, which is why the connection string must stay private and why the isolation suite matters. And nothing verifies an email address at registration or offers a password reset, so a forgotten password currently needs someone with database access to set a new one.
+
+### School academic calendars and the supplied 2026/27 import
+
+Open **Schools → 2026/27 calendar review → Stage supplied 2026/27 dates**. This stages all 19 Tyne & Wear Cars school calendars and matches existing schools by normalised name. Missing schools are created; ambiguous duplicate names stop the import. Repeating the import does not duplicate dates or replace amendments. Staging changes no trips, wages or invoices.
+
+The supplied dates are stored in `server/data/academic-2026-27.js`. Default council holidays and term windows remain provisional except Mortimer's supplied standard holiday dates. Confirmed INSET, pupil start/end dates and the two college session calendars are stored separately for each school. Bede's confirmed final pupil day is 15 July, Percy Hedley sessions continue to 20 July, and Tyne Met sessions end on 25 June. There is no universal 16 July cutoff. Tyne Met dates describe college-wide periods; individual learner timetables still need checking. No external source URLs were supplied, so the import identifies its customer-supplied provenance and leaves those URLs empty.
+
+Use **Dates / amend** to inspect records, verify supplied provisional dates without retyping them, or add INSET, exceptional closures, amended term windows and one-off open overrides. A confirmed open override removes an imported closure on those dates; separate manual transport exceptions remain in force. Verification does not apply the calendar. Approval does not turn provisional dates into confirmed ones.
+
+**Bulk preview draft calendars** shows each school's affected children, contracts, trips, driver wages, PA wages and expected invoice/day changes, with individual dated details. Approve each school separately from its preview. If calendar or transport data changes after preview, approval requires a fresh preview. Changes apply from the next London calendar day (or the start of a future academic year), preserving history and existing invoice, payment and payroll records. After approving a school, refresh the bulk preview before approving another because the shared transport context may have changed.
+
+Approved confirmed closures are evaluated dynamically as `school_closed` exceptions with trip `school_status: SCHOOL_CLOSED`. Every planned trip, including third journeys, is evaluated using the schools of its scheduled riders. A mixed-school run continues for children whose schools are open; only a run whose scheduled riders are all closed is cancelled for school closure. Child assignments are not rewritten when a contract's primary school changes. Normal staff and cover wages are suppressed on closed trips; separately recorded authorised payments remain untouched. Invoice previews continue to use the existing transport chargeability and contract income-basis rules, including half-day conversion per trip where applicable. Provisional dates are flagged and have no automatic financial effect.
+
+Use **Preview reversal → Approve reversal** to stop a calendar prospectively. The old version, source records, approval and reversal audit remain available. **Create amended draft** copies a reversed calendar for further amendments and a new preview/approval. Records and versions are never regenerated over manual exceptions or historic snapshots.
+
+Future years can be staged using **Import academic year JSON** or `POST /api/academic-calendars/import` with this format:
+
+```json
+{
+  "academic_year": "2027/28",
+  "import_key": "school-dates-2027-28-v1",
+  "schools": [{
+    "name": "Ashley Primary School",
+    "note": "Individual INSET dates awaiting confirmation",
+    "records": [{
+      "date_from": "2027-10-25",
+      "date_to": "2027-10-29",
+      "reason": "October half term",
+      "record_type": "closed",
+      "verification_status": "provisional",
+      "source_url": null,
+      "source_note": "School calendar import"
+    }]
+  }]
+}
+```
+
+Dates are inclusive and restricted to September–August of the specified academic year. Record types are `closed`, `open`, and informational `term`; verification is `confirmed` or `provisional`. Imports are tenant-scoped and idempotent by school and import key. New imports cannot replace an already approved school/year until its prospective reversal is reviewed and approved. Weekends are closed by default within an approved academic year, with an explicit confirmed operational override available.
+
+Run `npm run test:academic-calendars` for the import, school/session boundaries, provisional safety, mixed-school operation, approval, reversal, audit and isolation checks. Existing `npm test` covers the underlying business rules. Browser suites require Chrome configured using `CHROME`; server-based invoicing tests require a running test server.
