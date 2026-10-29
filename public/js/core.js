@@ -115,7 +115,11 @@ const D = window.D = {
    There are no roles. Everyone who can sign in administers their own firm and
    sees everything belonging to it. This is kept as a function so the views read
    the same, and so a future restriction has one place to live. */
-App.can = function () { return true; };
+App.can = function (what) {
+  const role = (App.state && App.state.user && App.state.user.role) || 'admin';
+  if (role === 'staff') return !['finance', 'wages'].includes(what);
+  return true;
+};
 
 /* ---------- router ---------- */
 const Router = window.Router = {

@@ -73,11 +73,22 @@ async function handle(ctx) {
       // The firm comes from the session, never from anything the caller sends.
       ctx.org = ctx.user.organisation_id;
       if (!ctx.org) return H.error(res, 'Your account is not linked to a business', 403);
+      // A staff account never reaches wages, costs or profit, through any route.
+      if ((ctx.user.role || 'admin') === 'staff' && FINANCE_ONLY.some(rx => rx.test(ctx.path))) {
+        return H.error(res, 'Only management accounts can see wages, costs and profit', 403);
+      }
     }
     return await r.handler(ctx);
   }
   return H.error(res, 'Unknown endpoint: ' + ctx.path, 404);
 }
+
+/** Routes a staff account may not call: wages, payments, payroll, profitability, expenses and the wage reports. */
+const FINANCE_ONLY = [
+  /^\/api\/wages(\/|$)/, /^\/api\/payments(\/|$)/, /^\/api\/payroll-runs(\/|$)/, /^\/api\/profitability(\/|$)/, /^\/api\/expenses(\/|$)/,
+  /^\/api\/reports\/(driver-wages|pa-wages|payroll|wage-breakdown|contract-profitability)(\.|$)/,
+  /^\/api\/staff\/\d+\/(wages|pay-days|payments)(\/|$)/,
+];
 
 function friendly(e) {
   const m = String(e.message || e);
@@ -2074,10 +2085,14 @@ route('POST', '/api/switch-business', async ctx => {
   H.json(ctx.res, { user, organisation: org });
 });
 
+const ROLES = ['admin', 'manager', 'staff'];
 route('POST', '/api/users', async ctx => {
-  const { email, name, password } = ctx.body;
+  const { email, name, password, role } = ctx.body;
+  if (role !== undefined && !ROLES.includes(role)) return H.error(ctx.res, 'Choose administrator, manager or staff', 400);
   const r = await auth.addUser(ctx.org, { email, name, password }, ctx.user.name);
   if (r.error) return H.error(ctx.res, r.error, 400);
+  if (role && !r.existing) await run('/* cross-org: the account was just created for this business */ UPDATE users SET role = ? WHERE id = ?', [role, r.user.id]);
+  r.user.role = r.existing ? r.user.role : (role || r.user.role || 'admin');
   await audit.logAction(ctx.user, 'user', r.user.id, r.user.name, 'create',
     r.existing ? `Added ${r.user.email}, who already had an account, to the team` : `Added ${r.user.email} to the team`);
   H.json(ctx.res, { ...r.user, existing: r.existing }, 201);
@@ -2104,6 +2119,12 @@ route('PUT', '/api/users/:id', async ctx => {
     await auth.endSessionsFor(id, id === ctx.user.id ? ctx.token : null);
   }
   if (b.name !== undefined) await run('/* cross-org: the account was checked against this business above */ UPDATE users SET name = ? WHERE id = ?', [String(b.name).trim(), id]);
+  if (b.role !== undefined) {
+    if (!ROLES.includes(b.role)) return H.error(ctx.res, 'Choose administrator, manager or staff', 400);
+    if ((ctx.user.role || 'admin') === 'staff') return H.error(ctx.res, 'Only management accounts can change roles', 403);
+    if (id === ctx.user.id && b.role === 'staff') return H.error(ctx.res, 'You cannot remove your own management access', 400);
+    await run('/* cross-org: the account was checked against this business above */ UPDATE users SET role = ? WHERE id = ?', [b.role, id]);
+  }
   if (b.active !== undefined) {
     if (!Number(b.active) && id === ctx.user.id) return H.error(ctx.res, 'You cannot disable your own account', 400);
     await run('/* cross-org: the account was checked against this business above */ UPDATE users SET active = ? WHERE id = ?', [b.active ? 1 : 0, id]);
@@ -2136,6 +2157,59 @@ route('GET', '/api/audit', async ctx => H.json(ctx.res,
 // =====================================================================
 route('GET', '/api/lookups', async ctx => {
   H.json(ctx.res, await require('./services/lookups').lookups(ctx.org));
+});
+
+// =====================================================================
+// Contracts overview: every business the account belongs to, one spreadsheet
+// =====================================================================
+const overview = require('./services/overview');
+const overviewExport = require('./overview-export');
+
+function overviewOpts(q) {
+  return { from: q.from, to: q.to, company: q.company || 'all', confidential: q.confidential === '1', include_ended: q.include_ended === '1' };
+}
+
+route('GET', '/api/contracts-overview', async ctx => {
+  try { H.json(ctx.res, await overview.build(ctx.user, overviewOpts(ctx.query))); }
+  catch (e) { H.error(ctx.res, friendly(e), 400); }
+});
+
+route('GET', '/api/contracts-overview/views', async ctx => {
+  H.json(ctx.res, { presets: overview.PRESET_VIEWS.filter(v => !v.confidential || overview.canSeeFinance(ctx.user)), views: await overview.listViews(ctx.user, ctx.org) });
+});
+
+route('PUT', '/api/contracts-overview/views', async ctx => {
+  const r = await overview.saveViews(ctx.user, ctx.org, (ctx.body || {}).views);
+  if (r.error) return H.error(ctx.res, r.error, 400);
+  H.json(ctx.res, r);
+});
+
+route('PUT', '/api/contracts-overview/:company/contracts/:id', async ctx => {
+  const r = await overview.editContract(ctx.user, ctx.params.company, ctx.params.id, ctx.body || {});
+  if (r.error) return H.error(ctx.res, r.error, r.status || 400);
+  H.json(ctx.res, { ok: true, contract: r.contract, company: r.company });
+});
+
+/** Excel or PDF, with the same company, period, filters, sort and columns as the page. */
+route('GET', '/api/contracts-overview/export', async ctx => {
+  const q = ctx.query;
+  const format = q.format === 'pdf' ? 'pdf' : 'xlsx';
+  let data;
+  try { data = await overview.build(ctx.user, overviewOpts(q)); }
+  catch (e) { return H.error(ctx.res, friendly(e), 400); }
+  const rows = overview.sortRows(overview.filterRows(data.rows, q), q.sort, q.dir === 'desc' ? -1 : 1);
+  const wanted = q.columns ? String(q.columns).split(',').map(s => s.trim()).filter(Boolean) : overview.COLUMNS.filter(c => c.main).map(c => c.key);
+  const keys = overview.allowedColumns(ctx.user, wanted, data.confidential);
+  const columns = keys.map(k => overview.COLUMNS.find(c => c.key === k));
+  if (!columns.length) return H.error(ctx.res, 'Choose at least one column to export', 400);
+  const companyLabel = data.companies.length === 1 ? data.companies[0].name : 'All companies';
+  const filters = [q.q ? `search "${q.q}"` : null, q.status ? `status ${q.status}` : null, q.po ? `PO ${q.po}` : null].filter(Boolean).join(', ');
+  const meta = { company_label: companyLabel, user_name: ctx.user.name, filters };
+  await audit.logAction(ctx.user, 'contracts', 0, 'Contracts overview', 'export',
+    `Exported the contracts overview to ${format.toUpperCase()}: ${companyLabel}, ${data.from} to ${data.to}, ${rows.length} contracts, ${data.confidential ? 'with' : 'without'} staff costs and profit`);
+  const stamp = data.to;
+  if (format === 'pdf') return sendFile(ctx.res, overviewExport.toPdf(data, rows, columns, meta), `contracts-overview-${stamp}.pdf`, 'application/pdf', q.inline === '1');
+  sendFile(ctx.res, overviewExport.toXlsx(data, rows, columns, meta), `contracts-overview-${stamp}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', false);
 });
 
 // =====================================================================

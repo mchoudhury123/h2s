@@ -40,6 +40,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const pages = [
     ['/calendar', '.cal', '03-calendar'],
     ['/contracts', 'table.tbl', '04-contracts'],
+    ['/overview', 'table.ov', '04b-overview'],
     ['/children', 'table.tbl', '05-children'],
     ['/staff/list/driver', 'table.tbl', '06-drivers'],
     ['/staff/list/pa', 'table.tbl', '07-pas'],

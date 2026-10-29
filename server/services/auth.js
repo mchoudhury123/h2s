@@ -134,7 +134,7 @@ async function userFor(token) {
   const row = await get(
     `/* cross-org: the token identifies the account, which then fixes the firm */
      SELECT s.token, s.expires_at, s.organisation_id AS session_org,
-            u.id, u.email, u.name, u.organisation_id AS home_org
+            u.id, u.email, u.name, u.role, u.organisation_id AS home_org
      FROM sessions s
      JOIN users u ON u.id = s.user_id
      WHERE s.token = ? AND u.active = 1`, [token]);
@@ -153,7 +153,7 @@ async function userFor(token) {
     }
   }
   return {
-    id: row.id, email: row.email, name: row.name,
+    id: row.id, email: row.email, name: row.name, role: row.role || 'admin',
     organisation_id: org.id, organisation_name: org.name, home_organisation_id: row.home_org,
   };
 }
@@ -241,7 +241,7 @@ async function addUser(orgId, { email, name, password }, addedBy) {
 /** Everyone who can sign in to a business, whether it is their own or one they were added to. */
 async function listUsers(orgId) {
   return all(
-    `SELECT u.id, u.email, u.name, u.active, u.last_login,
+    `SELECT u.id, u.email, u.name, u.role, u.active, u.last_login,
             CASE WHEN u.organisation_id = ? THEN 1 ELSE 0 END AS home,
             COALESCE(m.created_at, u.created_at) AS created_at,
             (SELECT COUNT(*) FROM user_organisations x WHERE x.user_id = u.id) + 1 AS business_count
@@ -286,5 +286,5 @@ async function removeUser(orgId, userId) {
 module.exports = {
   hash, verify, register, login, logout, userFor, endSessionsFor,
   memberships, switchOrganisation,
-  addUser, listUsers, removeUser, checkEmail, checkPassword, checkBusinessName, MIN_PASSWORD,
+  addUser, listUsers, removeUser, checkEmail, checkPassword, checkBusinessName, MIN_PASSWORD, membership,
 };

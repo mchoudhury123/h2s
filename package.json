@@ -29,7 +29,8 @@
     "test:schedules": "node --experimental-sqlite --no-warnings scripts/check-schedules.js",
     "business": "node --experimental-sqlite --no-warnings scripts/business.js",
     "test:invoicing": "node --experimental-sqlite --no-warnings scripts/test-invoicing.js",
-    "test:academic-calendars": "node --experimental-sqlite --no-warnings scripts/test-academic-calendars.js"
+    "test:academic-calendars": "node --experimental-sqlite --no-warnings scripts/test-academic-calendars.js",
+    "test:overview": "node --experimental-sqlite --no-warnings scripts/test-contracts-overview.js"
   },
   "engines": {
     "node": ">=20.19"

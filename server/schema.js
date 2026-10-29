@@ -32,6 +32,8 @@ const TABLES = [
     email TEXT NOT NULL,
     password_hash TEXT NOT NULL,
     name TEXT NOT NULL,
+    -- 'admin' and 'manager' see everything; 'staff' never sees wages, costs or profit.
+    role TEXT NOT NULL DEFAULT 'admin' CHECK (role IN ('admin','manager','staff')),
     active {{INT}} NOT NULL DEFAULT 1,
     last_login TEXT,
     created_at TEXT NOT NULL DEFAULT {{NOW}}

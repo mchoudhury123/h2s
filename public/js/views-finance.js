@@ -689,6 +689,7 @@ App.views.settings = async function () {
     { key: 'home', label: 'Account', value: u => u.home
       ? (u.business_count > 1 ? h('span', { class: 'badge blue', title: 'Created here, and added to other businesses' }, `Also in ${plural(u.business_count - 1, 'other business', 'other businesses')}`) : h('span', { class: 'badge' }, 'This business'))
       : h('span', { class: 'badge purple', title: 'Created by another business and added here. They switch between businesses from the top left.' }, 'Shared from another business') },
+    { key: 'role', label: 'Role', value: u => h('span', { class: 'badge ' + (u.role === 'staff' ? '' : 'blue') }, u.role === 'staff' ? 'Staff' : u.role === 'manager' ? 'Manager' : 'Administrator') },
     { key: 'active', label: 'Status', value: u => u.active ? h('span', { class: 'badge green' }, 'Active') : h('span', { class: 'badge' }, 'Disabled') },
     { key: 'last_login', label: 'Last signed in', value: u => u.last_login ? fmt.datetime(u.last_login) : 'Never' },
     { key: 'created_at', label: 'Added', value: u => fmt.datetime(u.created_at) },
@@ -720,7 +721,7 @@ App.views.settings = async function () {
         UI.cardTight('Accounts for ' + (App.state.settings.company_name || 'your business'), userTable,
           h('button', { class: 'btn sm primary', onclick: () => Fin.userEditor(null) }, '+ Add someone')),
         h('p', { style: 'color:var(--text-dim);font-size:13px;margin-top:12px' },
-          'Everyone here has full access to this business and nothing outside it. ',
+          'Administrators and managers have full access to this business and nothing outside it; staff accounts see everything except wages, staff costs and profit. ',
           'No other firm using this system can see your records. ',
           'Add someone who already signs in elsewhere and they keep their one account and password, and switch between businesses from the top left.')) },
     ]));
@@ -737,9 +738,12 @@ Fin.userEditor = function (u) {
         type: 'password', required: false, span: 'full',
         help: u ? 'At least 8 characters, including a letter and a number.'
           : 'At least 8 characters, including a letter and a number. Leave blank for someone who already has an account; their password is not changed.' },
+      { name: 'role', label: 'Role', type: 'select', placeholder: false, span: 'full',
+        options: [{ value: 'admin', label: 'Administrator — everything, including wages, costs and profit' }, { value: 'manager', label: 'Manager — everything, including wages, costs and profit' }, { value: 'staff', label: 'Staff — no wages, staff costs or profit anywhere, including exports' }],
+        help: 'Roles are enforced by the server: a staff account cannot reach wage or profit figures through any page, export or request.' },
       ...(u ? [{ name: 'active', label: 'This account can sign in', type: 'checkbox', span: 'full' }] : []),
     ],
-    values: u || {},
+    values: u || { role: 'admin' },
     onSave: async v => {
       if (u) { if (!v.password) delete v.password; await api.put('/api/users/' + u.id, v); toast('Account updated', 'ok'); }
       else {

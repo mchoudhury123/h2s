@@ -33,7 +33,12 @@ function escapePdf(str) {
 }
 
 class Pdf {
-  constructor() { this.pages = []; this.current = null; }
+  /** Portrait A4 unless `landscape` is asked for; every page of one file has the same shape. */
+  constructor({ landscape = false } = {}) {
+    this.pages = []; this.current = null;
+    this.W = landscape ? A4.height : A4.width;
+    this.H = landscape ? A4.width : A4.height;
+  }
 
   /** Starts a new A4 page and makes it the target for drawing. */
   addPage() { this.current = { ops: [] }; this.pages.push(this.current); return this; }
@@ -57,7 +62,7 @@ class Pdf {
     else if (align === 'center') left = x - this.width(s, font, size) / 2;
     const [r, g, b] = color;
     this.current.ops.push(
-      `BT ${r} ${g} ${b} rg /${font} ${size} Tf ${left.toFixed(2)} ${(A4.height - y).toFixed(2)} Td (${escapePdf(s)}) Tj ET`);
+      `BT ${r} ${g} ${b} rg /${font} ${size} Tf ${left.toFixed(2)} ${(this.H - y).toFixed(2)} Td (${escapePdf(s)}) Tj ET`);
     return this;
   }
 
@@ -85,7 +90,7 @@ class Pdf {
   line(x1, y1, x2, y2, { width = 0.75, color = [0, 0, 0] } = {}) {
     const [r, g, b] = color;
     this.current.ops.push(
-      `${r} ${g} ${b} RG ${width} w ${x1.toFixed(2)} ${(A4.height - y1).toFixed(2)} m ${x2.toFixed(2)} ${(A4.height - y2).toFixed(2)} l S`);
+      `${r} ${g} ${b} RG ${width} w ${x1.toFixed(2)} ${(this.H - y1).toFixed(2)} m ${x2.toFixed(2)} ${(this.H - y2).toFixed(2)} l S`);
     return this;
   }
 
@@ -94,7 +99,7 @@ class Pdf {
     const ops = [];
     if (fill) ops.push(`${fill[0]} ${fill[1]} ${fill[2]} rg`);
     if (stroke) ops.push(`${stroke[0]} ${stroke[1]} ${stroke[2]} RG ${width} w`);
-    ops.push(`${x.toFixed(2)} ${(A4.height - y - hgt).toFixed(2)} ${w.toFixed(2)} ${hgt.toFixed(2)} re`);
+    ops.push(`${x.toFixed(2)} ${(this.H - y - hgt).toFixed(2)} ${w.toFixed(2)} ${hgt.toFixed(2)} re`);
     ops.push(fill && stroke ? 'B' : fill ? 'f' : 'S');
     this.current.ops.push(ops.join(' '));
     return this;
@@ -111,7 +116,7 @@ class Pdf {
     for (const page of this.pages) {
       const content = page.ops.join('\n');
       const contentId = add(`<< /Length ${Buffer.byteLength(content, 'latin1')} >>\nstream\n${content}\nendstream`);
-      const pageId = add(`<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${A4.width} ${A4.height}] ` +
+      const pageId = add(`<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${this.W} ${this.H}] ` +
         `/Resources << /Font << /H ${fontH} 0 R /HB ${fontHB} 0 R >> >> /Contents ${contentId} 0 R >>`);
       pageIds.push(pageId);
     }

@@ -145,6 +145,7 @@ const NAV = [
   ] },
   { group: 'Records', items: [
     { path: '/contracts', label: 'Contracts', icon: 'contracts' },
+    { path: '/overview', label: 'Contracts overview', icon: 'reports' },
     { path: '/children', label: 'Children', icon: 'children' },
     { path: '/staff/list/driver', label: 'Drivers', icon: 'drivers' },
     { path: '/staff/list/pa', label: 'Passenger assistants', icon: 'pas' },
@@ -265,8 +266,11 @@ App.buildNav = function (counts) {
   const nav = document.getElementById('nav');
   if (!nav) return;
   nav.innerHTML = '';
+  // A staff account has no wage, payroll, profitability or expenses pages.
+  const money = ['/wages', '/payroll', '/finance', '/expenses'];
   for (const g of NAV) {
-    const items = g.items;
+    const items = g.items.filter(i => App.can('finance') || !money.includes(i.path));
+    if (!items.length) continue;
     const grp = h('div', { class: 'nav-group' }, h('div', { class: 'nav-title' }, g.group));
     for (const i of items) {
       const href = i.path === '/day/today' ? '#/day/' + D.today() : '#' + i.path;
@@ -391,6 +395,7 @@ Router.on('/calendar', App.views.calendar);
 Router.on('/day/:date', App.views.day);
 Router.on('/contracts', App.views.contracts);
 Router.on('/contracts/:id', App.views.contractDetail);
+Router.on('/overview', App.views.overview);
 Router.on('/children', App.views.children);
 Router.on('/children/:id', App.views.childDetail);
 Router.on('/staff/list/:type', App.views.staffList);

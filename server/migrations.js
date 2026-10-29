@@ -218,6 +218,8 @@ async function applyMigrations(driver, log) {
   // name schools that stay open (a school whose term dates differ).
   await addColumn(driver, 'school_holidays', 'academic_year', 'TEXT', log);
   await addColumn(driver, 'school_holiday_schools', 'role', "TEXT NOT NULL DEFAULT 'closed'", log);
+  // Accounts gain a role. Everyone existing stays an administrator.
+  await addColumn(driver, 'users', 'role', "TEXT NOT NULL DEFAULT 'admin'", log);
   for (const stmt of schema.statements(driver.dialect)) await driver.exec(stmt);
 }
 

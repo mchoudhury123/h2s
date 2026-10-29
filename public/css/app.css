@@ -362,6 +362,48 @@ table.cal td.closed-day { background: var(--surface-2); }
 .contract-col .cm { font-size: 10.5px; color: var(--text-faint); }
 .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11.5px; color: var(--text-dim); align-items: center; }
 
+/* contracts overview: an Excel-style sheet with a sticky header and frozen first columns */
+.ov-wrap { overflow: auto; max-height: calc(100vh - 150px); position: relative; }
+table.ov { border-collapse: separate; border-spacing: 0; font-size: 12.5px; min-width: 100%; table-layout: fixed; }
+table.ov th, table.ov td { border-bottom: 1px solid var(--border); border-right: 1px solid var(--border); padding: 7px 9px; vertical-align: top; text-align: left; overflow: hidden; text-overflow: ellipsis; word-break: break-word; position: relative; }
+table.ov th { position: sticky; top: 0; z-index: 3; background: var(--surface-2); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-dim); white-space: normal; line-height: 1.25; }
+table.ov th .ov-th { cursor: pointer; }
+table.ov th .ov-th:hover { color: var(--brand); }
+table.ov th .ov-grip { position: absolute; right: 0; top: 0; bottom: 0; width: 7px; cursor: col-resize; }
+table.ov th .ov-grip:hover { background: var(--brand-soft); }
+table.ov .ov-fixed { position: sticky; z-index: 2; background: var(--surface); }
+table.ov th.ov-fixed { z-index: 4; background: var(--surface-2); }
+table.ov .ov-tog { left: 0; width: 36px; min-width: 36px; max-width: 36px; padding: 5px; text-align: center; }
+table.ov td.num, table.ov th.num { text-align: right; font-variant-numeric: tabular-nums; }
+table.ov tbody tr.ov-row:nth-child(even) td { background: var(--surface-2); }
+table.ov tbody tr.ov-row:hover td { background: var(--row-hover); }
+table.ov tbody tr.ov-row.open td { box-shadow: inset 0 2px 0 var(--brand); }
+table.ov .ov-conf { background: var(--amber-bg); }
+table.ov th.ov-conf { color: var(--amber); }
+table.ov tfoot td { position: sticky; bottom: 0; z-index: 3; background: var(--surface-2); font-weight: 700; border-top: 2px solid var(--border-strong); }
+table.ov tfoot td.ov-fixed { z-index: 4; }
+table.ov .ov-act { width: 64px; min-width: 64px; }
+.ov-expand { width: 24px; height: 24px; border-radius: 6px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); font-weight: 700; cursor: pointer; line-height: 1; }
+.ov-expand:hover { border-color: var(--brand); color: var(--brand); }
+.ov-none { color: var(--text-faint); font-size: 12px; }
+.ov-num { font-variant-numeric: tabular-nums; }
+.ov-company { font-weight: 600; color: var(--brand-ink); }
+.ov-link { text-decoration: none; }
+.ov-link:hover { text-decoration: underline; }
+tr.ov-detail-row > td { background: var(--bg); padding: 12px 14px 14px 46px; position: static; }
+/* The expanded panel stays within the visible width while the sheet scrolls sideways. */
+tr.ov-detail-row .ov-detail { position: sticky; left: 10px; width: min(1180px, calc(100vw - 330px)); }
+.ov-detail-grid { display: grid; grid-template-columns: minmax(300px, 2fr) minmax(240px, 1fr) minmax(240px, 1fr); gap: 18px; }
+.ov-fin-title { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--text-faint); font-weight: 700; margin-bottom: 6px; }
+.ov-fin { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; border-bottom: 1px dashed var(--border); font-size: 12.5px; }
+.ov-fin strong { font-variant-numeric: tabular-nums; white-space: nowrap; }
+@media (max-width: 900px) {
+  .ov-detail-grid { grid-template-columns: 1fr; }
+  .ov-wrap { max-height: none; }
+  table.ov .ov-fixed { position: static; }
+  table.ov th { position: sticky; }
+}
+
 /* day / quick ops list */
 .oplist { display: flex; flex-direction: column; }
 .oprow { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; transition: background .12s; }
