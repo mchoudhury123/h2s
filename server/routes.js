@@ -1701,6 +1701,16 @@ route('POST', '/api/academic-calendars/prepare', async ctx => {
   try { await require('./services/academic-calendars').prepare(ctx.org,ctx.user); H.json(ctx.res,{ok:true}); }
   catch(e) { H.error(ctx.res,friendly(e)); }
 });
+// Term dates typed straight in: start a live calendar for a school and year,
+// then save the whole list of dates. No preview or approval step is needed.
+route('POST', '/api/academic-calendars', async ctx => {
+  try { const result=await require('./services/academic-calendars').create(ctx.org,ctx.user,ctx.body); H.json(ctx.res,result,result.created?201:200); }
+  catch(e) { H.error(ctx.res,friendly(e)); }
+});
+route('PUT', '/api/academic-calendars/:id/records', async ctx => {
+  try { H.json(ctx.res,await require('./services/academic-calendars').saveRecords(ctx.org,ctx.user,ctx.params.id,ctx.body)); }
+  catch(e) { H.error(ctx.res,friendly(e)); }
+});
 for (const action of ['preview','apply','records','revise','verify']) route('POST', '/api/academic-calendars/:id/'+action, async ctx => {
   try {
     const service=require('./services/academic-calendars');

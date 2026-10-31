@@ -271,6 +271,11 @@ table.tbl tfoot td { font-weight: 700; background: var(--surface-2); border-top:
 .kv dd.empty { color: var(--text-faint); font-style: italic; }
 .note-box { background: var(--surface-2); border: 1px solid var(--border); border-left: 3px solid var(--brand); border-radius: 8px; padding: 10px 13px; font-size: 13px; white-space: pre-wrap; }
 .note-box.warn { border-left-color: var(--amber-solid); background: var(--amber-bg); }
+.term-editor table.tbl td { padding: 5px 6px; vertical-align: middle; }
+.term-editor table.tbl th.center, .term-editor table.tbl td.center { text-align: center; }
+.term-editor input, .term-editor select { width: 100%; min-width: 0; }
+.term-editor input[type=checkbox] { width: 16px; height: 16px; }
+.term-editor input[type=date] { min-width: 130px; }
 .note-box.danger { border-left-color: var(--red-solid); background: var(--red-bg); }
 
 /* forms */

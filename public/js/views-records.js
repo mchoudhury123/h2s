@@ -980,6 +980,7 @@ App.views.schoolDetail = async function ({ params }) {
   const reload = () => Router.handle();
   const head = UI.pageHead(s.name, [s.address, s.postcode].filter(Boolean).join(', '),
     [App.can('edit') ? h('button', { class: 'btn', onclick: () => Rec.schoolEditor(s) }, 'Edit') : null,
+     App.can('edit') ? h('button', { class: 'btn', onclick: () => Rec.termDates(s.id) }, 'Term dates') : null,
      h('button', { class: 'btn', onclick: () => Rec.schoolHolidays(s.id) }, 'School holidays'),
      h('a', { class: 'btn', href: `#/calendar?school=${s.id}` }, 'Calendar'),
      App.can('finance') ? h('a', { class: 'btn primary', href: `#/finance?school=${s.id}` }, 'Profitability') : null]);
@@ -1153,11 +1154,14 @@ Rec.schoolHolidayReview = function (warnings) {
 Rec.schoolHolidays = async function (schoolId = null, onChange = null) {
   const [rows, schools, academic] = await Promise.all([api.get('/api/school-holidays'), api.get('/api/schools'), api.get('/api/academic-calendars')]);
   const visible = schoolId ? rows.filter(r => r.all_schools || r.schools.some(s => s.id === Number(schoolId))) : rows;
-  const reload = async () => { dlg.close(); if (onChange) await onChange(); else await Router.handle(); await Rec.schoolHolidays(schoolId, onChange); };
+  const reopen = async () => { if (onChange) await onChange(); else await Router.handle(); await Rec.schoolHolidays(schoolId, onChange); };
+  const reload = async () => { dlg.close(); await reopen(); };
+  const latest = academic.filter(v => !academic.some(o => o.school_id === v.school_id && o.academic_year === v.academic_year && o.id > v.id));
   const dlg = UI.modal({ title: 'School holidays', width: 'wide',
     body: h('div', null,
       h('div', { class: 'note-box', style: 'margin-bottom:12px' }, 'Closed dates have no driver or PA pay, no cover pay, and no business income or invoice charges. The first and last dates are both included.'),
-      ...academic.filter(v=>!schoolId || v.school_id===Number(schoolId)).map(v=>h('details',null,h('summary',v.school_name+' · '+v.academic_year+' · '+v.state+' · '+v.verification_status.replace(/_/g,' ')),h('p',v.note),
+      ...latest.filter(v=>!schoolId || v.school_id===Number(schoolId)).map(v=>h('details',null,h('summary',v.school_name+' · '+v.academic_year+' · '+v.state+' · '+v.verification_status.replace(/_/g,' ')),h('p',v.note),
+        App.can('edit') ? h('p', null, h('button', { class: 'btn xs', onclick: () => { dlg.close(); Rec.termDates(v.school_id, v.academic_year, reopen); } }, 'Edit term dates')) : null,
         UI.table([{key:'date_from',label:'First date'},{key:'date_to',label:'Last date'},{label:'Calendar',value:r=>r.record_type==='closed'?'SCHOOL CLOSED':r.record_type==='open'?'Open':'Term window'}, {key:'reason',label:'Reason'},{label:'Status',value:r=>h('span',{class:'badge '+(r.verification_status==='confirmed'?'green':'amber')},r.verification_status==='confirmed'?'Confirmed · '+v.state:'PROVISIONAL')}],v.records))),
       UI.table([
         { key: 'academic_year', label: 'Academic year' },
@@ -1225,66 +1229,139 @@ Rec.schoolHolidayEditor = function (holiday, schools, schoolId, reload) {
   };
 };
 
+// Impact preview and approval for one or more staged calendars. Only drafts
+// need this; term dates saved on a live calendar apply straight away.
+Rec.academicPreview = async function (versions, reload) {
+  try {
+    const combined=versions.length>1?await api.post('/api/academic-calendars/bulk-preview',{version_ids:versions.map(v=>v.id)}):null;
+    const previews=[];
+    for(const v of versions) previews.push({...await api.post('/api/academic-calendars/'+v.id+'/preview',{operation:v.state==='approved'?'revert':'approve'}),version:v});
+    const review=UI.modal({title:'Calendar impact preview — approval required',width:'wide',body:h('div',null,
+      h('p','Only future dates are affected. Provisional dates do not cancel trips or change wages or invoices. Issued invoices, payroll and recorded payments are preserved. Amounts below are changes under existing contract terms; each trip retains its existing invoice-day conversion.'),
+      combined?h('div',{class:'note-box'},'Combined projection for all selected schools: '+combined.children.length+' children · '+combined.contracts.length+' contracts · '+combined.trips+' trips · driver wages '+fmt.money(combined.driver_wages)+' · PA wages '+fmt.money(combined.pa_wages)+' · expected invoice change '+fmt.money(combined.expected_invoice_effect)+'. Individual school previews below reflect approving each school against the current calendar. Refresh after each approval.'):null,
+      UI.table([
+        {key:'school_name',label:'School'},{label:'Children',value:p=>p.children.length},{label:'Contracts',value:p=>p.contracts.map(c=>c.code).join(', ')||'None'},
+        {key:'trips',label:'Affected trips'},{label:'Driver wages Δ',value:p=>fmt.money(p.driver_wages)},
+        {label:'PA wages Δ',value:p=>fmt.money(p.pa_wages)},{label:'Expected invoices Δ',value:p=>fmt.money(p.expected_invoice_effect)},
+        {key:'invoice_days_effect',label:'Invoice days Δ'},
+        {label:'',value:p=>h('button',{class:'btn primary xs',onclick:async e=>{
+          e.target.disabled=true;try{await api.post('/api/academic-calendars/'+p.version.id+'/apply',{operation:p.operation,token:p.token});review.close();await reload();toast('Calendar '+(p.operation==='revert'?'reversed':'approved'),'ok');}catch(err){e.target.disabled=false;toast(err.message,'err');}
+        }},p.operation==='revert'?'Approve reversal':'Approve this school')}
+      ],previews),
+      ...previews.map(p=>h('details',null,h('summary',p.school_name+' · affected children and trips'),
+        h('p','Children: '+(p.child_details.map(ch=>ch.name+' (#'+ch.id+')').join(', ')||'None')),
+        UI.table([{key:'date',label:'Date'},{key:'contract_code',label:'Contract'},{key:'trips',label:'Trips'},{key:'driver_wages',label:'Driver Δ'},{key:'pa_wages',label:'PA Δ'},{key:'invoice_effect',label:'Invoice Δ'}],p.details)))
+    ),footer:[h('button',{class:'btn',onclick:()=>review.close()},'Close without applying')]});
+  } catch(e){toast(e.message,'err');}
+};
+
+// Term dates for one school and one academic year, edited in place and saved
+// in one go. A live calendar takes the dates as soon as they are saved, and a
+// school with no calendar for the year gets a live one at the press of a
+// button. Only an imported draft still needs the preview and approval.
+Rec.termDates = async function (schoolId, year = null, onChange = null) {
+  schoolId = Number(schoolId);
+  const [schools, all] = await Promise.all([api.get('/api/schools'), api.get('/api/academic-calendars')]);
+  const school = schools.find(s => s.id === schoolId);
+  if (!school) return toast('School not found', 'err');
+  const mine = all.filter(v => v.school_id === schoolId);
+  const yearOf = d => { const y = Number(d.slice(0, 4)); const s = Number(d.slice(5, 7)) >= 9 ? y : y - 1; return `${s}/${String(s + 1).slice(-2)}`; };
+  const thisYear = yearOf(D.today()), nextYear = yearOf(`${Number(thisYear.slice(0, 4)) + 1}-09-01`);
+  const years = [...new Set([...mine.map(v => v.academic_year), thisYear, nextYear])].sort();
+  const latest = y => mine.filter(v => v.academic_year === y).sort((a, b) => b.id - a.id)[0] || null;
+  if (!year || !years.includes(year)) year = latest(thisYear) || !mine.length ? thisYear : years[0];
+  const v = latest(year);
+  const bounds = { start: year.slice(0, 4) + '-09-01', end: (Number(year.slice(0, 4)) + 1) + '-08-31' };
+  const after = async () => { if (onChange) await onChange(); else await Router.handle(); };
+  const reopen = async y => { dlg.close(); await Rec.termDates(schoolId, y || year, onChange); };
+  const yearSelect = h('select', { style: 'width:auto;max-width:200px;margin:0' }, ...years.map(y => h('option', { value: y, selected: y === year }, y)));
+  yearSelect.onchange = () => reopen(yearSelect.value);
+  const yearRow = h('div', { class: 'field', style: 'display:flex;align-items:center;gap:12px;margin-bottom:10px' }, h('label', { style: 'margin:0' }, 'Academic year'), yearSelect);
+
+  let body, footer = [h('button', { class: 'btn', onclick: () => dlg.close() }, 'Close')];
+  if (!v) {
+    const start = h('button', { class: 'btn primary', onclick: async () => {
+      start.disabled = true;
+      try { await api.post('/api/academic-calendars', { school_id: schoolId, academic_year: year }); await reopen(year); }
+      catch (e) { toast(e.message, 'err'); start.disabled = false; }
+    } }, `Start ${year} term dates`);
+    body = h('div', null, yearRow, UI.empty(`No term dates recorded for ${school.name} in ${year} yet.`, 'calendar'),
+      h('p', { class: 'help' }, 'Start the year, then add the holidays, INSET days and any other closed dates. They apply to the calendar as soon as they are saved.'));
+    footer.push(start);
+  } else if (v.state === 'reverted') {
+    body = h('div', null, yearRow, h('div', { class: 'note-box warn' }, `The ${year} calendar for ${school.name} was reversed on ${fmt.date(v.reverted_from)}. Create an amended draft to edit the dates again, then preview and approve it.`));
+    footer.push(h('button', { class: 'btn primary', onclick: async () => {
+      try { await api.post('/api/academic-calendars/' + v.id + '/revise', {}); await reopen(year); } catch (e) { toast(e.message, 'err'); }
+    } }, 'Create amended draft'));
+  } else {
+    const TYPES = [['closed', 'School closed'], ['open', 'Open (overrides a closure)'], ['term', 'Term window (information only)']];
+    const rows = [];
+    const tbody = h('tbody');
+    const empty = h('div', { class: 'empty-state', style: 'padding:14px' }, 'No dates yet. Add the holidays, INSET days and other closed dates below.');
+    const sync = () => { empty.style.display = rows.length ? 'none' : ''; };
+    const addRow = (r = {}, focus = false) => {
+      const row = { id: r.id || null, source_url: r.source_url || null,
+        from: h('input', { type: 'date', value: r.date_from || '', min: bounds.start, max: bounds.end, required: true, title: 'First date' }),
+        to: h('input', { type: 'date', value: r.date_to || '', min: bounds.start, max: bounds.end, required: true, title: 'Last date (included)' }),
+        type: h('select', null, ...TYPES.map(([val, lab]) => h('option', { value: val, selected: (r.record_type || 'closed') === val }, lab))),
+        reason: h('input', { type: 'text', value: r.reason || '', placeholder: 'e.g. October half term, INSET day', required: true, maxlength: 500 }),
+        confirmed: h('input', { type: 'checkbox', checked: r.id ? r.verification_status === 'confirmed' : true, title: 'Confirmed dates close the school on the calendar' }) };
+      row.from.onchange = () => { if (!row.to.value || row.to.value < row.from.value) row.to.value = row.from.value; };
+      const tr = h('tr', null,
+        h('td', { 'data-label': 'First date' }, row.from), h('td', { 'data-label': 'Last date' }, row.to),
+        h('td', { 'data-label': 'What happens' }, row.type), h('td', { 'data-label': 'Name' }, row.reason),
+        h('td', { 'data-label': 'Confirmed', class: 'center' }, row.confirmed),
+        h('td', { 'data-label': '' }, h('button', { class: 'btn xs danger', type: 'button', onclick: () => { rows.splice(rows.indexOf(row), 1); tr.remove(); sync(); } }, 'Remove')));
+      rows.push(row); tbody.appendChild(tr); sync();
+      if (focus) row.from.focus();
+      return row;
+    };
+    for (const r of v.records.slice().sort((a, b) => a.date_from.localeCompare(b.date_from) || a.id - b.id)) addRow(r);
+    const table = h('div', { class: 'table-wrap term-editor' }, h('table', { class: 'tbl' },
+      h('thead', h('tr', h('th', 'First date'), h('th', 'Last date'), h('th', 'What happens'), h('th', 'Name'), h('th', { class: 'center' }, 'Confirmed'), h('th', ''))), tbody), empty);
+    const live = v.state === 'approved';
+    const status = live
+      ? h('div', { class: 'note-box', style: 'margin-bottom:10px' }, h('strong', 'Live. '), `Dates ticked Confirmed close ${school.name} on the calendar from ${fmt.date(v.effective_from)}: no runs, no driver or PA pay, nothing charged. Unticked dates show as PROVISIONAL and do not stop any run.`)
+      : h('div', { class: 'note-box warn', style: 'margin-bottom:10px' }, h('strong', 'Draft. '), 'These dates do not reach the calendar until the draft is previewed and approved. ',
+          h('button', { class: 'btn xs', style: 'margin-left:6px', onclick: () => Rec.academicPreview([v], async () => { dlg.close(); await after(); await Rec.termDates(schoolId, year, onChange); }) }, 'Preview and approve'));
+    body = h('div', null, yearRow, status, table,
+      h('div', { class: 'pill-row', style: 'margin-top:10px' },
+        h('button', { class: 'btn', type: 'button', onclick: () => addRow({}, true) }, '+ Add dates'),
+        h('button', { class: 'btn', type: 'button', onclick: () => rows.forEach(r => { r.confirmed.checked = true; }) }, 'Confirm all')),
+      h('p', { class: 'help' }, 'The first and last dates are both included; use one day for an INSET day. An Open entry overrides a closure on those dates, for example a school that stays open during a council holiday. Term windows are for information only. Changes are audited.'));
+    const save = h('button', { class: 'btn primary', onclick: async () => {
+      const records = [];
+      for (const row of rows) {
+        for (const c of [row.from, row.to, row.reason]) if (!c.checkValidity()) { c.reportValidity(); return; }
+        if (row.to.value < row.from.value) { toast('The last date is before the first date for ' + (row.reason.value || 'one of the rows') + '.', 'err'); row.to.focus(); return; }
+        records.push({ id: row.id, date_from: row.from.value, date_to: row.to.value, record_type: row.type.value, reason: row.reason.value.trim(),
+          verification_status: row.confirmed.checked ? 'confirmed' : 'provisional', source_url: row.source_url });
+      }
+      save.disabled = true;
+      try {
+        const result = await api.put('/api/academic-calendars/' + v.id + '/records', { records });
+        dlg.close(); await after(); toast('Term dates saved for ' + school.name, 'ok'); Rec.schoolHolidayReview(result.warnings);
+      } catch (e) { toast(e.message, 'err'); save.disabled = false; }
+    } }, 'Save term dates');
+    footer.push(save);
+  }
+  const dlg = UI.modal({ title: school.name + ' · Term dates', width: 'wide', body, footer });
+};
+
 // Academic imports are staged independently from the existing manual holidays.
 Rec.academicCalendars = async function () {
   const rows = await api.get('/api/academic-calendars');
   const reload = async () => { dlg.close(); await Rec.academicCalendars(); };
   const label = s => ({verified:'Verified',partially_verified:'Partially verified',unconfirmed:'Unconfirmed'})[s] || s;
-  const showRecords = v => {
-    const recordDlg = UI.modal({title:v.school_name+' · '+v.academic_year,width:'wide',body:h('div',null,
-      h('p',v.note),h('p','Sources are customer-supplied unless an administrator adds a source URL. Approval does not turn provisional dates into confirmed dates.'),
-      UI.table([{key:'date_from',label:'From'},{key:'date_to',label:'To (inclusive)'},{key:'record_type',label:'Type'},
-        {key:'reason',label:'Reason'},{label:'Verification',value:r=>h('span',{class:'badge '+(r.verification_status==='confirmed'?'green':'amber')},r.verification_status==='confirmed'?'Confirmed':'PROVISIONAL')},
-        {label:'Source',value:r=>r.source_url?h('a',{href:r.source_url,target:'_blank',rel:'noopener'},'Source'):r.source_note},
-        {label:'',value:r=>v.state==='draft' && r.verification_status==='provisional'?h('button',{class:'btn xs',onclick:()=>{
-          const form=UI.form([{name:'source_url',label:'School confirmation source URL (if available)'}],{});
-          const verify=UI.modal({title:'Confirm '+r.reason,body:h('div',null,h('p',v.school_name+' · '+r.date_from+' to '+r.date_to+' (inclusive). Confirm only after checking this school’s dates.'),form),footer:[h('button',{class:'btn primary',onclick:async()=>{
-            try{await api.post('/api/academic-calendars/'+v.id+'/verify',{record_id:r.id,...form.read()});verify.close();recordDlg.close();await reload();}catch(e){toast(e.message,'err');}
-          }},'Confirm these dates')]});
-        }},'Verify dates'):null}],v.records)),
-      footer:[h('button',{class:'btn',onclick:()=>recordDlg.close()},'Close'),v.state==='draft'?h('button',{class:'btn primary',onclick:()=>{
-        const form=UI.form([
-          {name:'date_from',label:'First date',type:'date',required:true},{name:'date_to',label:'Last date (inclusive)',type:'date',required:true},
-          {name:'reason',label:'Reason / INSET / amended term',required:true,span:'full'},
-          {name:'record_type',label:'Action',type:'select',options:[{value:'closed',label:'SCHOOL CLOSED'},{value:'open',label:'Open / remove closure / operational override'},{value:'term',label:'Term window (informational)'}]},
-          {name:'verification_status',label:'Verification',type:'select',options:[{value:'provisional',label:'Provisional — no financial changes'},{value:'confirmed',label:'Confirmed'}]},
-          {name:'source_url',label:'Source URL (if available)',span:'full'}
-        ],{verification_status:'provisional',record_type:'closed'});
-        const editor=UI.modal({title:'Amend school calendar',body:h('div',null,form,h('p','A confirmed open override removes an imported closure for these dates. Existing manual transport exceptions remain in force. Amendments are audited.')),footer:[h('button',{class:'btn primary',onclick:async()=>{
-          if(!form.validate())return;try{await api.post('/api/academic-calendars/'+v.id+'/records',form.read());editor.close();recordDlg.close();await reload();}catch(e){toast(e.message,'err');}
-        }},'Save draft amendment')]});
-      }},'Add INSET / closure / open override'):null]});
-  };
-  const preview = async versions => {
-    try {
-      const combined=versions.length>1?await api.post('/api/academic-calendars/bulk-preview',{version_ids:versions.map(v=>v.id)}):null;
-      const previews=[];
-      for(const v of versions) previews.push({...await api.post('/api/academic-calendars/'+v.id+'/preview',{operation:v.state==='approved'?'revert':'approve'}),version:v});
-      const review=UI.modal({title:'Calendar impact preview — approval required',width:'wide',body:h('div',null,
-        h('p','Only future dates are affected. Provisional dates do not cancel trips or change wages or invoices. Issued invoices, payroll and recorded payments are preserved. Amounts below are changes under existing contract terms; each trip retains its existing invoice-day conversion.'),
-        combined?h('div',{class:'note-box'},'Combined projection for all selected schools: '+combined.children.length+' children · '+combined.contracts.length+' contracts · '+combined.trips+' trips · driver wages '+fmt.money(combined.driver_wages)+' · PA wages '+fmt.money(combined.pa_wages)+' · expected invoice change '+fmt.money(combined.expected_invoice_effect)+'. Individual school previews below reflect approving each school against the current calendar. Refresh after each approval.'):null,
-        UI.table([
-          {key:'school_name',label:'School'},{label:'Children',value:p=>p.children.length},{label:'Contracts',value:p=>p.contracts.map(c=>c.code).join(', ')||'None'},
-          {key:'trips',label:'Affected trips'},{label:'Driver wages Δ',value:p=>fmt.money(p.driver_wages)},
-          {label:'PA wages Δ',value:p=>fmt.money(p.pa_wages)},{label:'Expected invoices Δ',value:p=>fmt.money(p.expected_invoice_effect)},
-          {key:'invoice_days_effect',label:'Invoice days Δ'},
-          {label:'',value:p=>h('button',{class:'btn primary xs',onclick:async e=>{
-            e.target.disabled=true;try{await api.post('/api/academic-calendars/'+p.version.id+'/apply',{operation:p.operation,token:p.token});review.close();await reload();toast('Calendar '+(p.operation==='revert'?'reversed':'approved'),'ok');}catch(err){e.target.disabled=false;toast(err.message,'err');}
-          }},p.operation==='revert'?'Approve reversal':'Approve this school')}
-        ],previews),
-        ...previews.map(p=>h('details',null,h('summary',p.school_name+' · affected children and trips'),
-          h('p','Children: '+(p.child_details.map(ch=>ch.name+' (#'+ch.id+')').join(', ')||'None')),
-          UI.table([{key:'date',label:'Date'},{key:'contract_code',label:'Contract'},{key:'trips',label:'Trips'},{key:'driver_wages',label:'Driver Δ'},{key:'pa_wages',label:'PA Δ'},{key:'invoice_effect',label:'Invoice Δ'}],p.details)))
-      ),footer:[h('button',{class:'btn',onclick:()=>review.close()},'Close without applying')]});
-    } catch(e){toast(e.message,'err');}
-  };
+  const showRecords = v => { dlg.close(); Rec.termDates(v.school_id, v.academic_year, async () => { await Router.handle(); await Rec.academicCalendars(); }); };
+  const preview = versions => Rec.academicPreview(versions, reload);
   const current=rows.filter(v=>!rows.some(other=>other.school_id===v.school_id && other.academic_year===v.academic_year && other.id>v.id));
   const dlg=UI.modal({title:'School calendar review',width:'wide',body:h('div',null,
-    h('div',{class:'note-box warn'},'Default council dates are PROVISIONAL. School confirmation takes precedence. North Tyneside may run until 21 July; no blanket 16 July cutoff. College sessions and individual learner timetables must be distinguished.'),
+    h('div',{class:'note-box warn'},'Default council dates are PROVISIONAL until they are ticked Confirmed under Term dates. School confirmation takes precedence. North Tyneside may run until 21 July; no blanket 16 July cutoff. College sessions and individual learner timetables must be distinguished.'),
     h('p',`${current.filter(v=>v.verification_status==='verified').length} verified · ${current.filter(v=>v.verification_status==='partially_verified').length} partially verified · ${current.filter(v=>v.verification_status==='unconfirmed').length} unconfirmed`),
     UI.table([{key:'school_name',label:'School'},{key:'academic_year',label:'Year'},{label:'Verification',value:v=>h('span',{class:'badge '+(v.verification_status==='verified'?'green':'amber')},label(v.verification_status))},
       {key:'state',label:'Approval'},{key:'note',label:'Outstanding checks'},
-      {label:'',value:v=>h('div',{class:'pill-row'},h('button',{class:'btn xs',onclick:()=>showRecords(v)},'Dates / amend'),
+      {label:'',value:v=>h('div',{class:'pill-row'},h('button',{class:'btn xs',onclick:()=>showRecords(v)},'Term dates'),
         v.state!=='reverted'?h('button',{class:'btn xs',onclick:()=>preview([v])},v.state==='approved'?'Preview reversal':'Preview approval'):h('button',{class:'btn xs',onclick:async()=>{
           try{await api.post('/api/academic-calendars/'+v.id+'/revise',{});await reload();}catch(e){toast(e.message,'err');}
         }},'Create amended draft'))}],current,{empty:'Stage the supplied 19 school calendars to review their dates.'})),

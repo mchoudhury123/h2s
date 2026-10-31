@@ -74,6 +74,51 @@ const db=require('../server/db'), service=require('../server/services/academic-c
  assert.equal(service.expand(futureVersion[0],'2026-10-24','2026-10-24',true).length,0);
  assert.equal(forced(futureVersion[0],'2027-10-25').length,1);
  await assert.rejects(service.stageImport(org,user,{...future,import_key:'invalid',schools:[{name:'Invalid',records:[{...future.schools[0].records[0],date_from:'2026-10-25'}]}]}),/Invalid calendar record/);
+ // Term dates typed straight in: a live calendar takes them without a preview.
+ versions=await service.list(org);const stm=get("St Mary's RC Primary School");
+ p=await service.preview(org,stm.id);await service.apply(org,user,stm.id,{operation:'approve',token:p.token});
+ const closedOn=async(date,school_id)=>(await service.exceptions(org,date,date)).filter(e=>e.type==='school_closed'&&e.school_id===school_id).length;
+ assert.equal(await closedOn('2026-10-26',stm.school_id),0);
+ let saved=await service.saveRecords(org,user,stm.id,{records:[...stm.records.map(r=>({...r,verification_status:'confirmed'})),{date_from:'2026-11-20',date_to:'2026-11-20',record_type:'closed',reason:'INSET day'}]});
+ assert.equal(saved.version.verification_status,'verified');assert.deepEqual(saved.changes,{added:1,changed:9,removed:0});assert.equal(saved.warnings.length,0);
+ for(const date of ['2026-10-26','2026-10-30','2026-11-20','2027-05-03']) assert.equal(await closedOn(date,stm.school_id),1);
+ assert.equal((await service.list(org)).find(v=>v.id===stm.id).records.find(r=>r.reason==='INSET day').source_note,service.MANUAL);
+ // Remove May Day, shorten Easter and open one half-term day: the newest entry wins.
+ let records=saved.version.records.filter(r=>r.reason!=='May Day').map(r=>r.reason==='Easter'?{...r,date_to:'2027-04-02'}:r);
+ records.push({date_from:'2026-10-28',date_to:'2026-10-28',record_type:'open',reason:'Open for a trip'});
+ saved=await service.saveRecords(org,user,stm.id,{records});
+ assert.deepEqual(saved.changes,{added:1,changed:1,removed:1});
+ assert.equal(await closedOn('2027-05-03',stm.school_id),0);assert.equal(await closedOn('2027-04-05',stm.school_id),0);assert.equal(await closedOn('2027-04-01',stm.school_id),1);
+ assert.equal(await closedOn('2026-10-28',stm.school_id),0);assert.equal(await closedOn('2026-10-27',stm.school_id),1);
+ // Unticking Confirmed makes the dates provisional again; nothing else changes.
+ saved=await service.saveRecords(org,user,stm.id,{records:saved.version.records.map(r=>r.reason==='INSET day'?{...r,verification_status:'provisional'}:r)});
+ assert.deepEqual(saved.changes,{added:0,changed:1,removed:0});assert.equal(saved.version.verification_status,'partially_verified');assert.equal(await closedOn('2026-11-20',stm.school_id),0);
+ assert((await service.exceptions(org,'2026-11-20','2026-11-20')).some(e=>e.type==='school_provisional'&&e.school_id===stm.school_id));
+ for(const bad of [{records:[{date_from:'2026-10-26',date_to:'2026-10-25',reason:'x'}]},{records:[{date_from:'2026-08-01',date_to:'2026-08-01',reason:'x'}]},{records:[{date_from:'2026-10-26',date_to:'2026-10-26'}]},
+   {records:[{id:999999,date_from:'2026-10-26',date_to:'2026-10-26',reason:'x'}]},{records:[{date_from:'2026-10-26',date_to:'2026-10-26',reason:'x',record_type:'withdrawn'}]},{records:[{date_from:'2026-10-26',date_to:'2026-10-26',reason:'x',source_url:'ftp://x'}]},{}])
+   await assert.rejects(service.saveRecords(org,user,stm.id,bad));
+ assert.equal((await service.list(org)).find(v=>v.id===stm.id).records.length,10);
+ await assert.rejects(service.saveRecords(other,user,stm.id,{records:[]}),/not found/);
+ await assert.rejects(service.saveRecords(org,user,bed.id,{records:[]}),/reversed/);
+ // A draft can be edited the same way; it still needs approval to count.
+ const ashNow=(await service.list(org)).find(v=>v.id===ash.id);
+ assert((await service.saveRecords(org,user,ash.id,{records:ashNow.records})).warnings.some(w=>/draft/.test(w)));
+ assert.equal(await closedOn('2026-10-26',ash.school_id),0);
+ // A school with no calendar for the year gets a live one at once.
+ const fresh=await add('schools',{name:'Brand New School'});
+ const made=await service.create(org,user,{school_id:fresh,academic_year:'2026/27'});assert(made.created);
+ assert.equal((await service.create(org,user,{school_id:fresh,academic_year:'2026/27'})).id,made.id);
+ await assert.rejects(service.create(org,user,{school_id:fresh,academic_year:'2026'}),/academic year/);
+ await assert.rejects(service.create(org,user,{school_id:fresh,academic_year:'2026/28'}),/academic year/);
+ await assert.rejects(service.create(other,user,{school_id:fresh,academic_year:'2026/27'}),/School not found/);
+ const madeVersion=(await service.list(org)).find(v=>v.id===made.id);assert.equal(madeVersion.state,'approved');assert.equal(madeVersion.effective_from,'2026-10-23');
+ saved=await service.saveRecords(org,user,made.id,{records:[{date_from:'2026-10-26',date_to:'2026-10-30',reason:'October half term'},{date_from:'2026-10-19',date_to:'2026-10-19',reason:'Earlier INSET'}]});
+ assert.equal(saved.warnings.length,1);assert.match(saved.warnings[0],/kept as they were/);
+ assert.equal(await closedOn('2026-10-26',fresh),1);assert.equal(await closedOn('2026-10-19',fresh),0);
+ assert.equal(await closedOn('2026-10-24',fresh),1);assert.equal(await closedOn('2026-10-17',fresh),0);
+ assert.equal((await service.create(org,user,{school_id:fresh,academic_year:'2027/28'})).created,true);
+ assert.equal((await service.list(org)).find(v=>v.school_id===fresh&&v.academic_year==='2027/28').effective_from,'2027-09-01');
+ assert((await db.all("SELECT * FROM audit_log WHERE organisation_id = ? AND action IN ('term_dates','created')",[org])).length>=7);
  const routes=require('../server/routes');
  const call=async(method,path,body={})=>{const res={writeHead(status){this.status=status;},end(value){this.body=JSON.parse(value);}};await routes.handle({req:{method},res,path,query:{},body,user:{organisation_id:org,name:'Admin'}});return res;};
  assert.equal((await call('POST','/api/contracts',{code:'NO-SCHOOL'})).status,400);
@@ -81,6 +126,12 @@ const db=require('../server/db'), service=require('../server/services/academic-c
  assert.equal((await call('GET','/api/academic-calendars')).status,200);
  assert.equal((await call('POST','/api/academic-calendars/bulk-preview',{version_ids:[revision.id,ash.id]})).body.expected_invoice_effect,-100);
  assert.equal((await call('PUT','/api/contracts/'+c,{school_id:ash.school_id})).status,200);
+ const madeByRoute=await call('POST','/api/academic-calendars',{school_id:fresh,academic_year:'2028/29'});assert.equal(madeByRoute.status,201);
+ assert.equal((await call('POST','/api/academic-calendars',{school_id:fresh,academic_year:'2028/29'})).status,200);
+ assert.equal((await call('POST','/api/academic-calendars',{school_id:fresh,academic_year:'nope'})).status,400);
+ const putRecords=await call('PUT','/api/academic-calendars/'+madeByRoute.body.id+'/records',{records:[{date_from:'2028-10-23',date_to:'2028-10-27',reason:'October half term'}]});
+ assert.equal(putRecords.status,200);assert.equal(putRecords.body.version.records.length,1);assert.equal(putRecords.body.version.verification_status,'verified');
+ assert.equal((await call('PUT','/api/academic-calendars/'+madeByRoute.body.id+'/records',{records:[{date_from:'2028-10-23',date_to:'2028-10-27'}]})).status,400);
  assert.equal((await db.get('SELECT school_id FROM children WHERE organisation_id = ? AND id = ?',[org,child1])).school_id,bed.school_id);
- console.log('Academic calendars passed: all 19 imports, idempotency, provisional safety, session boundaries, mixed-school trips, financial preview, stale approval, historical protection, reversal, amendments and tenancy.');await db.close();mock.timers.reset();
+ console.log('Academic calendars passed: all 19 imports, idempotency, provisional safety, session boundaries, mixed-school trips, financial preview, stale approval, historical protection, reversal, amendments, direct term date edits and tenancy.');await db.close();mock.timers.reset();
 })().catch(e=>{console.error(e);process.exitCode=1;});
