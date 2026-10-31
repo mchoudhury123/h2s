@@ -149,8 +149,8 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
   const timetables = ctx.timetables && ctx.timetables.get ? ctx.timetables : new Map();
 
   // A closure belongs to a school. It reaches this contract through the
-  // contract's own school or through the school of any child on board, so a
-  // route carrying children from two schools follows each child's school.
+  // contract's own school, which closes the route, or through the school of
+  // a child on board, which keeps that child at home.
   const schoolOf = ch => ch.school_id || c.school_id || null;
   const childSchoolIds = new Set(children.map(schoolOf).filter(Boolean));
   const ex = exceptions.filter(e => e.date === date
@@ -207,15 +207,17 @@ function evaluateContractDay(c, date, children, exceptions, ctx = {}) {
 
     // School closures. "School open" recorded on the contract for this date
     // overrides every closure, so a route can run on a day its school's
-    // holiday calendar would close (an authorised holiday run). Otherwise a
-    // closure for a school keeps that school's children at home; the trip
-    // itself is closed only when every child on it is at a closed school, or
-    // when nobody is assigned yet and the contract's own school is closed.
+    // holiday calendar would close (an authorised holiday run). Otherwise the
+    // route follows its own school: when the contract's school is closed the
+    // run does not go, whatever other schools the children aboard attend. A
+    // closure of some other school keeps that school's children at home, and
+    // the run still goes for the rest unless nobody is left.
     const openHere = ex.find(e => e.type === 'school_open' && appliesToTrip(e, plan));
     const closures = openHere ? [] : ex.filter(e => e.type === 'school_closed' && appliesToTrip(e, plan));
     const closedForSchool = sid => closures.some(e => e.school_id == null || e.school_id === sid);
+    const contractClosed = closedForSchool(c.school_id || null);
     const closedRiders = riders.filter(ch => closedForSchool(schoolOf(ch)));
-    const wholeTripClosed = closures.length > 0 && (riders.length ? closedRiders.length === riders.length : closedForSchool(c.school_id || null));
+    const wholeTripClosed = closures.length > 0 && (contractClosed || (riders.length > 0 && closedRiders.length === riders.length));
     const closedHere = wholeTripClosed ? (closures.find(e => e.school_id == null || e.school_id === c.school_id) || closures[0]) : null;
     t.school_open = !!openHere;
     t.closure_note = closedHere ? (closedHere.holiday_name || closedHere.note || 'School closed') : null;

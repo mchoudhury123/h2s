@@ -1329,19 +1329,31 @@ Rec.termDates = async function (schoolId, year = null, onChange = null) {
         h('button', { class: 'btn', type: 'button', onclick: () => addRow({}, true) }, '+ Add dates'),
         h('button', { class: 'btn', type: 'button', onclick: () => rows.forEach(r => { r.confirmed.checked = true; }) }, 'Confirm all')),
       h('p', { class: 'help' }, 'The first and last dates are both included; use one day for an INSET day. An Open entry overrides a closure on those dates, for example a school that stays open during a council holiday. Term windows are for information only. Changes are audited.'));
-    const save = h('button', { class: 'btn primary', onclick: async () => {
-      const records = [];
-      for (const row of rows) {
-        for (const c of [row.from, row.to, row.reason]) if (!c.checkValidity()) { c.reportValidity(); return; }
-        if (row.to.value < row.from.value) { toast('The last date is before the first date for ' + (row.reason.value || 'one of the rows') + '.', 'err'); row.to.focus(); return; }
-        records.push({ id: row.id, date_from: row.from.value, date_to: row.to.value, record_type: row.type.value, reason: row.reason.value.trim(),
-          verification_status: row.confirmed.checked ? 'confirmed' : 'provisional', source_url: row.source_url });
-      }
+    const send = async () => {
+      const records = rows.map(row => ({ id: row.id, date_from: row.from.value, date_to: row.to.value, record_type: row.type.value, reason: row.reason.value.trim(),
+        verification_status: row.confirmed.checked ? 'confirmed' : 'provisional', source_url: row.source_url }));
       save.disabled = true;
       try {
         const result = await api.put('/api/academic-calendars/' + v.id + '/records', { records });
         dlg.close(); await after(); toast('Term dates saved for ' + school.name, 'ok'); Rec.schoolHolidayReview(result.warnings);
       } catch (e) { toast(e.message, 'err'); save.disabled = false; }
+    };
+    const save = h('button', { class: 'btn primary', onclick: async () => {
+      for (const row of rows) {
+        for (const c of [row.from, row.to, row.reason]) if (!c.checkValidity()) { c.reportValidity(); return; }
+        if (row.to.value < row.from.value) { toast('The last date is before the first date for ' + (row.reason.value || 'one of the rows') + '.', 'err'); row.to.focus(); return; }
+      }
+      // A closed date left unticked is only provisional: it never stops a run.
+      // Saying so here is what stops a half term being saved and doing nothing.
+      const unticked = rows.filter(r => r.type.value !== 'term' && !r.confirmed.checked);
+      if (!unticked.length || !live) return send();
+      const ask = UI.modal({ title: 'Unticked dates will not close the school',
+        body: h('div', null,
+          h('p', `${unticked.length === 1 ? 'One row is' : unticked.length + ' rows are'} not ticked Confirmed: ${unticked.slice(0, 6).map(r => r.reason.value || fmt.date(r.from.value)).join(', ')}${unticked.length > 6 ? '…' : ''}.`),
+          h('p', 'Only confirmed dates close ' + school.name + ' on the calendar. Unticked dates stay PROVISIONAL: the runs go ahead and the drivers and PAs are paid as normal.')),
+        footer: [h('button', { class: 'btn', onclick: () => ask.close() }, 'Back'),
+          h('button', { class: 'btn', onclick: () => { ask.close(); send(); } }, 'Save as provisional'),
+          h('button', { class: 'btn primary', onclick: () => { unticked.forEach(r => { r.confirmed.checked = true; }); ask.close(); send(); } }, 'Confirm them all and save')] });
     } }, 'Save term dates');
     footer.push(save);
   }

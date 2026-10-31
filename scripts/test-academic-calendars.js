@@ -27,23 +27,29 @@ const db=require('../server/db'), service=require('../server/services/academic-c
  const c=await add('contracts',{code:'MIX',school_id:bed.school_id,driver_id:driver,pa_id:pa,requires_pa:1,status:'active',start_date:'2026-09-01',days_of_week:'1,2,3,4,5',income_per_day:100,driver_pay_per_day:60,pa_pay_per_day:40,income_basis:'per_journey',pay_basis:'per_journey'});
  const child1=await add('children',{first_name:'B',last_name:'Child',contract_id:c,school_id:bed.school_id}), child2=await add('children',{first_name:'A',last_name:'Child',contract_id:c,school_id:ash.school_id});
  const context=await cal.loadContext(org,'2027-01-04','2027-01-04');const contract=context.contracts[0];
- let day=cal.evaluateContractDay(contract,'2027-01-04',context.childMap[c],forced(bed,'2027-01-04'),context);
- assert.equal(day.closed_trips,0);assert.equal(day.income,100);assert.equal(day.trips[0].children.find(ch=>ch.id===child1).status,'school_closed');assert.equal(day.trips[0].children.find(ch=>ch.id===child2).status,'travelling');
- day=cal.evaluateContractDay(contract,'2027-01-04',context.childMap[c].filter(ch=>ch.id===child1),forced(bed,'2027-01-04'),context);
- assert.equal(day.closed_trips,2);assert.equal(day.income,0);assert(day.trips.every(t=>t.driver.pay===0&&t.pa.pay===0));
+ // Another school's closure keeps its child at home; the route's own school closing stops the route.
+ const ashClosed=[{id:'ash-x',school_id:ash.school_id,contract_id:null,date:'2027-01-04',leg:'DAY',trip_seq:null,type:'school_closed',note:'SCHOOL CLOSED: Ashley INSET'}];
+ let day=cal.evaluateContractDay(contract,'2027-01-04',context.childMap[c],ashClosed,context);
+ assert.equal(day.closed_trips,0);assert.equal(day.income,100);assert.equal(day.trips[0].children.find(ch=>ch.id===child2).status,'school_closed');assert.equal(day.trips[0].children.find(ch=>ch.id===child1).status,'travelling');
+ day=cal.evaluateContractDay(contract,'2027-01-04',context.childMap[c],forced(bed,'2027-01-04'),context);
+ assert.equal(day.closed_trips,2);assert.equal(day.income,0);assert(day.trips.every(t=>t.driver.pay===0&&t.pa.pay===0));assert.equal(day.trips[0].children.find(ch=>ch.id===child2).status,'not_operated');
+ day=cal.evaluateContractDay(contract,'2027-01-04',context.childMap[c].filter(ch=>ch.id===child2),ashClosed,context);
+ assert.equal(day.closed_trips,2,'nobody left aboard once the only child is at a closed school');assert.equal(day.income,0);
  assert.equal(cal.chargeableDays([{closed:false},{closed:false},{closed:false}]),1.5);
  const splitContext={...context,schedules:new Map([[c,[{effective_from:'2026-09-01',trips:[
    {weekday:1,seq:1,label:'AM',kind:'outbound',child_ids:[child1]},
    {weekday:1,seq:2,label:'PM',kind:'return',child_ids:[child2]},
    {weekday:1,seq:3,label:'Third trip',kind:'other',child_ids:[child1]}
  ]}]]])};
+ day=cal.evaluateContractDay(contract,'2027-01-04',context.childMap[c],ashClosed,splitContext);
+ assert.equal(day.closed_trips,1);assert.equal(day.trips[1].school_status,'SCHOOL_CLOSED');assert.equal(day.trips[1].driver.pay,0);assert.equal(day.trips[1].pa.pay,0);assert.equal(day.trips[2].status,'operated');assert.equal(day.income,100);assert.equal(day.chargeable_days,1);
  day=cal.evaluateContractDay(contract,'2027-01-04',context.childMap[c],forced(bed,'2027-01-04'),splitContext);
- assert.equal(day.closed_trips,2);assert.equal(day.trips[2].school_status,'SCHOOL_CLOSED');assert.equal(day.trips[2].driver.pay,0);assert.equal(day.trips[2].pa.pay,0);assert.equal(day.income,50);assert.equal(day.chargeable_days,0.5);
+ assert.equal(day.closed_trips,3);assert.equal(day.income,0);assert.equal(day.chargeable_days,0);
  assert((await cal.buildCalendar(org,'2027-01-04','2027-01-04',{school_id:ash.school_id})).rows.some(r=>r.contract.id===c));
 
  // Drafts cannot close trips; the preview exposes changed child participation on mixed runs.
  assert((await service.exceptions(org,'2027-01-04','2027-01-04')).every(e=>e.type!=='school_closed'));
- let p=await service.preview(org,bed.id);assert(p.children.includes(child1));assert.equal(p.driver_wages,0);assert.equal(p.expected_invoice_effect,0);
+ let p=await service.preview(org,bed.id);assert(p.children.includes(child1));assert(p.driver_wages<0,'closing the route\'s own school takes the driver pay off');assert(p.expected_invoice_effect<0);
  await assert.rejects(service.apply(org,user,bed.id,{operation:'approve',token:'stale'}),/Refresh/);
  await service.addRecord(org,user,bed.id,{date_from:'2027-01-05',date_to:'2027-01-05',reason:'Extra INSET',record_type:'closed',verification_status:'confirmed'});
  await assert.rejects(service.apply(org,user,bed.id,{operation:'approve',token:p.token}),/Refresh/);
@@ -63,11 +69,13 @@ const db=require('../server/db'), service=require('../server/services/academic-c
  let ashVersion=(await service.list(org)).find(v=>v.id===ash.id), ashRecord=ashVersion.records.find(r=>r.reason==='INSET pending verification');
  await service.verifyRecord(org,user,ash.id,{record_id:ashRecord.id,source_url:'https://example.org/confirmed'});
  const joint=await service.bulkPreview(org,[revision.id,ash.id]);
- // Reopen override in the revision means only Ashley closes: shared journeys continue.
- assert.equal(joint.expected_invoice_effect,0);
+ // Reopen override in the revision means only Ashley closes on 4 January: the shared run continues that day, so the only effects are Bede's own later closures.
+ assert(joint.expected_invoice_effect<0);const jointJan=joint.details.find(r=>r.date==='2027-01-04');
+ assert.equal(jointJan.invoice_effect,0);assert.equal(jointJan.driver_wages,0);assert.equal(jointJan.trips,2,'child participation changed on both runs');
  await service.addRecord(org,user,revision.id,{date_from:'2027-01-04',date_to:'2027-01-04',reason:'Confirmed closure restored',record_type:'closed',verification_status:'confirmed'});
- const combined=await service.bulkPreview(org,[revision.id,ash.id]);assert.equal(combined.expected_invoice_effect,-100);assert.equal(combined.driver_wages,-60);assert.equal(combined.pa_wages,-40);
- assert.equal(combined.details.find(r=>r.date==='2027-01-04').trips,2);assert.equal(combined.children.length,2);
+ const combined=await service.bulkPreview(org,[revision.id,ash.id]);const jan=combined.details.find(r=>r.date==='2027-01-04');
+ assert.equal(jan.invoice_effect,-100);assert.equal(jan.driver_wages,-60);assert.equal(jan.pa_wages,-40);assert.equal(jan.trips,2);assert.equal(combined.children.length,2);
+ assert.equal(combined.expected_invoice_effect,joint.expected_invoice_effect-100);
  const future={academic_year:'2027/28',import_key:'future-year',schools:[{name:'Ashley Primary School',records:[{date_from:'2027-10-25',date_to:'2027-10-29',record_type:'closed',verification_status:'confirmed',reason:'Future half term'}]}]};
  await service.stageImport(org,user,future);await service.stageImport(org,user,future);
  const futureVersion=(await service.list(org)).filter(v=>v.academic_year==='2027/28');assert.equal(futureVersion.length,1);
@@ -124,7 +132,7 @@ const db=require('../server/db'), service=require('../server/services/academic-c
  assert.equal((await call('POST','/api/contracts',{code:'NO-SCHOOL'})).status,400);
  assert.equal((await call('POST','/api/children',{first_name:'No',last_name:'School'})).status,400);
  assert.equal((await call('GET','/api/academic-calendars')).status,200);
- assert.equal((await call('POST','/api/academic-calendars/bulk-preview',{version_ids:[revision.id,ash.id]})).body.expected_invoice_effect,-100);
+ assert.equal((await call('POST','/api/academic-calendars/bulk-preview',{version_ids:[revision.id,ash.id]})).body.expected_invoice_effect,combined.expected_invoice_effect);
  assert.equal((await call('PUT','/api/contracts/'+c,{school_id:ash.school_id})).status,200);
  const madeByRoute=await call('POST','/api/academic-calendars',{school_id:fresh,academic_year:'2028/29'});assert.equal(madeByRoute.status,201);
  assert.equal((await call('POST','/api/academic-calendars',{school_id:fresh,academic_year:'2028/29'})).status,200);

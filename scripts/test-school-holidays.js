@@ -103,23 +103,30 @@ const holidays = require('../server/services/school-holidays');
   assert.equal((await day(b, '2026-12-21')).closed, false, 'the school kept open runs as normal');
   assert.equal((await day(b, '2026-12-21')).income, 100);
   assert.equal((await call('POST', url, { name: 'Bad', start_date: '2026-12-21', end_date: '2026-12-22', all_schools: 1, open_school_ids: [foreignSchool] })).status, 400);
-  // A route carrying children from two schools follows each child's school.
+  // A route carrying a child from another school: that school's closure keeps
+  // the child at home and the route still goes; the route's own school closing
+  // stops the route whatever the other school is doing.
   const mixed = await contract('M', school, 'per_journey');
   const kidA = await add('children', { first_name: 'Ann', last_name: 'A', contract_id: mixed, school_id: school, status: 'active' });
   const kidB = await add('children', { first_name: 'Ben', last_name: 'B', contract_id: mixed, school_id: schoolB, status: 'active' });
-  const inset = await call('POST', url, { name: 'Inset A', start_date: '2027-01-04', end_date: '2027-01-04', all_schools: 0, school_ids: [school] });
+  const inset = await call('POST', url, { name: 'Inset B', start_date: '2027-01-04', end_date: '2027-01-04', all_schools: 0, school_ids: [schoolB] });
   let md = await day(mixed, '2027-01-04');
-  assert.equal(md.closed, false, 'the trip still runs for the child at the open school');
+  assert.equal(md.closed, false, 'the trip still runs for the child at the route\'s own, open school');
   assert.equal(md.income, 100);
   assert(md.trips.every(t => t.status === 'operated' && t.children_travelling === 1 && t.children_closed === 1 && t.driver.pay > 0), JSON.stringify(md.trips.map(t => [t.status, t.children_travelling, t.children_closed])));
-  assert.equal(md.children.find(k => k.id === kidA).trips[1], 'school_closed');
-  assert.equal(md.children.find(k => k.id === kidB).trips[1], 'travelling');
+  assert.equal(md.children.find(k => k.id === kidB).trips[1], 'school_closed');
+  assert.equal(md.children.find(k => k.id === kidA).trips[1], 'travelling');
   assert(md.summary.some(text => /at a closed school/.test(text)));
-  await call('PUT', url + '/' + inset.data.id, { name: 'Inset A and B', start_date: '2027-01-04', end_date: '2027-01-04', all_schools: 0, school_ids: [school, schoolB] });
+  await call('PUT', url + '/' + inset.data.id, { name: 'Inset A', start_date: '2027-01-04', end_date: '2027-01-04', all_schools: 0, school_ids: [school] });
   md = await day(mixed, '2027-01-04');
-  assert.equal(md.closed, true, 'closed once every child aboard is at a closed school');
+  assert.equal(md.closed, true, 'the route\'s own school closing stops the route even with a child from an open school aboard');
   assert.equal(md.income, 0);
   assert(md.trips.every(t => t.closed && t.driver.pay === 0 && t.pa.pay === 0));
+  assert.equal((await wages.calculateWages(org, { from: '2027-01-04', to: '2027-01-04', contract_id: mixed, include_zero: true })).totals.total_due, 0);
+  await call('PUT', url + '/' + inset.data.id, { name: 'Inset A and B', start_date: '2027-01-04', end_date: '2027-01-04', all_schools: 0, school_ids: [school, schoolB] });
+  md = await day(mixed, '2027-01-04');
+  assert.equal(md.closed, true, 'closed when every school aboard is closed');
+  assert.equal(md.income, 0);
   // "School open" recorded on one contract overrides the closure for that contract only.
   const opened = await call('POST', '/api/exceptions', { contract_id: mixed, date: '2027-01-04', type: 'school_open', leg: 'DAY', note: 'Authorised' });
   assert(opened.status < 300, JSON.stringify(opened));
